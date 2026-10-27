@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render/check the README GIF using the unchanged production wordmark renderer.
+"""Render/check the README wordmark: production geometry, softer morph, 1.5x speed.
 
 Requires Python 3, Pillow and a C++17 host compiler (CXX, default c++).
 No uploads, local artwork, fonts or network access are needed.
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import math
 import os
 from pathlib import Path
 import shlex
@@ -15,7 +16,7 @@ import struct
 import subprocess
 import tempfile
 
-from PIL import Image, ImageSequence
+from PIL import Image, ImageFilter, ImageSequence
 import generate_wordmark_morph as artwork
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,8 +24,11 @@ OUTPUT = ROOT / "assets/branding/readme-wordmark.gif"
 BACKGROUND = (33, 40, 48)  # #212830, approved README background.
 INK = (244, 244, 244)
 SIZE = (800, 320)
-STEP_MS = 100
-LOOP_MS = 48000
+STEP_MS = 100  # Source sampling; playback is 1.5x faster.
+SOURCE_LOOP_MS = 48000
+LOOP_MS = 32000
+BLUR_RADIUS = 0.8  # Native pixels; applied to the entire mark, before 2x scaling.
+PALETTE_LEVELS = 64  # Preserve endpoints; compact, nondithered soft-edge coverage.
 HELPER = r'''
 #include "platform/3ds/wordmark_morph.h"
 #include <algorithm>
@@ -36,9 +40,9 @@ namespace data = seance::platform::ui3ds::wordmark_morph_data;
 static_assert(wm::kHoldMs == 4000 && wm::kMorphMs == 8000 && wm::kLoopMs == 48000);
 static_assert(data::kX == 8 && data::kY == 48 && data::kWidth == 384 && data::kHeight == 128);
 int main() {
-    std::array<std::uint8_t, data::kWidth * data::kHeight> previous{}, first{};
+    std::array<std::uint8_t, data::kWidth * data::kHeight> first{};
     for (std::uint32_t ms = 0; ms <= wm::kLoopMs; ms += 100) {
-        decltype(previous) mask{};
+        decltype(first) mask{};
         bool bounds = true;
         wm::render(ms, [&](int x, int y, int w, int h, std::uint8_t a) {
             x -= data::kX; y -= data::kY;
@@ -51,11 +55,11 @@ int main() {
         if (!bounds) return 2;
         if (ms == 0) first = mask;
         if (ms == wm::kLoopMs) return mask == first ? 0 : 3;
-        if (ms % 12000 == 0 || mask != previous) {
+        // Even unchanged geometry must be sampled while the global blur changes.
+        if (ms % 12000 == 0 || ms % 12000 >= wm::kHoldMs) {
             if (std::fwrite(&ms, sizeof(ms), 1, stdout) != 1 ||
                 std::fwrite(mask.data(), mask.size(), 1, stdout) != 1) return 4;
         }
-        previous = mask;
     }
     return 5;
 }
@@ -100,20 +104,67 @@ def append_run(runs, digest, duration):
         runs.append((digest, duration))
 
 
+def source_to_gif_ms(ms):
+    """Exact 3/2 playback, rounding absolute boundaries to GIF centiseconds."""
+    return ((ms * 2 + 15) // 30) * 10
+
+
+def readme_mask(mask, source_ms):
+    """Soften all contours during a morph, including unchanged/shared pixels.
+
+    A smooth zero-slope envelope restores the exact crisp artwork at both ends.
+    This is a README-only treatment; no runtime geometry or timing is edited.
+    """
+    morph_ms = source_ms % 12000 - 4000
+    if morph_ms <= 0:
+        return mask
+    strength = math.sin(math.pi * morph_ms / 8000) ** 2
+    return mask.filter(ImageFilter.GaussianBlur(BLUR_RADIUS * strength))
+
+
+def check_shared_contours(samples):
+    """Regression: formerly stationary contour pixels must soften as well."""
+    masks = dict(samples)
+    for index in range(4):
+        ms = index * 12000 + 8000
+        a = masks[index * 12000].tobytes()
+        b = masks[((index+1) % 4) * 12000].tobytes()
+        mid = masks[ms].tobytes()
+        soft = readme_mask(masks[ms], ms).tobytes()
+        shared = []
+        for y in range(1, 127):
+            for x in range(1, 383):
+                i = y * 384 + x
+                neighbors = (i-1, i+1, i-384, i+384)
+                if (a[i] == b[i] == mid[i] == 255 and
+                        any(a[j] == b[j] == mid[j] == 0 for j in neighbors)):
+                    shared.append(i)
+        if not shared or any(soft[i] == 255 for i in shared):
+            raise RuntimeError("unchanged shared contours must soften during every morph")
+
+
 def frames_and_timeline():
     samples = production_masks()
-    palette = [b + ((i - b) * alpha + 127) // 255
-               for alpha in range(256) for b, i in zip(BACKGROUND, INK)]
+    check_shared_contours(samples)
+    palette = [b + ((i - b) * level + (PALETTE_LEVELS-1)//2) // (PALETTE_LEVELS-1)
+               for level in range(PALETTE_LEVELS) for b, i in zip(BACKGROUND, INK)]
+    palette.extend([0] * (768 - len(palette)))
     frames, durations, runs = [], [], []
     for index, (ms, mask) in enumerate(samples):
-        end = samples[index+1][0] if index+1 < len(samples) else LOOP_MS
-        duration = end-ms
-        if duration <= 0 or duration % STEP_MS:
+        end = samples[index+1][0] if index+1 < len(samples) else SOURCE_LOOP_MS
+        if end <= ms or (end-ms) % STEP_MS:
             raise RuntimeError("invalid production sample timing")
+        duration = source_to_gif_ms(end) - source_to_gif_ms(ms)
+        treated = readme_mask(mask, ms)
+        if ms % 12000 <= 4000 and treated.tobytes() != mask.tobytes():
+            raise RuntimeError("hold artwork must stay pixel exact")
+        if ms % 12000 == 8000 and treated.tobytes() == mask.tobytes():
+            raise RuntimeError("whole-mark blur missing during the morph")
         # Native crop y=36..196, then exact nearest-neighbor 2x expansion.
         frame = Image.new("P", (400, 160), 0)
         frame.putpalette(palette)
-        frame.paste(mask, (8, 12))
+        indices = treated.point(lambda a: (a * (PALETTE_LEVELS-1) + 127) // 255)
+        frame.paste(indices, (8, 12))
         frame = frame.resize(SIZE, Image.Resampling.NEAREST)
         frames.append(frame)
         durations.append(duration)
@@ -132,18 +183,18 @@ def check_gif(path, expected):
         for image in ImageSequence.Iterator(gif):
             rgb = image.convert("RGB")
             duration = image.info.get("duration", 0)
-            if duration <= 0 or duration % STEP_MS:
+            if duration <= 0 or duration % 10:
                 raise RuntimeError("invalid decoded GIF duration")
             if any(rgb.getpixel(p) != BACKGROUND for p in
                    ((0, 0), (799, 0), (0, 319), (799, 319), (400, 0))):
                 raise RuntimeError("GIF background differs")
             append_run(actual, rgb_digest(rgb), duration)
     if actual != expected:
-        raise RuntimeError("decoded GIF pixels/timing differ from production samples")
+        raise RuntimeError("decoded GIF pixels/timing differ from the README treatment")
     if path.stat().st_size > 5_000_000:
         raise RuntimeError("README GIF exceeds the 5 MB size budget")
     print(f"PASS: {SIZE[0]}x{SIZE[1]}, {count} GIF frames, {LOOP_MS} ms loop, "
-          f"{path.stat().st_size} bytes; exact production endpoints/pixels/timing; #212830 background")
+          f"{path.stat().st_size} bytes; crisp endpoints, whole-mark blur, 1.5x playback; #212830 background")
     print(f"sha256 {hashlib.sha256(path.read_bytes()).hexdigest()}")
 
 

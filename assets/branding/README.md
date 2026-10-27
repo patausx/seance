@@ -52,9 +52,16 @@ Asset checks do not establish console rendering speed or launcher cache behavior
 
 `readme-wordmark.gif` presents the production wordmark morph on a flat
 `#212830` background with `#f4f4f4` ink. it is branding artwork, not a console
-capture. the runtime logo and its 48-second cycle are unchanged. the GIF samples
-at 10 fps, coalesces identical holds, and uses exact nearest-neighbor 2x pixels
-on an 800x320 canvas. no uploaded reference is needed to regenerate it.
+capture. the runtime logo and its 48-second cycle are unchanged. this README-only
+version runs at **1.5x speed**, completing the same route in **32 seconds**. the
+source is sampled every 100 ms and played at about 15 fps; GIF frame boundaries
+are rounded to centiseconds without cumulative drift.
+
+during each morph, a gentle whole-mark blur also softens contours shared by both
+words, instead of leaving crisp stationary islands. its smooth envelope returns
+to zero for the exact original artwork at every hold. the 800x320 image uses a
+64-level nondithered coverage palette and nearest-neighbor 2x scaling. background
+and ink stay exact. no uploaded reference is needed to regenerate it.
 
 ```sh
 python3 tools/render_readme_wordmark.py --install
@@ -62,8 +69,10 @@ python3 tools/render_readme_wordmark.py --check
 ```
 
 Python 3, Pillow and a C++17 host compiler are required. `--check` compares the
-decoded GIF pixels and timing against the production C++ renderer and checks all
-four endpoints against the editable wordmark artwork. it does not alter assets.
+decoded GIF pixels and accelerated timing against this treatment of the production
+C++ renderer. it also checks all four endpoints against the editable artwork and
+verifies that shared, otherwise-static contour pixels soften during every morph.
+it does not alter assets.
 
 ## retained references and older studies
 
