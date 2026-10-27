@@ -1,5 +1,3 @@
-# seance
-
 ![seance — morphing gothic wordmark](assets/branding/readme-wordmark.gif)
 
 **a modular sequencer and live instrument for Nintendo 3DS.**
