@@ -1,0 +1,34 @@
+{
+  "scope": "drawing-only nonmodule lancet migration",
+  "migrated": {
+    "ui_chains.cpp": ["param_rail: selected card's two lower editable base rails and upper base/effective counterpart; same captured values and axis mapping"],
+    "ui_transition.cpp": ["draw: bank blend", "draw_fx: existing temporary filter/echo/roll rails; same discrete roll positions and controls"],
+    "ui_patchbay.cpp": ["patchbay_draw: cable depth; exact former hslider float rounding and axis y204, no global hslider change"],
+    "ui_sigils.cpp": ["rail/editor: depth, phase and rate-mod depth; disabled mod depth and phase track-only in inapplicable modes; shared Painter/cache/clipping route; draw-only depth/mod gesture underlines move y158->160 and y225->227 to clear the canonical marker tips"],
+    "ui_sequencer.cpp": ["draw_lock_editor: continuous lock amount only", "draw_editor: existing note/level/microtiming and fallback value rails; discrete editors unchanged"]
+  },
+  "adapter": "module_fader_painter.h: block sink and overloads only; calls parent-owned templated canonical detail::draw/detail::track, no geometry or palette fork",
+  "explicit_exclusions": {
+    "ui_start_menu.cpp": "current palette page has preset, role and swatch buttons, no RGB sliders; reveal/progress and selection diamonds unchanged",
+    "ui_theme.cpp": "palette/color accessors, hit helper and panel chrome only; no editable rails",
+    "ui_sequencer.cpp": "step level/timing mini-indicators, note plots, slice-seam waveform grips, slice-choice tick strip, conditions/retrigger/discrete lock choices, mode ring and text selection are not continuous faders",
+    "ui_chains.cpp": "collapsed cards' effective-value mini meters and modulation source output meter, range/status text, drag grips and geometry unchanged",
+    "ui_performance.cpp": "EXPLICIT USER EXCEPTION: entire original mixer restored byte-exact, including wide rectangular level handles and original a/b morph; no lancet migration",
+    "ui_transition.cpp": "saved return frames, bank numbers/swipes, mode selection, launch/keep commands and hold/readiness text untouched",
+    "ui_patchbay.cpp": "cables, sockets, wave/current-phase cursor and source value visualization untouched",
+    "ui_sigils.cpp": "waveform drawing canvas, live cursor, trail/history, rate text scrub, categorical menus, phase pulse and every pulse's controller/clock/opacity unchanged; two rendering-only underline rows relocated as documented above",
+    "ui_nav.cpp": "clock base/depth text-scrub underline has no parameter thumb; clock modulation display and popup branches are not faders",
+    "ui_bounce.cpp": "bar/render progress and bounce waveform ribbon are output/time navigation, not parameter faders",
+    "ui_play_editor.cpp": "waveform trim/fade/loop/cut grips, waveform audition cursor, discrete mode rail and numeric text-scrubs unchanged",
+    "ui_sample_library.cpp": "library scroll/selection/waveform preview unchanged",
+    "ui_top.cpp": "read-only peak/level/pan/sequence/sigil and playback/window graphics unchanged",
+    "ui_editor.cpp": "routing facade, no independent editable rails",
+    "ui_chains_top.cpp": "delegates frozen chain rendering, no independent editable rail",
+    "ui_picker.cpp": "catalogue/list/navigation controls, no editable continuous rail",
+    "ui_play_export.cpp": "no slider drawing",
+    "ui_workspace.cpp": "layout/controller storage, no slider drawing",
+    "ui_param_lens.cpp": "already canonical lancet, parent shared/module scope",
+    "core/ui/draw.cpp": "global hslider and draw primitives untouched"
+  },
+  "unchanged_contract": "all non-draw functions, capture structs, outside-function tokens, touch geometry, mappings, DSP/core/assets/serialization are preserved; parent owns module migrations and shared template-only canonical adaptation"
+}

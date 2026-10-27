@@ -1,0 +1,17 @@
+{
+  "github": "REPLACE_OWNER/REPLACE_REPOSITORY",
+  "title": "seance",
+  "author": "patausx",
+  "description": "A patchable sampler and synthesizer for Nintendo 3DS with granular playback, effects, microphone recording, modulation, and a step sequencer.",
+  "systems": [
+    "3DS"
+  ],
+  "categories": [
+    "app",
+    "media"
+  ],
+  "llm_generation": "yes",
+  "icon": "https://example.invalid/seance/icon-48.png",
+  "image": "https://example.invalid/seance/banner.png",
+  "download_filter": "^seance\\.(3dsx|cia)$"
+}

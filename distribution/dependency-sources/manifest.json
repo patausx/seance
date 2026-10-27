@@ -1,0 +1,103 @@
+{
+  "format": "seance-local-dependency-sources-v1",
+  "packages": [
+    {
+      "archive": "libctru-2.7.0.tar.gz",
+      "bytes": 371148,
+      "installed_object": {
+        "bytes": 3479902,
+        "sha256": "5e72cd24512b57908545e928cf0a1c1affbb8535f97773d7007be8f10f0e02bc"
+      },
+      "installed_object_label": "$DEVKITPRO/libctru/lib/libctru.a",
+      "installed_package_version": "2.7.0-1",
+      "license": "zlib-style (README license section)",
+      "name": "libctru",
+      "recipe": "libctru.PKGBUILD",
+      "recipe_checksum_match": true,
+      "recipe_expected_sha256": "c0b8a5048e15a0ae02772e6db0188f5571e8c26d064d7962212a40681f0d18b3",
+      "recipe_origin": "https://raw.githubusercontent.com/devkitPro/pacman-packages/b9e8b0de6a6423557fd2a57dc100bf327c79dd4a/libctru/PKGBUILD",
+      "recipe_sha256": "e3ded946070a3036d78756a3467f61e72c210f27a6901baa227661396d29214f",
+      "sha256": "c0b8a5048e15a0ae02772e6db0188f5571e8c26d064d7962212a40681f0d18b3",
+      "source_url": "https://github.com/devkitPro/libctru/archive/v2.7.0.tar.gz",
+      "source_version": "2.7.0",
+      "verification_limit": "archive matches installed package version and saved upstream recipe checksum; installed object not rebuilt from these sources during documentation preparation"
+    },
+    {
+      "archive": "citro2d-1.7.0.tar.gz",
+      "bytes": 49046,
+      "installed_object": {
+        "bytes": 205320,
+        "sha256": "f6c5352a838639c486b806b8dc847c74a1a190d98b09eb469d5c30a02ae6542f"
+      },
+      "installed_object_label": "$DEVKITPRO/libctru/lib/libcitro2d.a",
+      "installed_package_version": "1.7.0-1",
+      "license": "zlib",
+      "name": "citro2d",
+      "recipe": "citro2d.PKGBUILD",
+      "recipe_checksum_match": true,
+      "recipe_expected_sha256": "f311d1decb64668980b7a7a917a9b936a40025265df921e251f5f0537b94b86b",
+      "recipe_origin": "https://raw.githubusercontent.com/devkitPro/pacman-packages/b9e8b0de6a6423557fd2a57dc100bf327c79dd4a/citro2d/PKGBUILD",
+      "recipe_sha256": "66bd554c94b273cf6597748df1cbd027d969f832b6bca2afe762ac3797b4555c",
+      "sha256": "f311d1decb64668980b7a7a917a9b936a40025265df921e251f5f0537b94b86b",
+      "source_url": "https://github.com/devkitPro/citro2d/archive/v1.7.0.tar.gz",
+      "source_version": "1.7.0",
+      "verification_limit": "archive matches installed package version and saved upstream recipe checksum; installed object not rebuilt from these sources during documentation preparation"
+    },
+    {
+      "archive": "citro3d-1.7.1.tar.gz",
+      "bytes": 61920,
+      "installed_object": {
+        "bytes": 686282,
+        "sha256": "3f34eff859c1f1e60ebe597b6df9cf5e5e74563d9e64ca01a7b3292fde63016a"
+      },
+      "installed_object_label": "$DEVKITPRO/libctru/lib/libcitro3d.a",
+      "installed_package_version": "1.7.1-2",
+      "license": "zlib",
+      "name": "citro3d",
+      "recipe": "citro3d.PKGBUILD",
+      "recipe_checksum_match": true,
+      "recipe_expected_sha256": "c920515a791442e81e0c2c8867dde81bf14aca17eacb2709b4a3a3c61699250c",
+      "recipe_origin": "https://raw.githubusercontent.com/devkitPro/pacman-packages/b9e8b0de6a6423557fd2a57dc100bf327c79dd4a/citro3d/PKGBUILD",
+      "recipe_sha256": "20ebf3117de9273d824545cd0fcbfb993bb64cb797b03bc0046f50176bdd90ce",
+      "sha256": "c920515a791442e81e0c2c8867dde81bf14aca17eacb2709b4a3a3c61699250c",
+      "source_url": "https://github.com/devkitPro/citro3d/archive/v1.7.1.tar.gz",
+      "source_version": "1.7.1",
+      "verification_limit": "archive matches installed package version and saved upstream recipe checksum; installed object not rebuilt from these sources during documentation preparation"
+    },
+    {
+      "archive": "devkitarm-crtls-1.2.6.tar.gz",
+      "bytes": 17427,
+      "installed_object": {
+        "bytes": 1400,
+        "sha256": "6f1188b6f8b64d36818e95a4cc54a95c857e1a0bd0ca41906081efe6babda895"
+      },
+      "installed_object_label": "$DEVKITARM/arm-none-eabi/lib/armv6k/fpu/3dsx_crt0.o",
+      "installed_package_version": "1.2.6-1",
+      "license": "MPL-2.0 for 3dsx startup source",
+      "name": "devkitarm-crtls",
+      "recipe": "devkitarm-crtls.PKGBUILD",
+      "recipe_checksum_match": true,
+      "recipe_expected_sha256": "0c7b991a2a8427bca0a64db37138ecc95276eef3958a9be6da6310afd1a1066f",
+      "recipe_origin": "https://raw.githubusercontent.com/devkitPro/pacman-packages/b9e8b0de6a6423557fd2a57dc100bf327c79dd4a/devkitarm/devkitarm-crtls/PKGBUILD",
+      "recipe_sha256": "79925c00e7fc5cae8aefb7680e27604e4ef913f0407a692d48a0f8d8e51e6193",
+      "sha256": "0c7b991a2a8427bca0a64db37138ecc95276eef3958a9be6da6310afd1a1066f",
+      "source_url": "https://github.com/devkitPro/devkitarm-crtls/archive/refs/tags/v1.2.6.tar.gz",
+      "source_version": "1.2.6",
+      "verification_limit": "archive matches installed package version and saved upstream recipe checksum; installed object not rebuilt from these sources during documentation preparation"
+    }
+  ],
+  "recipe_commit": "b9e8b0de6a6423557fd2a57dc100bf327c79dd4a",
+  "recipe_repository": "https://github.com/devkitPro/pacman-packages",
+  "reviewed_utc_date": "2026-10-24",
+  "runtime_status": {
+    "final_link_component_audit": "pending",
+    "gcc_exception_evidence": "../../licenses/compiler-runtime-evidence.json",
+    "gcc_package": "devkitarm-gcc 15.2.0-7",
+    "newlib_notice_audit": "pending",
+    "newlib_package": "devkitarm-newlib 4.6.0.20260123-5",
+    "newlib_recipe": "newlib.PKGBUILD",
+    "newlib_recipe_origin": "https://raw.githubusercontent.com/devkitPro/pacman-packages/b9e8b0de6a6423557fd2a57dc100bf327c79dd4a/devkitarm/newlib/PKGBUILD",
+    "newlib_source_bundled": false
+  },
+  "scope": "original source archives and recipes only; no builds or publication performed"
+}

@@ -1,0 +1,54 @@
+# devkitPro / 3DS generated output
+build/
+/build-*/
+*.3dsx
+*.elf
+*.smdh
+*.cia
+*.3ds
+
+# local build/review receipts, device backups and presentation output
+# ignored paths already tracked in old history remain tracked; export a fresh
+# allowlisted source tree for the public/private-review repository.
+/release/
+/promo/
+/research/
+/workspace/
+/AGENTS.md
+/hardware_pass/
+*.map
+*.o
+*.d
+
+# user projects, preferences, recordings and local credentials
+*.snc
+/start_menu.bin
+/recordings/
+/.env
+/.env.*
+!/.env.example
+
+# local sample libraries and generated design previews
+# local_sample_library contains third-party royalty-free WAVs licensed for
+# personal/project use but not redistribution.
+local_sample_library/
+seance-tester-*.zip
+SHA256SUMS.txt
+logo_concepts/
+hardware_shots/
+ui_mockups/
+seance_freeform_patch_workspace.png
+seance_refactor_ui_concept.png
+tools/__pycache__/
+*.pyc
+chokistream.ini
+
+# local development state (not part of the source repository)
+/.*/
+!/.github/
+/.local-state
+
+# cold/local material; the current archive lives outside this workspace
+/archive/
+/generated/
+/tmp_docs/

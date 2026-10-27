@@ -1,0 +1,57 @@
+{
+  "files": {
+    "CC0-VCSL-1.0.txt": {
+      "bytes": 7048,
+      "origin": "assets/instruments/licenses/vcsl-LICENSE; upstream provenance in assets/instruments/sources.json",
+      "sha256": "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499"
+    },
+    "CC0-VSCO-1.0.txt": {
+      "bytes": 6555,
+      "origin": "assets/instruments/licenses/vsco-LICENSE; upstream provenance in assets/instruments/sources.json",
+      "sha256": "36ffd9dc085d529a7e60e1276d73ae5a030b020313e6c5408593a6ae2af39673"
+    },
+    "CC0-starter-1.0.txt": {
+      "bytes": 6831,
+      "origin": "sample_library/starter_cc0/CC0-1.0.txt; original mappings in its README.md",
+      "sha256": "64a5a038221794d68b8fac3c189a0887c4e823d8c6d3d41704b2371f1acc9c83"
+    },
+    "GCC-GPL-3.0.txt": {
+      "bytes": 35147,
+      "origin": "https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-15.2.0/COPYING3",
+      "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+    },
+    "GCC-RUNTIME-EXCEPTION-3.1.txt": {
+      "bytes": 3324,
+      "origin": "https://raw.githubusercontent.com/gcc-mirror/gcc/releases/gcc-15.2.0/COPYING.RUNTIME",
+      "sha256": "9d6b43ce4d8de0c878bf16b54d8e7a10d9bd42b75178153e3af6a815bdc90f74"
+    },
+    "MPL-2.0.txt": {
+      "bytes": 16726,
+      "origin": "https://www.mozilla.org/MPL/2.0/index.txt",
+      "sha256": "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+    },
+    "SIL-OFL-1.1.txt": {
+      "bytes": 4501,
+      "origin": "assets/fonts/OFL.txt; copyright and derivative notices in assets/fonts/README.md",
+      "sha256": "e0330e405af100441dd46acd7f7b2c395f26d157cea5f507d06285844dd1dd68"
+    },
+    "citro2d-zlib.txt": {
+      "bytes": 853,
+      "origin": "citro2d v1.7.0 LICENSE from verified bundled tar.gz",
+      "sha256": "852711e22394a8ccc0487b8179774d15e4fed72a994c1a6fb2993b2279984bde"
+    },
+    "citro3d-zlib.txt": {
+      "bytes": 853,
+      "origin": "citro3d v1.7.1 LICENSE from verified bundled tar.gz",
+      "sha256": "4d8db8e7270929946a3439aef932e37c7356a83391e56006439087e1d685809d"
+    },
+    "libctru-zlib.txt": {
+      "bytes": 848,
+      "origin": "libctru v2.7.0 README.md license section from verified bundled tar.gz",
+      "sha256": "c91b3ce34a3ec5a6531e5bd2f13cfb32e0594b52d0728c6286e1270de1729f8b"
+    }
+  },
+  "format": "seance-local-license-notices-v1",
+  "limit": "full upstream archives retain additional per-file notices; this set is not a completed final linked-runtime audit",
+  "reviewed_utc_date": "2026-10-24"
+}
