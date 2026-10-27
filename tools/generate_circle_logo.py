@@ -12,8 +12,8 @@ from pathlib import Path
 from PIL import Image, ImageChops, ImageDraw, ImageOps
 
 ROOT = Path(__file__).resolve().parents[1]
-BRANDING = ROOT / 'assets/branding'
-REFERENCE = BRANDING / 'circle_logo_reference.png'
+ARTWORK = ROOT / 'assets/artwork'
+REFERENCE = ARTWORK / 'circle_logo_reference.png'
 REFERENCE_SHA = '4049e58aa074934f12cf86aed64e36758153fd2319d95d5261badf321573c54d'
 
 
@@ -46,7 +46,7 @@ def outputs():
     images = {}
     # Independent reductions from the master, never 24px from the 48px icon.
     # Micro text is necessarily an identity texture at 24px, not readable copy.
-    for size, path in ((48, ROOT / 'assets/icon.png'), (24, BRANDING / 'icon_small.png')):
+    for size, path in ((48, ROOT / 'assets/icon.png'), (24, ROOT / 'assets/icon_small.png')):
         d, t = coverage(disk, size - 4), coverage(letters, size - 4)
         image = Image.new('RGB', (size, size), 'white')
         image.paste('black', (2, 2, size - 2, size - 2), d)

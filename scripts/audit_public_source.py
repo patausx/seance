@@ -12,15 +12,13 @@ from urllib.parse import unquote, urlsplit
 from package_release import PUBLIC_HIDDEN_PARTS, public_source_payload
 
 CYRILLIC = re.compile(r"[\u0400-\u04ff]+")
-# Exact word runs, only in named artwork sources and the Unicode filename fixture.
-# These exceptions preserve designed pixels and filename coverage, not prose.
+# Exact word runs, only in named artwork sources.
+# These exceptions preserve designed pixels, not prose.
 WORD = "\u0441\u0435\u0430\u043d\u0441"
 ARTWORK = {WORD, WORD.upper(), "\u043d", "\u0441", "\u0435", "\u0430"}
 LANGUAGE_EXCEPTIONS = {
-    "assets/branding/README.md": ARTWORK,
     "platform/3ds/wordmark_morph_data.h": {WORD},
     "tools/generate_wordmark_morph.py": ARTWORK,
-    "tests/sample_browser_store_test.cpp": {"\u043a\u0438\u043a"},
 }
 PRIVACY_PATTERNS = {
     "personal home path": re.compile(r"/(?:home|Users)/[A-Za-z0-9_.-]+/"),
@@ -35,7 +33,7 @@ PRIVACY_PATTERNS = {
     "private key": re.compile(r"-----BEGIN (?:[A-Z]+ )?PRIVATE KEY-----"),
 }
 LINK = re.compile(r"!?\[[^\]\n]*\]\(([^)\n]+)\)")
-PRIVATE_ROOTS = {".git", "release", "promo", "research", "workspace",
+PRIVATE_ROOTS = {".git", "tests", "release", "promo", "research", "workspace",
                  "local_sample_library", "ui_mockups", "hardware_shots"}
 
 

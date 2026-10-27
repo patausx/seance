@@ -15,7 +15,7 @@ from pathlib import Path
 from PIL import Image, ImageChops, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
-ASSETS = ROOT / 'assets/branding'
+ASSETS = ROOT / 'assets/artwork'
 OUT = ROOT / 'ui_mockups/pixel_wordmark'
 PAPER = (226, 190, 206)
 INK = (31, 20, 31)

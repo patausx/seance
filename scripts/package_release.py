@@ -59,13 +59,13 @@ def required(root: Path, relative: str) -> bytes:
 PUBLIC_ROOT_FILES = (
     "Makefile", "seance.rsf", "VERSION", "README.md", "GUIDE.md", "LICENSE",
     "BUILDING.md", "CHANGELOG.md", "CONTRIBUTING.md", "THIRD_PARTY_NOTICES.md",
-    ".gitignore", "assets/icon.png",
+    ".gitignore", "assets/icon.png", "assets/icon_small.png",
     "docs/source-layout.md", "docs/inst-bank.md",
     "distribution/README.md", "distribution/dependency-sources.md",
 )
 # Asset directories intentionally include originals, licenses and generation metadata.
 PUBLIC_TREES = (
-    "core", "platform", "assets/branding", "assets/fonts", "assets/instruments",
+    "core", "platform", "assets/branding", "assets/artwork", "assets/fonts", "assets/instruments",
     "assets/menu_audio", "sample_library/starter_cc0", "licenses", "distribution/dependency-sources", ".github",
 )
 PUBLIC_HELPERS_MANIFEST = "scripts/source-files.json"
@@ -97,8 +97,8 @@ def public_source_payload(root: Path) -> dict[str, bytes]:
             raise FileNotFoundError(f"required public source directory: {directory}")
         for path in sorted(base.rglob("*")):
             add(path)
-    # Admit build/asset helpers and optional tests explicitly, not by directory
-    # recursion. Local experiments and release receipts are never included.
+    # Admit asset/release helpers explicitly, not by directory recursion.
+    # Local tests, experiments and release receipts are never included.
     tools = json.loads(required(root, PUBLIC_HELPERS_MANIFEST))
     if not isinstance(tools, dict):
         raise ValueError("invalid helper source manifest")
@@ -109,7 +109,7 @@ def public_source_payload(root: Path) -> dict[str, bytes]:
         raise ValueError("invalid helper source manifest")
     for relative in names:
         parts = Path(relative).parts
-        if (not parts or parts[0] not in {"tools", "tests", "scripts"}
+        if (not parts or parts[0] not in {"tools", "scripts"}
                 or "\\" in relative or Path(relative).as_posix() != relative
                 or ".." in parts or any(part.startswith(".") for part in parts)):
             raise ValueError("unsafe helper source path")

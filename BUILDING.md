@@ -31,22 +31,6 @@ PCM. they require no Python, Pillow, ffmpeg, test files or downloaded sample
 pack. `make clean` removes local application output. `make run` / `make send`
 are optional network deployment commands; they are not build steps.
 
-## checks
-
-optional host checks live in [tests/](tests/README.md), not the application build:
-
-```sh
-make test-module-frame
-python3 tests/test_nav_instant.py
-python3 tests/test_package_release.py
-python3 tests/test_audit_public_source.py
-make test-branding
-```
-
-these need Python 3.10+ and a host C++ compiler; image checks also need Pillow,
-and sanitizer targets need ASan/UBSan support. they are focused checks, not a
-full regression or device-performance guarantee.
-
 ## resources and release packages
 
 [tools/](tools/README.md) contains only asset generators. regenerate deliberately

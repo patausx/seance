@@ -21,6 +21,6 @@ python3 scripts/package_release.py --samples
 ```
 
 `source-files.json` is the explicit admission list for asset tools, release
-scripts and optional tests. unlisted local files never enter source packages;
+scripts. local tests and unlisted files never enter source packages;
 missing listed inputs, unsafe paths and symlinks fail the export. application
 sources, asset originals and license texts have their own directory allowlist.

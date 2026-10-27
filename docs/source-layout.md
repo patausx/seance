@@ -6,7 +6,6 @@
 | `platform/3ds/` | console startup, audio, input and screen rendering |
 | `assets/` | current artwork, original resources and prepared build inputs |
 | `tools/` | generators for the resources actually used by the application |
-| `tests/` | optional host checks, fixtures, stubs and test make rules |
 | `scripts/` | source export, audits and release packaging |
 | `sample_library/starter_cc0/` | optional sample pack; not needed for synthesis |
 | `licenses/` | third-party license texts |
@@ -26,7 +25,7 @@ keep persisted IDs/formats compatible, and distinguish stored parameter bases,
 modulation and sequencer locks. module editors share the frame/heading/fader
 helpers; the performance mixer intentionally has its own handle style.
 
-normal ARM builds do not depend on `tests/`. explicit host test goals load
-`tests/Makefile`. resource generation is also separate from a normal build.
+normal ARM builds use the checked-in prepared resources. resource generation
+is separate from a normal build.
 helper source admission is explicit in `scripts/source-files.json`; local
-studies, proof receipts, captures, backups and private samples are excluded.
+tests, studies, proof receipts, captures, backups and private samples are excluded.

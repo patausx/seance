@@ -30,7 +30,7 @@ RELEASE_VERSION := $(strip $(shell cat $(TOPDIR)/VERSION))
 # NB: 3ds_rules' smdh recipe reads APP_ICON (not ICON!) - without the export
 # smdhtool silently falls back to the devkitPro default icon
 export APP_ICON := $(TOPDIR)/assets/icon.png
-export APP_SMALL_ICON := $(TOPDIR)/assets/branding/icon_small.png
+export APP_SMALL_ICON := $(TOPDIR)/assets/icon_small.png
 
 #---------------------------------------------------------------------------------
 ARCH    := -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
@@ -96,9 +96,13 @@ run: $(BUILD)
 
 send: run
 
-# Host test rules are optional and never part of the normal ARM build.
+# Host tests are local-only and never part of the application build.
 ifneq ($(strip $(TEST_GOALS)),)
+ifeq ($(wildcard $(TOPDIR)/tests/Makefile),)
+$(error host tests are local-only and are not installed in this checkout)
+else
 include $(TOPDIR)/tests/Makefile
+endif
 endif
 
 release-app: $(BUILD) cia
@@ -116,10 +120,10 @@ release-clean:
 # CIA / CCI packaging uses makerom and devkitPro smdhtool.
 MAKEROM ?= $(HOME)/tools/3ds/makerom
 
-$(BUILD)/$(TARGET)_cia.smdh: assets/icon.png assets/branding/icon_small.png Makefile
+$(BUILD)/$(TARGET)_cia.smdh: assets/icon.png assets/icon_small.png Makefile
 	@mkdir -p $(BUILD)
 	smdhtool --create "$(APP_TITLE)" "$(APP_DESCRIPTION)" "$(APP_AUTHOR)" \
-	  assets/icon.png $@ assets/branding/icon_small.png
+	  assets/icon.png $@ assets/icon_small.png
 
 # Legacy-mode CIA/CCI: retain the existing no-banner/no-audio packaging, but
 # show the same gathering icon as the homebrew launcher (Old and New 3DS).

@@ -1,7 +1,7 @@
 # contributing
 
-see [building](BUILDING.md), the [source layout](docs/source-layout.md), and
-[tests](tests/README.md). keep a change focused and describe what was actually
+see [building](BUILDING.md) and the [source layout](docs/source-layout.md).
+keep a change focused and describe what was actually
 checked; a successful compile is not device or listening approval.
 
 - preserve project-format compatibility, stable module IDs and user data.
@@ -11,8 +11,8 @@ checked; a successful compile is not device or listening approval.
   changing input. use the shared module frame, headings and palette roles.
 - retain editable resource inputs and their original licenses. check generated
   output without regenerating unrelated assets.
-- keep tests in `tests/`, current resource generators in `tools/`, and packaging
-  in `scripts/`. add required helper files to `scripts/source-files.json`.
+- keep current resource generators in `tools/` and packaging in `scripts/`.
+  add required helper files to `scripts/source-files.json`.
 - do not commit captures, local receipts, binaries, credentials or private audio.
 
 for a bug, include version, console model, launch format, minimal steps and the
