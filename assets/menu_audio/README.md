@@ -1,11 +1,7 @@
 # menu audio assets
 
-- `source/1.wav` and `source/2.wav` are the maintainer's own recordings. On
-  2026-10-24 the author confirmed ownership and permission to include the original
-  recordings and their embedded PCM in seance's source and binary distribution.
-  This confirmation is not a CC0 dedication or a separately chosen standalone
-  audio license. The files were renamed only; their bytes and sound are unchanged.
-  Normal builds use only the source and prepared PCM included here.
+- `source/1.wav`: menu drone; `source/2.wav`: entry sound. the original WAVs and
+  prepared PCM are included here. normal builds use the checked-in PCM.
 - `menu_drone.bin`: stereo signed 16-bit little-endian PCM, 32 kHz, 832000 frames
   (26 seconds). The original 30-second drone has a four-second equal-power tail /
   head overlap, rotated so its wrap continues into the original source at 4s.

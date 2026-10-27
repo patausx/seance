@@ -67,8 +67,8 @@ choose a **new, nonexistent output directory**. this command:
 
 if makerom is elsewhere, pass `--makerom /absolute/path/to/makerom`. use
 `--source-only` to inspect the exported source without building. source export
-includes the author's confirmed menu recordings `1.wav` and `2.wav` and their
-embedded PCM. source export is local preparation, **not permission to publish**.
+includes the asset originals and prepared build inputs. source export is local
+preparation, **not permission to publish**.
 output logs/receipts are local; only the reviewed files in `github-release/`
 are prospective downloadable assets.
 

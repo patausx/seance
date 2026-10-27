@@ -3,11 +3,30 @@
 from pathlib import Path
 import argparse
 import hashlib
+import re
 from PIL import Image, ImageDraw, ImageFont
-from render_module_geometry_study import FONT as NATIVE
 ROOT=Path(__file__).resolve().parents[1]
 FONT=ROOT/'assets/fonts/Gossip-MedPixel.otf'
 OUT=ROOT/'platform/3ds/cabinet_font_data.h'
+
+def load_font():
+    src = (ROOT / 'core/ui/font.cpp').read_text().split('font_6x8[96][8] = {', 1)[1].split('};', 1)[0]
+    glyphs = []
+    for body in re.findall(r'\{([^{}]*)\}', src):
+        rows = []
+        for macro, zero in re.findall(r'R\(([^)]*)\)|(\b0\b)', re.sub(r'//.*', '', body)):
+            bits = 0
+            for bit in macro.split(',') if macro else []:
+                bits = (bits << 1) | int(bit.strip())
+            rows.append(bits)
+        if len(rows) == 8:
+            glyphs.append(rows)
+    assert len(glyphs) == 96
+    return glyphs
+
+
+NATIVE = load_font()
+
 
 def generate():
     face=ImageFont.truetype(str(FONT),22)

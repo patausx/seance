@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import contextlib
 import io
+import ast
+import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -39,6 +42,14 @@ class PackagingTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(name.encode())
 
+        # Use the same reviewed admission list, but independent fixture bytes.
+        manifest = (ROOT / pkg.PUBLIC_TOOLS_MANIFEST).read_bytes()
+        for name in json.loads(manifest)["files"]:
+            path = root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(name.encode())
+        (root / pkg.PUBLIC_TOOLS_MANIFEST).write_bytes(manifest)
+
     def test_allowlist_and_editable_sources(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -49,6 +60,8 @@ class PackagingTests(unittest.TestCase):
                 "seance.3dsx", "tools/__pycache__/example.pyc", "tools/capture_promo_tek.py",
                 "docs/private-design.md", "workspace/device.json",
                 "tools/.private/check.py", "core/.history/old.cpp", "assets/branding/.local/private.png",
+                "tools/render_new_study.py", "tools/test_unreviewed.py", "tools/generator.py",
+                "tools/stubs/example.h", "tools/preview.js",
             )
             for name in excluded:
                 path = root / name
@@ -60,8 +73,9 @@ class PackagingTests(unittest.TestCase):
             self.assertIn("assets/menu_audio/source/original.wav", result)
             self.assertIn("assets/instruments/source/original.sfz", result)
             self.assertIn("distribution/dependency-sources/original.tar.gz", result)
-            self.assertIn("tools/stubs/example.h", result)
-            self.assertIn("tools/preview.js", result)
+            self.assertIn("tools/generate_cabinet_font.py", result)
+            self.assertIn("tools/sequencer_test_stubs/3ds.h", result)
+            self.assertIn(pkg.PUBLIC_TOOLS_MANIFEST, result)
             self.assertIn("tools/README.md", result)
             self.assertIn("docs/source-layout.md", result)
             self.assertIn(".github/fixture.json", result)
@@ -81,6 +95,65 @@ class PackagingTests(unittest.TestCase):
             (root / "core/engine/module_random_impl.inc").unlink()
             with self.assertRaisesRegex(FileNotFoundError, "complete-source"):
                 pkg.public_source_payload(root)
+
+    def test_missing_admitted_tool_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.fixture(root)
+            (root / "tools/generate_cabinet_font.py").unlink()
+            with self.assertRaisesRegex(FileNotFoundError, "public tool input"):
+                pkg.public_source_payload(root)
+
+    def test_admitted_tool_symlink_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.fixture(root)
+            path = root / "tools/generate_cabinet_font.py"
+            path.unlink()
+            path.symlink_to(root / "LICENSE")
+            with self.assertRaisesRegex(RuntimeError, "symlink"):
+                pkg.public_source_payload(root)
+
+    def test_tool_manifest_paths_and_schema_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.fixture(root)
+            for unsafe in ("../secret", "/absolute", "tools/../LICENSE", "tools//double.py",
+                           "tools/.private/check.py", "tools\\escape.py", "core/engine/units.cpp"):
+                with self.subTest(unsafe=unsafe):
+                    (root / pkg.PUBLIC_TOOLS_MANIFEST).write_text(json.dumps({
+                        "schema": 1, "files": sorted([pkg.PUBLIC_TOOLS_MANIFEST, unsafe])}))
+                    with self.assertRaisesRegex(ValueError, "unsafe public tool path"):
+                        pkg.public_source_payload(root)
+            for bad in ([], {}, {"schema": 2, "files": []}, {"schema": 1, "files": [None]},
+                        {"schema": 1, "files": [pkg.PUBLIC_TOOLS_MANIFEST] * 2}):
+                with self.subTest(bad=bad):
+                    (root / pkg.PUBLIC_TOOLS_MANIFEST).write_text(json.dumps(bad))
+                    with self.assertRaisesRegex(ValueError, "invalid public tools manifest"):
+                        pkg.public_source_payload(root)
+
+    def test_current_tool_dependencies_and_no_studies(self) -> None:
+        files = pkg.public_source_payload(ROOT)
+        tools = {n for n in files if n.startswith("tools/")}
+        modules = {Path(n).stem: n for n in tools if n.endswith(".py")}
+        local_modules = {path.stem for path in (ROOT / "tools").glob("*.py")}
+        for name in tools:
+            if not name.endswith(".py"):
+                continue
+            tree = ast.parse(files[name], filename=name)
+            for node in ast.walk(tree):
+                imports = ([node.module] if isinstance(node, ast.ImportFrom) else
+                           [alias.name for alias in node.names] if isinstance(node, ast.Import) else [])
+                for module in imports:
+                    top = (module or "").split(".")[0]
+                    if top in local_modules:
+                        self.assertIn(top, modules, f"{name} imports an excluded local module {top}")
+        for relative in re.findall(r"tools/[A-Za-z0-9_./-]+\.(?:py|cpp|h|inc)", files["Makefile"].decode()):
+            self.assertIn(relative, files, f"Makefile references excluded {relative}")
+        self.assertEqual({n for n in tools if Path(n).name.startswith("render_")},
+                         {"tools/render_readme_wordmark.py"})
+        self.assertFalse(any("study" in Path(n).name or "preview" in Path(n).name
+                             or Path(n).name.startswith(("capture_", "promo_")) for n in tools))
 
     def test_export_is_exact_and_refuses_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -159,7 +232,7 @@ class PackagingTests(unittest.TestCase):
             self.assertNotIn(Path(name).parts[0], {".git", ".local-state", "release", "promo", "ui_mockups", "local_sample_library"})
         self.assertIn("assets/menu_audio/source/1.wav", files)
         for name in ("docs/source-layout.md", "tools/README.md", "distribution/repository.md",
-                     "tools/start_menu_cabinet_preview.js", "tools/audit_public_source.py"):
+                     "tools/public_tools.json", "tools/audit_public_source.py"):
             self.assertIn(name, files)
         self.assertNotIn("docs/perform-order.md", files)  # retained local contract/report
         self.assertIn("assets/menu_audio/source/2.wav", files)

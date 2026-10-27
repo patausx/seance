@@ -46,8 +46,6 @@ a claim of cross-toolchain bit-reproducible application binaries.
 
 ## release gates
 
-- retain the author's confirmed inclusion of original/embedded menu recordings
-  `1.wav` and `2.wav` in the notices; do not silently assign a standalone license;
 - dependency/source and runtime-license notices reviewed against actual build;
 - final repository/download/icon/banner URLs, no placeholders in a real submission;
 - genuine device installation/audio/performance/storage/sleep acceptance;

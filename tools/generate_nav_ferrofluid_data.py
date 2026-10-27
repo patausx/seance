@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate only compact C++ geometry/lighting data; never renders media.
 
-Geometry/radii/light recipe: render_go_to_ferrofluid_motion_study.py.
+Geometry, radii and lighting are defined by this generator.
 Three subdivisions instead of four; retain the approved 30 fine-mesh tips by
 moving their nearest coarse vertices onto the original directions. Profiles
 and area-weighted normals are otherwise unchanged. Lighting uses a 64x64

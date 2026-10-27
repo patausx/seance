@@ -75,10 +75,7 @@ metadata; keep backups and use matching versions.
 application code: **GPL-3.0-or-later**. fonts: **SIL Open Font License 1.1**.
 the embedded acoustic bank and optional starter samples have their documented
 **CC0** terms. the included `THIRD_PARTY_NOTICES.md` covers provenance and
-runtime-library notices. the maintainer confirmed authorship and inclusion of
-menu recordings `1.wav` and `2.wav` and their embedded PCM in seance's source and
-binary distribution. the provenance notice records this confirmation without
-assigning a separate standalone audio license.
+runtime-library notices.
 
 ---
 
@@ -107,8 +104,6 @@ assigning a separate standalone audio license.
 
 - canonical repository: **pending — no Git remote configured**
 - public release/tag/download URLs: **pending — nothing published**
-- menu recording authorship and inclusion in seance: **confirmed by author,
-  2026-10-24; retain provenance notice**
 - exact corresponding-source/dependency package review: **pending**
 - final hardware/clean-install/update matrix: **pending**
 - publication authorization: **not granted by preparation alone**

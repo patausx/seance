@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate the approved Ring UI reference constants; never change the audio DSP.
 
-The 32ms/250Hz/.75FS raised-cosine burst matches tools/ring_review.cpp.
+The reference uses a 32ms/250Hz/.75FS raised-cosine burst.
 --check verifies the committed UI constants against the current DSP frequency LUT.
 """
 from pathlib import Path

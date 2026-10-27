@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import re
 import wave
 import zipfile
@@ -66,10 +67,7 @@ PUBLIC_TREES = (
     "core", "platform", "assets/branding", "assets/fonts", "assets/instruments",
     "assets/menu_audio", "sample_library/starter_cc0", "licenses", "distribution", ".github",
 )
-PRIVATE_TOOLS = {
-    "capture_promo_tek.py", "render_promo_tek_audio.py", "render_rec_dictaphone_study.py",
-}
-TOOL_SUFFIXES = {".c", ".cpp", ".h", ".inc", ".py", ".s", ".json", ".js"}
+PUBLIC_TOOLS_MANIFEST = "tools/public_tools.json"
 # Export only reviewed repository metadata, never arbitrary hidden local state.
 PUBLIC_HIDDEN_PARTS = {".github", ".gitignore"}
 
@@ -98,9 +96,25 @@ def public_source_payload(root: Path) -> dict[str, bytes]:
             raise FileNotFoundError(f"required public source directory: {directory}")
         for path in sorted(base.rglob("*")):
             add(path)
-    for path in sorted((root / "tools").rglob("*")):
-        if path.name not in PRIVATE_TOOLS and path.suffix in TOOL_SUFFIXES:
-            add(path)
+    # Explicit admission: local studies/previews never enter a source export
+    # merely because a developer adds a script to tools/.
+    tools = json.loads(required(root, PUBLIC_TOOLS_MANIFEST))
+    if not isinstance(tools, dict):
+        raise ValueError("invalid public tools manifest")
+    names = tools.get("files")
+    if (tools.get("schema") != 1 or not isinstance(names, list)
+            or not names or not all(isinstance(name, str) for name in names)
+            or names != sorted(set(names)) or PUBLIC_TOOLS_MANIFEST not in names):
+        raise ValueError("invalid public tools manifest")
+    for relative in names:
+        parts = Path(relative).parts
+        if (not relative.startswith("tools/") or "\\" in relative
+                or Path(relative).as_posix() != relative or ".." in parts
+                or any(part.startswith(".") for part in parts)):
+            raise ValueError("unsafe public tool path")
+        add(root / relative)
+        if relative not in files:
+            raise FileNotFoundError(f"missing public tool input: {relative}")
     # Fail closed if the important editable/embedded inputs are absent.
     for relative in (
         "assets/fonts/Gossip-MedPixel.otf", "assets/fonts/OFL.txt",

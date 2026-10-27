@@ -1,67 +1,46 @@
 # tools
 
-run commands from the repository root. [building](../BUILDING.md) covers the
-compiler and Python requirements; [source layout](../docs/source-layout.md)
-explains the main code directories.
+these are build, asset-preparation and verification tools, not application
+runtime dependencies. to use seance, install a built application as described
+in the [user guide](../GUIDE.md). to compile it, see [building](../BUILDING.md).
 
-## start here
+## build and assets
 
-| command | purpose |
-| --- | --- |
-| `make test-module-frame` | shared module geometry, source admission and bounded captions |
-| `python3 tools/test_nav_instant.py` | navigation/input ownership source checks |
-| `python3 tools/test_package_release.py` | source allowlist, export and archive regression tests |
-| `python3 tools/test_audit_public_source.py` | regression tests for the text/path/link audit |
-| `python3 tools/audit_public_source.py` | English prose, selected privacy patterns and documentation links in the exported source |
-| `make test-branding` | launcher icons, wordmark and editable source coverage |
-| `python3 tools/render_readme_wordmark.py --check` | README GIF pixels/timing, whole-mark softening and 1.5x playback from production geometry |
+- `generate_*`: checked-in fonts, title masks, branding and DSP/UI tables.
+- `pixel_wordmark.py`: editable pixel artwork and mask verification.
+- `prepare_inst_bank.py`, `prepare_menu_audio.py`: embedded audio preparation.
+- `render_readme_wordmark.py`: the current README GIF, rendered from production
+  geometry. `--check` verifies pixels/timing; `--install` explicitly rebuilds it.
+- `prepare_public_release.py`, `package_release.py`: local source export and
+  release packaging. neither command publishes anything.
 
-these are focused checks, not a full regression suite or real-device acceptance.
-some tests compile host fixtures or write ignored output; read a runner before
-using it. test names alone do not establish scope or current compatibility.
+normal application builds consume the prepared assets. do not regenerate them
+as an installation step. asset READMEs document the original inputs and tools.
 
-## modules and UI
+## checks
 
-- `test_*_core.py` runners exercise portable engine behavior for their named area.
-- `test_*_ui.py` runners build native host fixtures for the named editor/workflow.
-- `test_perform_order_core.py` and `test_perform_order_ui.py` cover order cards;
-  `test_picker_scroll.py` covers the picker scroll model.
-- `test_module_frame.py --capture` separately produces scoped native captures
-  for module UI work. the quick geometry gate does not generate them.
-- shared fixtures live beside their runners: `sequencer_test.cpp`,
-  `osc_input_dispatch_test.cpp`, `menu_stage1_test.cpp`, `*_cases.inc`,
-  `*_test.h` and small stub directories.
+```sh
+make test-module-frame
+python3 tools/test_nav_instant.py
+python3 tools/test_package_release.py
+python3 tools/test_audit_public_source.py
+python3 tools/audit_public_source.py
+make test-branding
+```
 
-files deliberately stay at their working paths: runners, includes and Makefile
-rules rely on those relative locations. do not move scripts into new folders
-without updating their imports and consumers together.
+`test_*` runners and their C++ fixtures exercise engine and UI behavior; stub
+headers provide narrow host substitutes for console APIs. these are development
+checks, not device performance or listening tests. some historical checks still
+need separately retained baselines; a missing baseline is not a pass.
 
-## assets and packaging
+## source admission
 
-- `generate_*` scripts prepare fonts, title masks, branding and other checked-in
-  data. use a generator's `--check` option where supported. regeneration is a
-  source change, not an installation step.
-- `prepare_inst_bank.py` and `prepare_menu_audio.py` prepare the documented audio
-  inputs; asset READMEs describe their tools, provenance and licenses.
-- `prepare_public_release.py --source-only --output <new-directory>` writes an
-  allowlisted source copy without building or networking.
-- without `--source-only`, that preparer builds in the new copy and packages it.
-  `package_release.py` only packages existing inputs; it does not compile them.
+`public_tools.json` explicitly lists the tools included in source exports.
+unlisted local files are never admitted by filename or extension alone. missing
+listed inputs fail the export. add a new tool only when a build, asset generator
+or supported verification path needs it, together with its dependencies.
 
-see [repository preparation](../distribution/repository.md) before making a
-private repository or publishing downloads.
-
-## studies, captures and historical helpers
-
-`render_*`, `capture_*`, `verify_*` and some older tests are retained development
-helpers. a renderer may be an authored design study, a wrapper around an actual
-native host raster, or an editorial composition; it is not necessarily a device
-capture. some need excluded local artwork, receipts, binaries or archived
-baselines and will not run from the source copy alone. archived inputs use the
-optional `.local-state/` directory, which is excluded from source exports; normal
-builds and the documented quick checks do not need it.
-
-a missing old baseline is a blocked check, not a pass. do not recreate an old
-receipt with new source hashes or regenerate historical media just to satisfy a
-helper. new verification belongs in a new output directory. keep historical
-results separate from current host, ARM and hardware results.
+standalone design renders, promo captures, browser previews and archived visual
+experiments stay in the local development workspace, outside the repository
+payload. native captures requested by a test runner remain available for scoped
+UI verification. see the [source layout](../docs/source-layout.md).

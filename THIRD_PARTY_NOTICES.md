@@ -5,11 +5,6 @@ seance application code is licensed under **GPL-3.0-or-later**; see
 below. retain their original notices and preferred editable sources in source
 releases, and include the applicable notices with binary releases.
 
-the menu recordings are the maintainer's own work. ownership and inclusion of
-originals and embedded PCM in the seance source/binary distribution were
-confirmed on 2026-10-24; see the provenance section below. this does not imply
-permission to publish the project before its separate release approval.
-
 ## fonts
 
 - **Gossip Med Pixel**, copyright 2025 Deborah Khodanovich; designer:
@@ -30,63 +25,16 @@ permission to publish the project before its separate release approval.
 
 ## embedded acoustic instrument bank
 
-all 22 selected recordings are distributed under **CC0 1.0 Universal** by their
-upstream projects. this statement is limited to the individually identified
-bank sources, not arbitrary audio in this workspace.
-
-- **VS Chamber Orchestra 2: Community Edition**, Versilian Studios / Sam Gossner
-  and Simon Dalzell. upstream sample-cutting credit: Elan Hickler / Soundemote.
-  <https://github.com/sgossner/VSCO-2-CE>, pinned commit
-  `440300901dfe9275fd84e0b7763af1f8443ae62e`.
-- the upright piano is credited to **Simon Dalzell, Ivy Audio**, winter 2015–16.
-  the upstream `Info.txt`, mapping chart, and redistribution statement are
-  retained with the source material.
-- **Versilian Community Sample Library**, Versilian Studios LLC,
-  <https://github.com/sgossner/VCSL>, pinned commit
-  `c1ea7bcc3c7309650ab0da9d15c9cd1fbc4a4c7e`, supplies the percussion hits.
-- pitch-reference SFZ metadata is pinned separately at
-  `6dd651d55dde97fd4028699be9d4481f26917891`; it is preparation provenance,
-  not a runtime SFZ loader.
-
-see [assets/instruments/README.md](assets/instruments/README.md),
-`assets/instruments/sources.json`, `assets/instruments/bank.json`, and
-[assets/instruments/licenses/](assets/instruments/licenses/) for the exact
-inputs, retained upstream credits, licenses, and processing. preserve the
-upstream requests for attribution and not selling the raw sample collection
-alongside the actual CC0 licenses; do not describe those requests as additional
-CC0 restrictions. the prepared bank is embedded in the application, so these
-notices matter even when no external sample pack is installed.
+**VSCO 2 Community Edition / VCSL**, Versilian Studios, and the included Ivy
+Audio piano recordings: **CC0 1.0 Universal**. source identities, upstream
+credits and original license texts are retained in
+[assets/instruments/](assets/instruments/README.md).
 
 ## optional starter samples
 
-the separate `sample_library/starter_cc0/` pack contains selected, converted
-recordings from the **Stargate Sample Pack**:
-<https://github.com/stargatedaw/stargate-sample-pack>.
-
-license: **CC0 1.0 Universal**. its `README.md` records the original-to-prepared
-filename mapping; `CC0-1.0.txt` reproduces the license. keep both with the optional
-pack. users do not need this pack to use the synthesizers or embedded instrument
-bank. user-imported or recorded sounds do not acquire this license.
-
-## menu recordings — author confirmation
-
-- `assets/menu_audio/source/1.wav`
-- `assets/menu_audio/source/2.wav`
-- their prepared derivatives `assets/menu_audio/menu_drone.bin` and
-  `assets/menu_audio/menu_entry.bin`
-
-the seance maintainer confirmed these are their own recordings and approved
-including the originals and embedded PCM with seance's source and binaries on
-2026-10-24, in response to the release-preparation redistribution query. only
-the WAV filenames changed; source hashes, prepared PCM and playback are unchanged.
-see [assets/menu_audio/README.md](assets/menu_audio/README.md) and the manifest
-for exact source identities and processing.
-
-this records the author's project-distribution confirmation, not a CC0
-dedication or a separately selected standalone audio license. do not infer
-other assets' license terms for these recordings. the `.bin` files are linked
-into the executable; source releases retain the original WAVs and preparation
-script. the separate instruction not to publish yet remains in force.
+the optional [starter pack](sample_library/starter_cc0/README.md) uses the
+**Stargate Sample Pack**, **CC0 1.0 Universal**. its source mapping and license
+text are included with the pack. these terms do not apply to user-imported audio.
 
 ## devkitPro runtime libraries
 

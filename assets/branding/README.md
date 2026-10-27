@@ -81,8 +81,5 @@ it does not alter assets.
 `threshold_icon_{48,24}_mask.png` and `sigil_icon_{48,24}_{rim,core}_mask.png`
 retain previous emblem designs and their authored native masks.
 
-`render_gathering_icon.py`, `render_gate_icon.py` and `render_sigil_icon.py` are
-historical renderers. Their `--install` options replace the current launcher
-icons with those older designs; they are not the current asset-check commands.
-Other `render_*_study.py` scripts create optional design previews and may require
-local study inputs that are not included in the public source package.
+historical preview/install scripts are local development material and are not
+included in the repository. use the current asset-check commands above.

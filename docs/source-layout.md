@@ -15,7 +15,7 @@ start with the [user guide](../GUIDE.md) for the instrument, or
 | `platform/3ds/` | console startup, audio output, input, views and screen rendering |
 | `assets/` | editable asset sources, generated inputs, provenance and licenses |
 | `sample_library/starter_cc0/` | optional redistributable sample pack |
-| `tools/` | host tests, generators, capture helpers and offline packaging |
+| `tools/` | admitted build/asset tools, host tests and offline packaging |
 | `licenses/` | third-party license texts |
 | `distribution/` | source dependencies, repository preparation and release checklist |
 
@@ -65,7 +65,7 @@ asset originals and build inputs. the development workspace also retains older
 design notes, test receipts, captures and device backups. these are not a public
 source dependency and are not copied wholesale into the candidate.
 
-some historical tools need those excluded baselines or design inputs; this is
-not a promise that every old renderer works in a clean checkout. the documented
-quick checks are the starting point. record missing prerequisites as blocked,
-not passed. see [contributing](../CONTRIBUTING.md) for reporting and testing scope.
+`tools/public_tools.json` explicitly admits the build, asset and verification
+tools. standalone design renders and promotional capture scripts are local-only.
+some historical checks still need excluded baselines; record missing inputs as
+blocked, not passed. see [contributing](../CONTRIBUTING.md) for testing scope.

@@ -6,7 +6,7 @@ shared vertical stems, intentional step rhythms, connected serifs and identical
 e's. This is a wordmark, NOT a general-purpose typeface. No blur, thresholding,
 vector tracing or fractional resize occurs in any shipping asset path.
 
-python3 tools/pixel_wordmark.py             # non-shipping before/after studies
+python3 tools/pixel_wordmark.py             # verify installed masks
 python3 tools/pixel_wordmark.py --install   # explicitly write 2x header + 4x splash
 python3 tools/pixel_wordmark.py --check     # compare assets with this master
 """
@@ -247,38 +247,6 @@ def painted(mask):
     return im
 
 
-def preview():
-    OUT.mkdir(parents=True, exist_ok=True)
-    from render_blackletter_splash import tx
-    with Image.open(ASSETS/'gothic_wordmark_source_mask.png') as source:
-        source = source.convert('L')
-        # Reproduce OLD fractional rasterization only for the comparison.
-        before = source.resize((344,103), Image.Resampling.LANCZOS).point(lambda p:255 if p>=128 else 0)
-    old = Image.new('L',(400,240),0)
-    old.paste(before,(28,65))
-    new = native_mask()
-    board = Image.new('RGB',(816,298),PAPER)
-    board.paste(painted(old),(0,20))
-    board.paste(painted(new),(416,20))
-    d = ImageDraw.Draw(board)
-    tx(d,14,8,'before / uneven raster',MUTED)
-    tx(d,430,8,'after / aligned pixel master',MUTED)
-    # Header: old 143px fraction vs authored 172px integer 2x. Not claimed same size.
-    old_small = before.resize((143,43),Image.Resampling.LANCZOS).point(lambda p:255 if p>=116 else 0)
-    board.paste(painted(old_small),(28,250))
-    board.paste(painted(scaled_mask(2)),(444,242))
-    board.resize((1632,596),Image.Resampling.NEAREST).save(OUT/'wordmark_before_after_2x.png')
-    painted(new).resize((800,480),Image.Resampling.NEAREST).save(OUT/'splash_pixel_static_2x.png')
-    painted(scaled_mask(2)).resize((688,208),Image.Resampling.NEAREST).save(OUT/'header_pixel_detail_4x.png')
-    # Grid proof: the actual master, enlarged only with integer nearest pixels.
-    grid = painted(original := master_mask()).resize((original.width*8,original.height*8),Image.Resampling.NEAREST)
-    gd = ImageDraw.Draw(grid)
-    for x in range(0,grid.width,8): gd.line((x,0,x,grid.height-1),fill=(174,130,151))
-    for y in range(0,grid.height,8): gd.line((0,y,grid.width-1,y),fill=(174,130,151))
-    grid.save(OUT/'pixel_master_grid.png')
-    print(OUT/'wordmark_before_after_2x.png')
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     group = parser.add_mutually_exclusive_group()
@@ -286,7 +254,7 @@ def main():
     group.add_argument('--check', action='store_true')
     args = parser.parse_args()
     rendered = verify()
-    if args.check:
+    if not args.install:
         for name, expected in rendered.items():
             with Image.open(ASSETS/name) as image:
                 assert image.size == expected.size and image.mode == 'L', name
@@ -296,8 +264,6 @@ def main():
         for name, image in rendered.items():
             image.save(ASSETS/name)
         print('installed integer-only masks; regenerate wordmark_morph_data.h and tools/wordmark_reference.h next')
-    else:
-        preview()
 
 
 if __name__ == '__main__':

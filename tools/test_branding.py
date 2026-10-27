@@ -68,8 +68,6 @@ def main():
                      'platform/3ds/wordmark_morph.h', 'tools/generate_wordmark_reference.py',
                      'tools/wordmark_reference.h'):
         assert source[f'source/{relative}'] == (ROOT/relative).read_bytes(), f'missing morph source {relative}'
-    assert 'source/tools/render_sigil_icon.py' in source, 'missing historical sigil renderer'
-    assert 'source/tools/render_gate_icon.py' in source, 'missing historical gate renderer'
     for relative in ('assets/fonts/Gossip-MedPixel.otf', 'assets/fonts/OFL.txt', 'assets/fonts/README.md'):
         assert source[f'source/{relative}'] == (ROOT/relative).read_bytes()
     assert b'SIL Open Font License' in source['source/assets/fonts/OFL.txt']

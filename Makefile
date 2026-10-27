@@ -2,13 +2,13 @@
 .SUFFIXES:
 #---------------------------------------------------------------------------------
 
-HOST_ONLY_GOALS := test-noise-core sanitize-noise-core test-noise-ui test-motor-core sanitize-motor-core test-motor-ui test-cleanup-ui test-rev-dense-ui /tmp/seance_rev_dense_ui_san test-inst test-inst-ui sanitize-inst-ui test-inst-core test-module-audit test-glitch test-glitch-core test-glitch-ui sanitize-glitch-core sanitize-glitch-ui test-arp test-arp-core test-arp-ui sanitize-arp-core sanitize-arp-ui test-menu-audio test-mouth test-mouth-core test-mouth-ui sanitize-mouth-core sanitize-mouth-ui test-theme-constructor test-main-columns test-pixel-strokes test-universal-sigils test-universal-sigils-core test-universal-sigils-ui test-visual-polish test-gran-clean-core sanitize-gran-clean-core test-gran-clean-ui test-osc-clean-core sanitize-osc-clean-core test-osc-clean-ui test-comp test-comp-core test-comp-ui test-step-locks test-fract test-fract-core test-fract-ui test-play-editor-core test-play-export test-theme-ui test-graphite-ui clean test-bounce test-bounce-core test-bounce-ui sanitize-bounce-core sanitize-bounce-ui render-bounce test test-bird test-bird-core test-bird-ui sanitize-bird-core render-bird test-shift test-shift-core test-shift-ui sanitize-shift-core test-legacy-cleanup test-fm-extended test-fm-core sanitize-fm-core test-mod-shortcut test-osc-input test-motor render-motor test-osc test-osc-ui test-osc-core render-osc test-gran test-gran-ui test-gran-core render-gran test-sample-browser test-play test-play-ui sanitize-play-ui test-play-core render-play test-transition test-sequence-banks test-patch-ui render-patch-ui test-performance render-performance test-noise render-noise test-rec-ui render-rec test-mic test-mic-ui test-mic-core render-mic test-rev-visual render-rev-visual test-strain-ui render-strain-ui test-ring-ui render-ring-ui test-tilt test-tilt-ui test-tilt-dsp test-tilt-persistence sanitize-tilt test-bit-ui test-fold-ui test-filter-ui test-delay test-delay-dsp test-delay-persistence sanitize-delay test-delay-ui test-vca test-vca-dsp test-vca-persistence sanitize-vca test-chorus test-chorus-dsp test-module-inspector sanitize-module-inspector test-clock-mod sanitize-clock-mod test-clock-mod-ui sanitize-clock-mod-ui test-nav-clock sanitize-nav-clock test-sequencer-cuts sanitize-sequencer-cuts test-sequencer-slices sanitize-sequencer-slices test-sigils-menu sanitize-sigils-menu test-fm-menu sanitize-fm-menu test-menu-stage1 sanitize-menu-stage1 test-start-menu sanitize-start-menu test-sequencer-menu sanitize-sequencer-menu test-ghost sanitize-ghost test-ghost-menu sanitize-ghost-menu test-strn sanitize-strn test-rev-controls test-rev-menu sanitize-rev-menu sanitize test-branding release-samples release-clean
+HOST_ONLY_GOALS := test-noise-core sanitize-noise-core test-noise-ui test-motor-core sanitize-motor-core test-motor-ui test-cleanup-ui test-rev-dense-ui /tmp/seance_rev_dense_ui_san test-inst test-inst-ui sanitize-inst-ui test-inst-core test-module-audit test-glitch test-glitch-core test-glitch-ui sanitize-glitch-core sanitize-glitch-ui test-arp test-arp-core test-arp-ui sanitize-arp-core sanitize-arp-ui test-menu-audio test-mouth test-mouth-core test-mouth-ui sanitize-mouth-core sanitize-mouth-ui test-theme-constructor test-main-columns test-pixel-strokes test-universal-sigils test-universal-sigils-core test-universal-sigils-ui test-visual-polish test-gran-clean-core sanitize-gran-clean-core test-gran-clean-ui test-osc-clean-core sanitize-osc-clean-core test-osc-clean-ui test-comp test-comp-core test-comp-ui test-step-locks test-fract test-fract-core test-fract-ui test-play-editor-core test-play-export test-theme-ui test-graphite-ui clean test-bounce test-bounce-core test-bounce-ui sanitize-bounce-core sanitize-bounce-ui test test-bird test-bird-core test-bird-ui sanitize-bird-core test-shift test-shift-core test-shift-ui sanitize-shift-core test-legacy-cleanup test-fm-extended test-fm-core sanitize-fm-core test-mod-shortcut test-osc-input test-motor test-osc test-osc-ui test-osc-core test-gran test-gran-ui test-gran-core test-sample-browser test-play test-play-ui sanitize-play-ui test-play-core test-transition test-sequence-banks test-patch-ui test-performance test-noise test-rec-ui test-mic test-mic-ui test-mic-core test-rev-visual test-strain-ui test-ring-ui test-tilt test-tilt-ui test-tilt-dsp test-tilt-persistence sanitize-tilt test-bit-ui test-fold-ui test-filter-ui test-delay test-delay-dsp test-delay-persistence sanitize-delay test-delay-ui test-vca test-vca-dsp test-vca-persistence sanitize-vca test-chorus test-chorus-dsp test-module-inspector sanitize-module-inspector test-clock-mod sanitize-clock-mod test-clock-mod-ui sanitize-clock-mod-ui test-nav-clock sanitize-nav-clock test-sequencer-cuts sanitize-sequencer-cuts test-sequencer-slices sanitize-sequencer-slices test-sigils-menu sanitize-sigils-menu test-fm-menu sanitize-fm-menu test-menu-stage1 sanitize-menu-stage1 test-start-menu sanitize-start-menu test-sequencer-menu sanitize-sequencer-menu test-ghost sanitize-ghost test-ghost-menu sanitize-ghost-menu test-strn sanitize-strn test-rev-controls test-rev-menu sanitize-rev-menu sanitize test-branding release-samples release-clean
 HOST_ONLY_GOALS += test-module-usability sanitize-module-usability
-HOST_ONLY_GOALS += test-bit test-bit-core sanitize-bit-core sanitize-bit-ui render-bit
-HOST_ONLY_GOALS += test-ring test-ring-core sanitize-ring-core sanitize-ring-ui render-ring
-HOST_ONLY_GOALS += test-fold test-fold-core sanitize-fold-core sanitize-fold-ui render-fold
-HOST_ONLY_GOALS += test-tilt-core sanitize-tilt-core sanitize-tilt-ui render-tilt
-HOST_ONLY_GOALS += test-strain test-strain-core sanitize-strain-core sanitize-strain-ui render-strain
+HOST_ONLY_GOALS += test-bit test-bit-core sanitize-bit-core sanitize-bit-ui
+HOST_ONLY_GOALS += test-ring test-ring-core sanitize-ring-core sanitize-ring-ui
+HOST_ONLY_GOALS += test-fold test-fold-core sanitize-fold-core sanitize-fold-ui
+HOST_ONLY_GOALS += test-tilt-core sanitize-tilt-core sanitize-tilt-ui
+HOST_ONLY_GOALS += test-strain test-strain-core sanitize-strain-core sanitize-strain-ui
 HOST_ONLY_GOALS += check-module-frame test-module-frame-contract test-module-frame
 NEEDS_DEVKIT := $(if $(MAKECMDGOALS),$(filter-out $(HOST_ONLY_GOALS),$(MAKECMDGOALS)),all)
 
@@ -175,7 +175,7 @@ test-chorus-dsp: /tmp/seance_chorus_dsp_test
 /tmp/seance_chorus_ui_test: $(SEQUENCER_TEST_SOURCES) $(CHORUS_TEST_HEADERS) Makefile
 	g++ -O2 $(SEQUENCER_TEST_FLAGS) $(SEQUENCER_TEST_SOURCES) -o $@
 
-.PHONY: test-osc test-osc-ui test-osc-core test-osc-input render-osc
+.PHONY: test-osc test-osc-ui test-osc-core test-osc-input
 test-osc: test-osc-core test-osc-clean-core test-osc-input
 
 # Exact main touch dispatch + real editor facade; no direct-controller bypass.
@@ -281,7 +281,7 @@ test-fract-ui: /tmp/seance_osc_input_test
 # Global master bounce: focused core plus real UI/IO/main-routing proof.
 BOUNCE_CORE_SOURCES := tools/bounce_core_test.cpp core/engine/engine.cpp core/engine/units.cpp core/engine/patch_io.cpp core/engine/workspace_layout.cpp core/synth/sampler.cpp core/synth/wav_loader.cpp core/synth/wav_writer.cpp
 BOUNCE_UI_SOURCES := tools/bounce_ui_test.cpp $(filter-out tools/sequencer_test.cpp,$(SEQUENCER_TEST_SOURCES)) platform/3ds/ui_bounce.cpp
-.PHONY: test-bounce test-bounce-core test-bounce-ui sanitize-bounce-core sanitize-bounce-ui render-bounce
+.PHONY: test-bounce test-bounce-core test-bounce-ui sanitize-bounce-core sanitize-bounce-ui
 test-bounce: test-bounce-core test-bounce-ui
 	python3 tools/test_nav_instant.py
 
@@ -304,11 +304,7 @@ sanitize-bounce-core:
 	ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 /tmp/seance_bounce_core_san
 
 # Requires a current passing proof; no rebuild/tests, preserve each new capture.
-render-bounce:
-	python3 tools/test_bounce_ribbon.py --capture-only
-	python3 tools/render_bounce_ribbon_runtime.py --capture-local
-
-.PHONY: test-bird test-bird-core test-bird-ui sanitize-bird-core render-bird
+.PHONY: test-bird test-bird-core test-bird-ui sanitize-bird-core
 test-bird: test-bird-core test-bird-ui
 
 test-bird-ui: /tmp/seance_osc_input_test
@@ -326,9 +322,6 @@ test-bird-core: /tmp/seance_bird_core_test
 sanitize-bird-core:
 	g++ -O1 -g -std=gnu++17 -Wall -Wextra -Icore -fsanitize=address,undefined -fno-omit-frame-pointer $(BIRD_CORE_SOURCES) -o /tmp/seance_bird_core_san
 	ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 /tmp/seance_bird_core_san
-
-render-bird: /tmp/seance_osc_input_test
-	python3 tools/render_bird_runtime.py
 
 .PHONY: test-shift test-shift-core test-shift-ui sanitize-shift-core
 test-shift: test-shift-core test-shift-ui
@@ -393,10 +386,7 @@ test-osc-clean-ui: /tmp/seance_osc_input_test
 
 test-osc-ui: test-osc-input
 
-render-osc: /tmp/seance_osc_input_test
-	python3 tools/render_osc_runtime.py
-
-.PHONY: test-gran test-gran-ui test-gran-core render-gran
+.PHONY: test-gran test-gran-ui test-gran-core
 test-gran: test-gran-core test-gran-clean-core test-gran-clean-ui
 
 test-gran-core: /tmp/seance_gran_visual_core_test
@@ -421,10 +411,7 @@ test-gran-clean-ui: /tmp/seance_osc_input_test
 test-gran-ui: /tmp/seance_osc_input_test
 	/tmp/seance_osc_input_test --gran-only
 
-render-gran: /tmp/seance_chorus_ui_test
-	python3 tools/render_gran_runtime.py
-
-.PHONY: test-play test-play-ui sanitize-play-ui test-play-core test-play-editor-core test-play-export render-play
+.PHONY: test-play test-play-ui sanitize-play-ui test-play-core test-play-editor-core test-play-export
 test-play: test-play-core test-play-ui test-play-editor-core test-play-export
 
 test-play-editor-core:
@@ -444,10 +431,6 @@ test-play-ui sanitize-play-ui:
 	python3 tools/test_play_modes_ui.py
 
 # Requires a successful current focused proof; no implicit tests or compilation.
-render-play:
-	python3 tools/test_play_modes_ui.py --capture-only
-	python3 tools/render_play_modes_runtime.py
-
 .PHONY: test-transition
 test-transition: /tmp/seance_chorus_ui_test
 	/tmp/seance_chorus_ui_test --transition-only
@@ -480,14 +463,11 @@ sanitize-delay:
 test-delay-ui: /tmp/seance_chorus_ui_test
 	/tmp/seance_chorus_ui_test --delay-only
 
-.PHONY: test-performance render-performance
+.PHONY: test-performance
 test-performance: /tmp/seance_chorus_ui_test
 	/tmp/seance_chorus_ui_test --performance-only
 
-render-performance: /tmp/seance_chorus_ui_test
-	python3 tools/render_performance_runtime.py
-
-.PHONY: test-motor test-motor-core sanitize-motor-core test-motor-ui render-motor
+.PHONY: test-motor test-motor-core sanitize-motor-core test-motor-ui
 # Current extended MOTOR. Historical September UI fixtures/receipts stay frozen.
 test-motor: test-motor-core test-motor-ui
 test-motor-core:
@@ -496,9 +476,7 @@ sanitize-motor-core:
 	python3 tools/test_motor_extended_core.py --sanitized
 test-motor-ui:
 	python3 tools/test_motor_extended_ui.py
-render-motor: test-motor-ui
-
-.PHONY: test-noise test-noise-core sanitize-noise-core test-noise-ui render-noise
+.PHONY: test-noise test-noise-core sanitize-noise-core test-noise-ui
 # Current extended NOISE; historical eight-control fixtures stay frozen.
 test-noise: test-noise-core test-noise-ui
 test-noise-core:
@@ -507,17 +485,12 @@ sanitize-noise-core:
 	python3 tools/test_noise_extended_core.py --sanitized
 test-noise-ui:
 	python3 tools/test_noise_extended_ui.py
-render-noise: test-noise-ui
-
-.PHONY: test-rec-ui render-rec
+.PHONY: test-rec-ui
 test-rec-ui: /tmp/seance_chorus_ui_test
 	/tmp/seance_chorus_ui_test --rec-only
 	g++ -std=gnu++17 -Wall -Wextra -Itools/sequencer_test_stubs -Icore -fsyntax-only platform/3ds/ui_editor.cpp
 
-render-rec: /tmp/seance_chorus_ui_test
-	python3 tools/render_rec_runtime.py
-
-.PHONY: test-mic test-mic-ui test-mic-core render-mic
+.PHONY: test-mic test-mic-ui test-mic-core
 test-mic: test-mic-core test-mic-ui
 
 MIC_CORE_SOURCES := tools/mic_core_test.cpp core/engine/engine.cpp core/engine/units.cpp core/engine/patch_io.cpp core/engine/workspace_layout.cpp core/synth/sampler.cpp core/synth/wav_loader.cpp
@@ -531,10 +504,7 @@ test-mic-ui: /tmp/seance_chorus_ui_test
 	/tmp/seance_chorus_ui_test --mic-only
 	g++ -std=gnu++17 -Wall -Wextra -Itools/sequencer_test_stubs -Icore -fsyntax-only platform/3ds/ui_editor.cpp
 
-render-mic: /tmp/seance_chorus_ui_test
-	python3 tools/render_mic_runtime.py
-
-.PHONY: test-strain test-strain-core sanitize-strain-core test-strain-ui sanitize-strain-ui render-strain render-strain-ui
+.PHONY: test-strain test-strain-core sanitize-strain-core test-strain-ui sanitize-strain-ui
 # Current extended Strain. Original six-control tests/receipts remain historical.
 test-strain: test-strain-core test-strain-ui
 test-strain-core:
@@ -545,9 +515,7 @@ test-strain-ui:
 	python3 tools/test_strain_extended_ui.py
 sanitize-strain-ui:
 	python3 tools/test_strain_extended_ui.py --mode sanitized
-render-strain render-strain-ui: test-strain-ui
-
-.PHONY: test-ring test-ring-core sanitize-ring-core test-ring-ui sanitize-ring-ui render-ring render-ring-ui
+.PHONY: test-ring test-ring-core sanitize-ring-core test-ring-ui sanitize-ring-ui
 # Current extended Ring; original fixtures and receipts remain historical.
 test-ring: test-ring-core test-ring-ui
 test-ring-core:
@@ -558,9 +526,7 @@ test-ring-ui:
 	python3 tools/test_ring_extended_ui.py
 sanitize-ring-ui:
 	python3 tools/test_ring_extended_ui.py --mode sanitized
-render-ring render-ring-ui: test-ring-ui
-
-.PHONY: test-tilt test-tilt-core test-tilt-ui test-tilt-dsp test-tilt-persistence sanitize-tilt sanitize-tilt-core sanitize-tilt-ui render-tilt
+.PHONY: test-tilt test-tilt-core test-tilt-ui test-tilt-dsp test-tilt-persistence sanitize-tilt sanitize-tilt-core sanitize-tilt-ui
 # Current reciprocal revision; historical Clear/legacy fixtures remain retained.
 test-tilt: test-tilt-core test-tilt-ui
 test-tilt-core:
@@ -573,9 +539,7 @@ sanitize-tilt-core:
 	python3 tools/test_tilt_extended_core.py --sanitized
 sanitize-tilt-ui:
 	python3 tools/test_tilt_extended_ui.py --mode sanitized
-render-tilt: test-tilt-ui
-
-.PHONY: test-bit test-bit-core sanitize-bit-core test-bit-ui sanitize-bit-ui render-bit
+.PHONY: test-bit test-bit-core sanitize-bit-core test-bit-ui sanitize-bit-ui
 # Current extended BIT; original7-param fixtures/receipts remain historical.
 test-bit: test-bit-core test-bit-ui
 test-bit-core:
@@ -586,10 +550,8 @@ test-bit-ui:
 	python3 tools/test_bit_extended_ui.py
 sanitize-bit-ui:
 	python3 tools/test_bit_extended_ui.py --mode sanitized
-render-bit: test-bit-ui
-
 # Versioned Fold: frozen legacy PCM, extended DSP/storage and actual native UI.
-.PHONY: test-fold test-fold-core sanitize-fold-core test-fold-ui sanitize-fold-ui render-fold
+.PHONY: test-fold test-fold-core sanitize-fold-core test-fold-ui sanitize-fold-ui
 test-fold: test-fold-core test-fold-ui
 test-fold-core:
 	python3 tools/test_fold_extended_core.py
@@ -599,25 +561,19 @@ test-fold-ui:
 	python3 tools/test_fold_extended_ui.py
 sanitize-fold-ui:
 	python3 tools/test_fold_extended_ui.py --mode sanitized
-render-fold: test-fold-ui
-
 # Approved six-module interaction fixes, current real-main host proof only.
 .PHONY: test-module-usability sanitize-module-usability
 test-module-usability sanitize-module-usability:
 	python3 tools/test_module_usability_ui.py
 
 # Filter: current real-main log swipe + frozen dual-screen response, isolated proof.
-.PHONY: test-filter-ui sanitize-filter-ui render-filter
+.PHONY: test-filter-ui sanitize-filter-ui
 test-filter-ui sanitize-filter-ui:
 	python3 tools/test_filter_interaction_ui.py
 
-render-filter:
-	python3 tools/test_filter_interaction_ui.py --capture-only
-	python3 tools/render_filter_interaction_runtime.py
-
 # Extended VCA plus the retained independent old AD/AHD/storage oracles.
 VCA_PERSIST_SOURCES := tools/vca_persistence_test.cpp core/engine/engine.cpp core/engine/units.cpp core/engine/patch_io.cpp core/engine/workspace_layout.cpp core/synth/sampler.cpp core/synth/wav_loader.cpp
-.PHONY: test-vca test-vca-core test-vca-ui test-vca-dsp test-vca-persistence sanitize-vca render-vca render-vca-ui
+.PHONY: test-vca test-vca-core test-vca-ui test-vca-dsp test-vca-persistence sanitize-vca
 test-vca: test-vca-dsp test-vca-persistence test-vca-core test-vca-ui
 
 test-vca-core:
@@ -625,8 +581,6 @@ test-vca-core:
 
 test-vca-ui:
 	python3 tools/test_vca_extended_ui.py
-
-render-vca render-vca-ui: test-vca-ui
 
 test-vca-dsp: /tmp/seance_vca_dsp_test
 	/tmp/seance_vca_dsp_test
@@ -719,7 +673,7 @@ test-sample-browser: /tmp/seance_sample_browser_test
 	g++ -O2 $(MENU_STAGE1_FLAGS) -DSEANCE_SAMPLE_BROWSER_TEST $(MENU_STAGE1_SOURCES) -o $@
 
 # Small patch browser restyle: exact main.cpp functions, existing raster harness.
-.PHONY: test-patch-ui render-patch-ui
+.PHONY: test-patch-ui
 test-patch-ui: /tmp/seance_patch_menu_test
 	python3 tools/generate_menu_labels.py --check
 	/tmp/seance_patch_menu_test --patch-menu-only
@@ -761,9 +715,6 @@ test-theme-ui:
 	python3 tools/patch_menu_runtime.py --extract
 	g++ -O2 $(MENU_STAGE1_FLAGS) -DSEANCE_PATCH_MENU_TEST -DSEANCE_SAMPLE_BROWSER_TEST \
 	  -I/tmp/seance_patch_menu_native $(MENU_STAGE1_SOURCES) -o $@
-
-render-patch-ui: /tmp/seance_patch_menu_test
-	python3 tools/patch_menu_runtime.py
 
 # Current v9-v11 main-screen acceptance; no media export or full-suite run.
 .PHONY: test-main-columns
@@ -889,7 +840,7 @@ sanitize-fm-menu:
 	ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 /tmp/seance_fm_menu_san --fm-only
 
 # REV: dense+legacy DSP is separate; these targets cover only the real REV UI.
-.PHONY: test-rev-visual render-rev-visual test-rev-controls test-rev-menu sanitize-rev-menu test-rev-dense-ui
+.PHONY: test-rev-visual test-rev-controls test-rev-menu sanitize-rev-menu test-rev-dense-ui
 /tmp/seance_rev_dense_ui_san: $(OSC_INPUT_SOURCES) tools/sequencer_test.cpp tools/extract_osc_input.py platform/3ds/main.cpp $(CHORUS_TEST_HEADERS) Makefile
 	python3 tools/extract_osc_input.py
 	g++ -O1 -g $(SEQUENCER_TEST_FLAGS) -DSEANCE_REAL_EDITOR -I/tmp/seance_osc_input_native \
@@ -899,9 +850,6 @@ test-rev-dense-ui:
 	python3 tools/test_reverb_dense_ui.py
 
 test-rev-controls test-rev-menu sanitize-rev-menu test-rev-visual: test-rev-dense-ui
-
-render-rev-visual: /tmp/seance_rev_dense_ui_san
-	python3 tools/render_reverb_dense.py --binary $<
 
 # Focused STRN real UI/controllers only; no unrelated engine/branding suites.
 .PHONY: test-strn sanitize-strn

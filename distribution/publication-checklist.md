@@ -8,14 +8,8 @@ separate version decision.
 
 ## blocking rights review
 
-- [x] the maintainer confirmed authorship and permission to include the originals
-  `assets/menu_audio/source/1.wav` and `2.wav`, their prepared
-  `menu_drone.bin` / `menu_entry.bin`, and embedded copies in seance source/binary
-  distribution on 2026-10-24. provenance is recorded in the asset README and
-  third-party notices. only names changed; sound and PCM hashes are unchanged.
-- [ ] retain that confirmation in final notices and review appropriate audio
-  license terms alongside the overall corresponding-source review. a separate
-  standalone audio license/CC0 dedication was not selected by the author.
+- [ ] review bundled asset distribution terms alongside the overall
+  corresponding-source review.
 - [ ] preserve the OFL text and font copyright/reserved-name notices, original
   OTF, derivative source/generators, and binary-package font notice.
 - [ ] retain exact CC0 instrument inputs, manifests, upstream credits/license
