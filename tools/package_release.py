@@ -135,6 +135,7 @@ def build_main(root: Path, version: str) -> None:
         "seance.cia": required(root, "seance.cia"),
         "GUIDE.md": required(root, "GUIDE.md"),
         "README.md": required(root, "README.md"),
+        "assets/branding/readme-wordmark.gif": required(root, "assets/branding/readme-wordmark.gif"),
         "LICENSE": required(root, "LICENSE"),
         "3ds/seance/licenses/Seance-Note-OFL.txt": required(root, "assets/fonts/OFL.txt"),
         "3ds/seance/licenses/Seance-Note-README.md": required(root, "assets/fonts/README.md"),

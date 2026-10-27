@@ -48,6 +48,23 @@ assets. Use them only when intentionally changing the artwork. After changing
 the English pixel master, regenerate both the morph data and test reference.
 Asset checks do not establish console rendering speed or launcher cache behavior.
 
+## readme animation
+
+`readme-wordmark.gif` presents the production wordmark morph on a flat
+`#212830` background with `#f4f4f4` ink. it is branding artwork, not a console
+capture. the runtime logo and its 48-second cycle are unchanged. the GIF samples
+at 10 fps, coalesces identical holds, and uses exact nearest-neighbor 2x pixels
+on an 800x320 canvas. no uploaded reference is needed to regenerate it.
+
+```sh
+python3 tools/render_readme_wordmark.py --install
+python3 tools/render_readme_wordmark.py --check
+```
+
+Python 3, Pillow and a C++17 host compiler are required. `--check` compares the
+decoded GIF pixels and timing against the production C++ renderer and checks all
+four endpoints against the editable wordmark artwork. it does not alter assets.
+
 ## retained references and older studies
 
 `gothic_wordmark_source_mask.png` is the earlier extracted lettering reference.

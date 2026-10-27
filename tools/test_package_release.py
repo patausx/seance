@@ -109,6 +109,25 @@ class PackagingTests(unittest.TestCase):
                     self.assertFalse(info.filename.startswith("/"))
                     self.assertNotIn("..", Path(info.filename).parts)
 
+    def test_application_archive_keeps_readme_animation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, contextlib.redirect_stdout(io.StringIO()):
+            root = Path(temporary)
+            self.fixture(root)
+            for name, data in {
+                "seance.3dsx": b"test-only application fixture",
+                "seance.cia": b"test-only installer fixture",
+                "assets/fonts/README.md": b"font notices fixture",
+                "assets/branding/readme-wordmark.gif": b"GIF89a-test-only-fixture",
+            }.items():
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+            pkg.build_main(root, "test")
+            with zipfile.ZipFile(root / "release/seance-test.zip") as archive:
+                self.assertEqual(archive.read("assets/branding/readme-wordmark.gif"),
+                                 (root / "assets/branding/readme-wordmark.gif").read_bytes())
+                self.assertEqual(archive.read("GUIDE.md"), (root / "GUIDE.md").read_bytes())
+
     def test_unsafe_archive_names_refused(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             for name in ("../secret", "/absolute", "source/../../escape", "source\\escape"):

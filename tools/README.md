@@ -14,6 +14,7 @@ explains the main code directories.
 | `python3 tools/test_audit_public_source.py` | regression tests for the text/path/link audit |
 | `python3 tools/audit_public_source.py` | English prose, selected privacy patterns and documentation links in the exported source |
 | `make test-branding` | launcher icons, wordmark and editable source coverage |
+| `python3 tools/render_readme_wordmark.py --check` | README GIF pixels/timing against the production wordmark renderer |
 
 these are focused checks, not a full regression suite or real-device acceptance.
 some tests compile host fixtures or write ignored output; read a runner before

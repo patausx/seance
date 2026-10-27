@@ -1,10 +1,11 @@
 # seance guide
 
-user guide for `0.1.0-alpha.1`. start with [installation](README.md#installation).
+user guide for `0.1.0-alpha.1`. start with [installation](#installation).
 projects are saved explicitly; keep a backup of `sdmc:/3ds/seance/`.
 
 ## contents
 
+- [installation](#installation) and [controls at a glance](#controls-at-a-glance)
 - [first session](#first-session): a sound, a rhythm and a saved project
 - [navigation](#startup-and-navigation) and [starter patch](#first-sound)
 - [chains and modules](#chains-and-modules), [sigils](#sigils) and modulation
@@ -12,6 +13,68 @@ projects are saved explicitly; keep a backup of `sdmc:/3ds/seance/`.
 - [samples](#play-and-samples), [recording](#microphone-and-recording) and [bounce](#bounce)
 - [perform, banks and order](#perform)
 - [projects and backups](#projects-and-data-safety), [troubleshooting](#troubleshooting)
+
+## installation
+
+### homebrew launcher (`.3dsx`)
+
+1. use a 3DS/2DS-family system already configured to run homebrew.
+2. from an application ZIP, copy its `3ds/` folder to the root of the SD card.
+   for a standalone build, put `seance.3dsx` at
+   `sdmc:/3ds/seance/seance.3dsx`.
+3. open seance from the Homebrew Launcher.
+
+### home menu (`.cia`)
+
+if a CIA is supplied with the release, install it with FBI on a system with custom
+firmware. CIA and 3DSX are alternative launch methods; you do not need both.
+keep the accompanying license notices when redistributing either format.
+
+### sound and files
+
+- audio requires DSP firmware. if you see **NO DSP**, use a DSP firmware dumper
+  such as DSP1 on your own console. firmware is not included.
+- built-in instruments and the starter patch work without an external sample pack.
+  place your own WAV files in `sdmc:/3ds/seance/samples/`.
+- projects, samples, recordings and settings live in `sdmc:/3ds/seance/`.
+  **back up this folder before updating.** replace the application, not your data.
+- audio runs at 32 kHz. input supports mono/stereo PCM WAV at 8/16/24/32-bit
+  and 32-bit float, up to 20 seconds per load. MP3, OGG and ADPCM are not supported.
+- **Old 3DS has not been tested; performance on older models is unknown.**
+  New 3DS uses its CPU speedup, but demanding patches can still exceed the audio budget.
+
+there is no binary release attached to the initial source import. see
+[building](BUILDING.md) if you are working from source.
+
+## controls at a glance
+
+controls follow the current screen. a menu or held modifier owns its input;
+close it before editing the view underneath.
+
+| input | action |
+| --- | --- |
+| stylus | select, draw and edit the visible controls |
+| d-pad | move focus or change the focused choice/value, depending on the screen |
+| `A` | trigger a chain or accept; increase the focused value in the sequencer |
+| `B` | back / close; a short press decreases a sequencer value on release |
+| `X` | the current view's action; open the selected module from Chains |
+| `Y` | Chains ↔ Sigils; in the sequencer, listen to the focused step instead |
+| `SELECT` | open **go to**, including projects, tempo / swing and exit |
+| `START` | play / stop the sequencer |
+| `R + START` | stop and reset transport |
+| hold `L` in a module | edit modulation for the selected parameter |
+| `R` in Chains | open the selected module's **more** actions |
+| tap `R` in the sequencer | cycle the step-editing mode |
+| hold `R` in the sequencer | open the mode circle; choose with the circle pad or a shortcut, then release `R` to commit |
+| `R + B` in the sequencer | cancel mode selection |
+| hold `B` in the sequencer | open bank / length / direction controls |
+| `L + up/down` in the sequencer | change the current value for the explicit step group |
+| `L + B` in the sequencer | deselect the step group |
+| `ZR` in Chains | undo the latest structural delete/reorder while it is still current |
+| hold `L` with a performance fader | temporary change; release `L` to restore the anchor |
+
+see [mode shortcuts](#mode-shortcuts) for all eight `R` shortcuts,
+and [perform](#perform) for live mixer, scenes, bank transitions and order.
 
 ## first session
 
@@ -154,8 +217,9 @@ GRAN's crowded header has no rand word: use **L → rand** there.
 
 ## sigils
 
-there are **eight sources, a–h**. tap the large letter to select one. draw with
-the stylus; **undo** swaps its last stroke/drawn state.
+the eight **LFOs (sigils), a–h**, combine hand-drawn and generated modulation.
+tap the large letter to select one. draw with the stylus; **undo** swaps its last
+stroke/drawn state.
 
 - **shape** chooses drawn, sine, triangle, saw, square, random or smooth. choosing
   a generated shape preserves the drawing for later.
@@ -184,7 +248,9 @@ separate. no separate full-screen focus view is needed.
 ### mode and single-step editing
 
 - tap **R** to cycle **trig / note / level / retrig / when / time / lock / slice**.
-  hold R to open the mode circle; choose, then release to commit. **R+B** cancels.
+  **hold R** to open the mode circle. move the circle pad toward a mode, then
+  release **R** to commit; **R+B** cancels. returning the pad to center keeps
+  the last candidate. the [mode shortcuts](#mode-shortcuts) are another way to choose.
 - **A** increases/enables the focused step's current value.
 - **short B**, on release, decreases/disables it. holding B opens the bank /
   length / direction controls and does not also apply a minus.
@@ -195,6 +261,22 @@ separate. no separate full-screen focus view is needed.
   value vocabularies; use the upper readout for the whole value.
 - **START** plays/stops; **R+START** stops/resets. **Y does not leave the score**;
   use **SELECT / go to** to change views.
+
+### mode shortcuts
+
+hold **R**, press one of these buttons, then release **R** to commit. these chords
+choose a mode; they do not also edit or audition a step.
+
+| chord | mode |
+| --- | --- |
+| `R + X` | trig |
+| `R + up` | note |
+| `R + right` | level |
+| `R + down` | retrig |
+| `R + Y` | when |
+| `R + left` | time |
+| `R + A` | lock |
+| `R + L` | slice |
 
 ### groups and clipboard
 
@@ -379,7 +461,8 @@ binary. do not power off during storage operations.
 - **silence:** lower then raise volume carefully; check mute/bypass, sample
   assignment, VCA trigger and source-before-processor order.
 - **glitches:** reduce dense effects/feedback/voices; New 3DS uses startup CPU
-  speedup. Old/New 3DS performance and sleep/wake need real-device testing.
+  speedup. Old 3DS has not been tested; older-model performance is unknown.
+  sleep/wake and sustained performance need real-device testing.
 - **save refused:** finish recording, leave modal editors, check SD free space
   and permissions, then retry without discarding the current patch.
 - **report a bug:** include the version, console model, CIA/3DSX, reproduction
