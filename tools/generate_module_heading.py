@@ -5,7 +5,7 @@ import hashlib
 import re
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
-from check_module_frame_contract import kind_ids, same_members
+from module_catalogue import kind_ids, same_members
 
 ROOT = Path(__file__).resolve().parents[1]
 FONT = ROOT / 'assets/fonts/Gossip-MedPixel.otf'

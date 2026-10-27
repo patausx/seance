@@ -26,8 +26,6 @@ font dependency on 3ds. checked-in bitmap header is sufficient to build.
 - bottom step labels remain ordinary project 6x8; splash is untouched.
 
 keep this notice and `OFL.txt` alongside packaged binaries and derived font data.
-see `research/gossip/README.md` for the original study; its previews predate this
-runtime integration and are not the implementation source.
 
 ## seance menu / startup labels
 

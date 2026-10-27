@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate the approved Strain UI test burst, not an audio DSP table.
 
-Exact source of tools/strain_review.cpp: .75fs/250hz, 2ms raised-cosine
+Reference signal: .75fs/250hz, 2ms raised-cosine
 attack + 14ms release. The runtime supplies the following 16ms silence.
 --check verifies constants without changing any file.
 """

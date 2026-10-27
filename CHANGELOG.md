@@ -1,10 +1,8 @@
 # release overview
 
-## 0.1.0-alpha.1 — first public-source candidate
+## 0.1.0-alpha.1 — source alpha
 
-prepared locally; **not published**. this version is the existing project
-identity, not an assertion of a new stable release. the release date and public
-repository/download URLs are assigned only at actual publication.
+a development version, not a stable release or a hardware compatibility claim.
 
 ### instrument
 
@@ -21,19 +19,12 @@ repository/download URLs are assigned only at actual publication.
 - smooth stylus scrolling in the module picker and an early New 3DS CPU speedup;
 - 128-slot project library, recent-project startup menu and palette editor.
 
-### source release preparation
+### source layout
 
-- current installation and user guides, build instructions and license notices;
-- allowlisted clean source export, including `.inc` implementation files,
-  generated data and editable asset inputs;
-- separate application/source/starter-sample ZIPs, standalone 3DSX/CIA assets
-  and SHA-256 inventories;
-- calm English overview, task-based guide and current performance workflows;
-- clean source layout/tools guides and a private-first repository review workflow;
-- an offline source-language/privacy/link audit with deliberate artwork and
-  Unicode filename exceptions;
-- local publication checklist and Universal-DB technical reference. no automated
-  repository creation, release upload, store submission or device installation.
+- application code, checked-in resources and editable originals;
+- optional host checks isolated in `tests/`;
+- current resource generators in `tools/`, release packaging in `scripts/`;
+- no design-study renders, promotional captures or local release receipts.
 
 ### known limits and publication gates
 
@@ -42,8 +33,6 @@ storage/sleep behavior require console testing. user saves and recordings should
 be backed up. DSP firmware is not distributed. dense patches can exceed the
 console's practical budget.
 
-menu-recording authorship and inclusion were confirmed; the WAVs are named
-`1.wav` and `2.wav` without changing their sound. runtime/source review,
-final public URLs and publication approval remain gates;
-consult `distribution/publication-checklist.md` for the precise current status.
-this overview describes available features, **not** a passed-test receipt.
+this overview describes available features, not a passed-test receipt. see
+[building](BUILDING.md) for checks and [third-party notices](THIRD_PARTY_NOTICES.md)
+for dependency and resource terms.

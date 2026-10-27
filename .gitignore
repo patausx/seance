@@ -39,7 +39,7 @@ hardware_shots/
 ui_mockups/
 seance_freeform_patch_workspace.png
 seance_refactor_ui_concept.png
-tools/__pycache__/
+__pycache__/
 *.pyc
 chokistream.ini
 

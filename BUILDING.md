@@ -1,133 +1,68 @@
 # building seance
 
-release identity comes from `VERSION` (`0.1.0-alpha.1`). the checked-in generated
-font, instrument bank and menu PCM are build inputs, not optional downloads.
-read [third-party notices](THIRD_PARTY_NOTICES.md) before redistribution.
-
 ## requirements
 
-- devkitPro's **devkitARM**, `3ds-dev`, libctru, citro2d and citro3d;
-- GNU make, a POSIX shell and enough disk space for the build;
-- **makerom** for a CIA; a normal 3DSX build does not need makerom;
-- Python 3.10+ for packaging/host checks; g++ for host tests; Pillow for image checks;
-- regeneration of original audio additionally needs tools named by each asset's
-  preparation script. it is not part of a normal application build.
+- devkitPro devkitARM, the `3ds-dev` group, libctru, citro2d and citro3d;
+- GNU make and a POSIX shell;
+- makerom only for CIA/CCI output.
 
-use devkitPro's supported installer/package manager for your system, then install
-its `3ds-dev` group. for example, in an existing devkitPro setup:
+in an existing devkitPro installation:
 
 ```sh
 sudo dkp-pacman -S --needed 3ds-dev
 export DEVKITPRO=/opt/devkitpro
 export DEVKITARM="$DEVKITPRO/devkitARM"
 export PATH="$DEVKITPRO/tools/bin:$DEVKITARM/bin:$PATH"
-```
-
-the local candidate was prepared against libctru **2.7.0-1**, citro2d **1.7.0-1**
-and citro3d **1.7.1-2**. exact dependency source archives and package recipes belong
-in `distribution/dependency-sources/`; consult its manifest for hashes and build
-commands. installing a newer toolchain can change output and is not a promise of
-bit-identical binaries. the local build receipt records actual tool versions.
-
-## application
-
-from a clean source directory:
-
-```sh
 make -j2
-# outputs seance.elf, seance.smdh and seance.3dsx
-
-make -j2 cia MAKEROM=/absolute/path/to/makerom
-# also outputs seance.cia
 ```
 
-`MAKEROM` defaults to `$HOME/tools/3ds/makerom`; override it explicitly if yours is
-elsewhere. the current CIA path needs `smdhtool` from devkitPro, not bannertool.
-`seance.rsf` contains the existing homebrew title identity; do not invent another
-identity for an update of the same application. no proprietary SDK is required.
-
-both formats embed the same current engine and assets. the CIA does not bundle
-user projects, samples or DSP firmware. do not use `make run` or `make send` when
-you only intend a local build; those are not needed for packaging.
-
-## local release kit (no publication)
+this produces `seance.elf`, `seance.smdh` and `seance.3dsx`. for a CIA:
 
 ```sh
-python3 tools/prepare_public_release.py --output release/publication-my-candidate
+make -j2 cia MAKEROM=/path/to/makerom
 ```
 
-choose a **new, nonexistent output directory**. this command:
+`MAKEROM` defaults to `$HOME/tools/3ds/makerom`; CIA packaging uses devkitPro's
+`smdhtool`, not bannertool. `seance.rsf` holds the application's title identity.
+`VERSION` supplies the version string. keep the existing identity for updates.
 
-1. allowlists the public source instead of copying the workspace or git history;
-2. copies it to `source/`, with complete `.inc` files and editable asset sources;
-3. builds the 3DSX and CIA **there**, never using root binaries or old objects;
-4. creates separate application, source and optional starter-sample ZIPs;
-5. copies standalone 3DSX/CIA downloads and writes SHA-256 checksums and a local
-   build receipt. nothing is uploaded, installed, committed, tagged or pushed.
+normal builds use checked-in font data, artwork, instrument samples and menu
+PCM. they require no Python, Pillow, ffmpeg, test files or downloaded sample
+pack. `make clean` removes local application output. `make run` / `make send`
+are optional network deployment commands; they are not build steps.
 
-if makerom is elsewhere, pass `--makerom /absolute/path/to/makerom`. use
-`--source-only` to inspect the exported source without building. source export
-includes the asset originals and prepared build inputs. source export is local
-preparation, **not permission to publish**.
-output logs/receipts are local; only the reviewed files in `github-release/`
-are prospective downloadable assets.
+## checks
 
-archives have sorted names, fixed ZIP timestamps and embedded checksums. this
-makes repeated packaging of **identical inputs** deterministic; it does not claim
-cross-machine reproducible compiler output. `SHA256SUMS.txt` inside a ZIP covers
-its other entries, not itself.
-
-for an already-built clean source tree, the lower-level packager is:
+optional host checks live in [tests/](tests/README.md), not the application build:
 
 ```sh
-python3 tools/package_release.py --main
-python3 tools/package_release.py --source
-python3 tools/package_release.py --samples
-```
-
-it never compiles. do not run it against stale root artifacts and call those a
-new build. version overrides must equal `VERSION`; change the canonical version
-before a deliberately versioned release and build again.
-
-## host checks
-
-```sh
-python3 tools/test_package_release.py
-python3 tools/test_audit_public_source.py
-python3 tools/audit_public_source.py
 make test-module-frame
-python3 tools/test_nav_instant.py
+python3 tests/test_nav_instant.py
+python3 tests/test_package_release.py
+python3 tests/test_audit_public_source.py
 make test-branding
 ```
 
-these cover packaging and selected current UI contracts, not every engine path.
-several older targets in the Makefile are historical harnesses that require
-private archived baselines; the source release does not include past binaries,
-private captures or those baselines. a missing historical fixture is not a pass.
+these need Python 3.10+ and a host C++ compiler; image checks also need Pillow,
+and sanitizer targets need ASan/UBSan support. they are focused checks, not a
+full regression or device-performance guarantee.
 
-host tests may generate ignored files in `ui_mockups/`, `release/` or `/tmp`.
-sanitizer targets need an ASan/UBSan-capable compiler. normal ARM builds do not
-need Pillow, ffmpeg or those historical test outputs. they do need Python 3
-for the source-only module-frame preflight.
+## resources and release packages
 
-## generated assets
+[tools/](tools/README.md) contains only asset generators. regenerate deliberately
+when changing resources, not after unpacking the source. asset READMEs retain
+original inputs, licenses and commands.
 
-- `tools/generate_circle_logo.py` and `generate_wordmark_reference.py`: branding;
-- font generators and `assets/fonts/`: bitmap derivatives and original OFL face;
-- instrument preparation tool and `assets/instruments/`: original CC0 sources,
-  mappings and generated acoustic bank;
-- `tools/prepare_menu_audio.py` and `assets/menu_audio/`: original recordings,
-  prepared PCM and conversion metadata. permission is still required to publish
-  either original or generated forms.
+[scripts/](scripts/README.md) contains source export and packaging commands.
+release scripts need Python 3.10+; rebuilding menu audio additionally needs the
+conversion tools named by its generator. source export and packaging never
+publish, upload or install anything.
 
-regenerating assets is a deliberate source change. do it before the final build,
-check its diff, then rerun relevant checks. **do not regenerate** merely because
-you unpacked the source ZIP.
+review [third-party notices](THIRD_PARTY_NOTICES.md) and
+[dependency sources](distribution/dependency-sources.md) when redistributing.
+the retained dependency versions are libctru 2.7.0, citro2d 1.7.0, citro3d 1.7.1
+and devkitarm-crtls 1.2.6. a newer toolchain may change compiler output.
 
-## device acceptance remains separate
-
-before public release, test install/launch, audible starter, drawing, sample I/O,
-mic/REC, bounce, project round-trip, sleep/wake and sustained use on real hardware.
-a clean ARM build and host UI captures establish neither device FPS nor sound
-quality. record console model and CIA/3DSX separately. see
-[publication checklist](distribution/publication-checklist.md).
+before a binary release, test installation, audible output, sample I/O, mic/REC,
+project round-trip, sleep/wake and sustained playback on real hardware. record
+the console model and launch format; Old 3DS remains untested.

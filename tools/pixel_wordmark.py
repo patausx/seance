@@ -263,7 +263,7 @@ def main():
     elif args.install:
         for name, image in rendered.items():
             image.save(ASSETS/name)
-        print('installed integer-only masks; regenerate wordmark_morph_data.h and tools/wordmark_reference.h next')
+        print('installed integer-only masks; regenerate wordmark_morph_data.h and tests/wordmark_reference.h next')
 
 
 if __name__ == '__main__':

@@ -472,4 +472,4 @@ binary. do not power off during storage operations.
 a clean build and host tests are not device listening, FPS or long-session
 acceptance. test installation, starter sound, drawing, sample loading, microphone,
 recording/export, project round-trip, sleep/wake and a sustained session before
-calling a candidate hardware-tested. see [the local publication checklist](distribution/publication-checklist.md).
+calling a candidate hardware-tested. see [building and checks](BUILDING.md#checks).

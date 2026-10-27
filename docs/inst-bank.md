@@ -146,73 +146,12 @@ cannot alter inst. bank preparation's raw sources are not embedded or loaded at
 runtime. 24 khz mono and short looping recordings are intentional quality/size
 limits, and extreme pitch shifts can sound artificial or alias.
 
-## focused proof
+## checks
 
 ```sh
-python3 tools/test_inst_core.py --sanitize
+python3 tests/test_inst_core.py --sanitize
 ```
 
-this one runner checks pinned licensing/source hashes and pitch metadata, rebuilds
-the generated bank in memory for exact reproducibility, then compiles the actual
-`units.cpp` + `sampler.cpp` with a small dedicated executable. included-source
-hashes are guarded across compile/run so concurrent parent edits cannot produce
-a stale-current claim. no synthetic substitute inst implementation is linked.
-
-coverage: all q15 mappings and inverse times; 22 descriptors and every one of
-438 family/key combinations; independent scalar pcm oracle at roots and both zone
-edges; loop guards, finite end and pitched release during attack; latched edits/locks;
-all six canonical drums at minimum/maximum length with every attack/release endpoint
-combination and defaults, exact pcm/telemetry equality, transition/end edges and
-sentinel output bounds;
-arp once/clamps; exact live level ramp including retargets/zero; 64-sample steal
-continuity; four-voice bound, repeated stealing/reset; arbitrary block partition
-identity and frozen visuals; guarded construction/trigger/process/control/visual
-heap calls; independence from a real mutable sample bank and sixteen inst units.
-
-### initial baseline — superseded for the drum contract
-
-**the first baseline focused compile/run passed** with address/undefined/leak
-sanitizers enabled. exact deterministic bank rebuild passed; actual source hashes
-were stable through compile/run. its six groups did **not** test the required drum
-length-inert contract, and this earlier result is not final drum proof. retained
-baseline measurements:
-
-- 5,144,814 processed frames; 2,866,124 independent scalar pcm comparisons.
-- 3,145 frozen-state comparisons, plus scalar stage/envelope checks.
-- zero guarded heap calls, including construction of sixteen independent units.
-- all 438 family/key combinations produced nonzero pcm; this is a signal check,
-  not a claim of listening approval or acoustic realism at extreme transpositions.
-- existing `sampler.cpp` emitted its pre-existing unused `acc` warning; the new
-  inst code emitted no warnings. no production change was made to silence it.
-- captured output: `/tmp/seance-inst-core.log`; preparation log:
-  `/tmp/seance-inst-bank-build.log`.
-
-### final drum contract correction
-
-runtime now ignores drum length entirely and starts release at the floored attack
-edge; pitched behavior, sample data, public api and memory sizes are unchanged.
-the independent scalar oracle follows that family-specific envelope, and the added
-length-invariance group covers six canonical keys × four attack/release endpoint
-combinations plus the default shape (30 paired cases).
-
-**final drum proof: pass**, on the one focused sanitizer compile/run after this
-correction: `python3 tools/test_inst_core.py --sanitize`. all seven reported groups
-passed with address/undefined/leak sanitizers and stable compiled-source hashes:
-
-- 504,766 paired minimum/maximum length pcm frames were byte-identical across the
-  30 cases, with independent scalar comparison of both streams, exact attack /
-  release / finite-end telemetry, sentinel bounds and no guarded heap calls.
-- full focused run: 6,152,906 processed frames; 3,874,216 independent scalar pcm
-  comparisons; 5,179 frozen-state comparisons; zero guarded heap calls.
-- deterministic asset rebuild passed unchanged: pcm **1,221,500 bytes**, unit
-  **896 bytes**, visual **56 bytes**; no public fields/signatures or assets changed.
-- final output: `/tmp/seance-inst-core-final.log`. the earlier
-  `/tmp/seance-inst-core.log` was preserved byte-for-byte (hash checked), remains
-  explicitly the pre-fix baseline and is not the final drum-contract proof.
-- only the same historical `sampler.cpp` unused `acc` warning appeared; new inst
-  code is warning-clean. no runtime/test changes followed this final pass.
-
-no full-app, broad regression, arm build, new media, deployment, hardware listening
-or hardware timing is part of this core proof. the mandatory project navigation
-check is requested by the final documentation edit separately; it is not counted
-as one of the inst proof groups.
+this checks the actual engine implementation, source identities, generated-bank
+reproducibility and voice/envelope invariants. it is not a hardware listening or
+performance test. historical build receipts are kept outside the repository.

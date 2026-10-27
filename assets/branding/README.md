@@ -33,14 +33,14 @@ Run from the repository root with Python 3 and Pillow installed:
 python3 tools/generate_circle_logo.py --check
 python3 tools/pixel_wordmark.py --check
 python3 tools/generate_wordmark_morph.py --check
-python3 tools/generate_wordmark_reference.py --check
-python3 tools/test_branding.py
+python3 tests/generate_wordmark_reference.py --check
+python3 tests/test_branding.py
 ```
 
 `test_branding.py` can also inspect the RGB565 icon planes in a built SMDH:
 
 ```sh
-python3 tools/test_branding.py seance.smdh
+python3 tests/test_branding.py seance.smdh
 ```
 
 The corresponding generators have explicit `--install` options for updating
@@ -73,13 +73,3 @@ decoded GIF pixels and accelerated timing against this treatment of the producti
 C++ renderer. it also checks all four endpoints against the editable artwork and
 verifies that shared, otherwise-static contour pixels soften during every morph.
 it does not alter assets.
-
-## retained references and older studies
-
-`gothic_wordmark_source_mask.png` is the earlier extracted lettering reference.
-`gathering_reference.png`, `threshold_master_44x49.png`,
-`threshold_icon_{48,24}_mask.png` and `sigil_icon_{48,24}_{rim,core}_mask.png`
-retain previous emblem designs and their authored native masks.
-
-historical preview/install scripts are local development material and are not
-included in the repository. use the current asset-check commands above.
