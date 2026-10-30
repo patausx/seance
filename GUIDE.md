@@ -13,6 +13,7 @@ projects are saved explicitly; keep a backup of `sdmc:/3ds/seance/`.
 - [samples](#play-and-samples), [recording](#microphone-and-recording) and [bounce](#bounce)
 - [perform, banks and order](#perform)
 - [projects and backups](#projects-and-data-safety), [troubleshooting](#troubleshooting)
+- [module reference](#module-reference): all 28 modules, controls and patch ideas
 
 ## installation
 
@@ -173,10 +174,10 @@ selecting an entry and confirming it are separate actions.
 
 | family | modules | use |
 | --- | --- | --- |
-| sources | **osc, fm, motor, noise, bird, inst, play, gran, mic** | create sound, play a sample or bring in the microphone |
-| tone | **filt, tilt, mouth, fold, strain, bit, ring, shift, comp, vca** | shape frequencies, dynamics and gain |
-| time | **chor, dly, rev, ghost, swarm, fract, glitch** | chorus, echoes, space and live-buffer processing |
-| tools | **arp, rec** | clocked note patterns and in-chain recording |
+| sources | [osc](#osc), [fm](#fm), [motor](#motor), [noise](#noise), [bird](#bird), [inst](#inst), [play](#play), [gran](#gran), [mic](#mic) | create sound, play a sample or bring in the microphone |
+| tone | [filt](#filt), [tilt](#tilt), [mouth](#mouth), [fold](#fold), [strain](#strain), [bit](#bit), [ring](#ring), [shift](#shift), [comp](#comp), [vca](#vca) | shape frequencies, dynamics and gain |
+| time | [chor](#chor), [dly](#dly), [rev](#rev), [ghost](#ghost), [swarm](#swarm), [fract](#fract), [glitch](#glitch) | chorus, echoes, space and live-buffer processing |
+| tools | [arp](#arp), [rec](#rec) | clocked note patterns and in-chain recording |
 
 **inst** includes built-in acoustic instruments and drums. **play** works with a
 loaded WAV; **gran** turns one into overlapping grains. **swarm**, in contrast,
@@ -473,3 +474,320 @@ a clean build and host tests are not device listening, FPS or long-session
 acceptance. test installation, starter sound, drawing, sample loading, microphone,
 recording/export, project round-trip, sleep/wake and a sustained session before
 calling a candidate hardware-tested. see [building](BUILDING.md).
+
+## module reference
+
+28 modules, grouped by the same roles as the picker:
+[sources](#sources) · [tone](#tone) · [time](#time) · [tools](#tools).
+select a card and use **edit / X** to open its controls.
+
+chains run left to right. a source replaces the incoming audio; a processor
+works on what reaches it. putting two sources in series does not mix them:
+use separate chains for layers. **arp** is a note tool placed *before* its
+source; **rec** captures the signal at its own position in the chain.
+
+the patch ideas below fit within one chain's six-card limit. they are starting
+points, not presets: add the cards, choose any required sample, and trigger the
+chain or start transport as appropriate. use [sigils](#sigils) to move controls,
+[locks](#locks-and-slices) for per-step changes, and [bounce](#bounce) to turn a
+finished chain or mix into new sample material.
+
+this describes current modules. older projects can retain legacy engines with
+fewer controls; where an **extend** action is offered, it deliberately changes
+that card's sound/features. save a project copy before converting. not every
+module offers conversion, and newer project features may require a newer build.
+
+### sources
+
+#### osc
+
+**oscillator.** pitched sine, triangle, saw and pulse shapes, with continuous
+shape morphing on current cards. pitch and width set the voice; fold adds
+harmonics, sub adds a lower octave, and drift loosens the tuning. **qnt** gives
+semitone pitch editing.
+
+**try:** `osc → filt → vca` for a bass or lead; route a slow sigil to width or
+filter cutoff. trigger the VCA to hear its envelope open.
+
+#### fm
+
+**two-operator synthesizer.** one oscillator modulates another for clean tones,
+bells, basses or rough percussion. start with pitch, ratio and index; feedback
+adds edge. attack/decay, index fall and feedback fall shape a strike. current
+cards also offer operator waves and a pitch envelope; **drone** sustains the voice.
+
+**try:** `fm → dly → rev` with a short decay and a little index fall for ringing,
+changing bell patterns.
+
+#### motor
+
+**jittered oscillator with a resonant body.** saw/pulse character, coupled
+oscillators and unstable tuning make it useful for buzzing basses and mechanical
+drones. explore load, resonance and jitter; current cards add pulse width,
+hard sync, jitter speed and separate **free / note** tuning.
+
+**try:** `motor → tilt → vca` for a rough pulse. use note mode if a preceding
+arp should play it; free tuning is not an arp target.
+
+#### noise
+
+**texture and percussion source.** white, pink, crackle and metal colours can
+run as a drone or a triggered hit. grain rate/density controls the excitation;
+tone, low cut and resonance shape its body. attack/decay set the hit, and a
+pitch-like filter sweep adds movement on current cards.
+
+**try:** `noise → filt → rev` in hit mode for hats and small percussion, or in
+drone mode with slow cutoff modulation for a shifting bed of noise.
+
+#### bird
+
+**synthetic calls.** a finite whistle, not a sample player or an automatic flock.
+pitch, sweep and length set the call; trill and syllable articulate it, contour
+bends its pitch path, and air adds breath. one trigger makes one call.
+
+**try:** `bird → dly → rev`; sequence sparse hits and lock sweep or length to
+make phrases rather than identical repetitions.
+
+#### inst
+
+**built-in instruments.** sampled piano, violin, brass, flute and bass, plus
+one-shot drums. no external bank is needed. choose an instrument, then note or
+drum sound; length, attack, release, tone and level shape the voice. length has
+no effect on one-shot drums.
+
+**try:** `inst → chor → rev` for a small melodic part, or choose drums and use
+per-step note/sound changes for a rhythm from one card.
+
+#### play
+
+**sample player and editor.** load a wav, tune it, trim it, make slices and set
+its loop. normal, stretch and tape cover different playback needs; scratch and
+hold provide hands-on workspaces. config contains voice, listening and file
+actions. stretch tempo and root tuning are set by you, not automatically detected.
+
+**try:** `play → filt → dly`; assign cuts in the editor, then choose them with
+sequencer slice mode. see [samples](#play-and-samples) for loading and editing.
+
+#### gran
+
+**granular sample source.** a loaded wav becomes overlapping grains instead of
+one continuous playback head. position chooses where to read; size and density
+change the texture, while spray and pitch spread (**p.dev**) loosen the cloud.
+this reads a loaded sample; use **swarm** to granulate incoming audio instead.
+
+**try:** `gran → mouth → rev`; load a voice or sustained note and move position
+slowly with a sigil to discover textures inside it.
+
+#### mic
+
+**live microphone source.** brings the console's microphone into the chain.
+gain sets input level and low cut removes some low-frequency rumble. it does
+not record by itself: place **rec** downstream to keep the result.
+
+**try:** `mic → filt → rec` to capture a processed sound, or `mic → swarm → rev`
+for live texture. keep speaker volume low to avoid acoustic feedback.
+
+### tone
+
+#### filt
+
+**resonant filter.** low-pass, high-pass, band-pass and notch responses carve
+out different parts of a sound. cutoff and resonance are the main gestures;
+drive adds colour; morph blends the selected response with its complementary
+signal (input minus the filtered output), rather than selecting another mode.
+
+**try:** `osc → filt → vca`; draw a sigil for cutoff, then use step locks to
+accent particular hits with resonance or drive.
+
+#### tilt
+
+**spectral balance.** tilts the sound around a pivot: positive tilt adds air
+and removes body; negative tilt does the reverse. pivot and range decide where
+and how strongly it leans. drive adds colour; wet trim and mix control the result.
+**zero** resets tilt only, not every control.
+
+**try:** `play → tilt → comp` to rebalance a loop, or move tilt gently with a
+slow sigil for a broad tonal change rather than a resonant sweep.
+
+#### mouth
+
+**vowel filter.** three formant resonances give incoming audio a voice-like
+shape without changing its source pitch. slide continuously through a/e/i/o/u;
+size shifts the resonances, resonance sharpens them, and mix/out balance the effect.
+this shapes a sound, rather than generating speech.
+
+**try:** `osc → mouth → vca`; a harmonically rich oscillator and a moving vowel
+make a more pronounced talking sound than a pure sine.
+
+#### fold
+
+**wavefolder.** folds a waveform back on itself to create extra harmonics.
+drive pushes into the shaping, morph moves among fold/wrap/diode character,
+and bias makes it asymmetric. current cards add smooth and tone, with trim/mix
+to balance the processed signal.
+
+**try:** `osc → fold → filt → vca`; start with a sine or triangle and slowly
+raise drive to hear a simple tone acquire edges.
+
+#### strain
+
+**feedback distortion.** drive, bias, body and teeth combine saturation,
+folding and tone shaping; feedback feeds the result back into the processor.
+current cards add motion and its rate, plus wet trim. **strain** is distortion;
+**swarm** is the live granular effect.
+
+**try:** `motor → strain → tilt → vca`. begin with low feedback and output
+level: extreme settings can keep sounding after the source stops.
+
+#### bit
+
+**bit and sample-rate reduction.** bits coarsens amplitude; rate slows the
+internal capture clock without changing the engine's sample rate. drive and
+tone shape the roughness. current cards add clock variation, timed dropout,
+dither and further controls in setup; mix keeps some original signal.
+
+**try:** `inst → bit → dly` for broken drum-machine textures. automate rate
+for changing grit while keeping enough dry signal to preserve the attack.
+
+#### ring
+
+**ring modulation.** multiplies input by a carrier, creating metallic sidebands.
+a slow carrier makes pulses; faster settings produce clangorous tones. depth
+and mix are different: depth changes modulation, mix blends the finished effect.
+current cards add carrier waves, free/note tuning, drive and follow-time control.
+follow reacts to input level; it is not pitch tracking.
+
+**try:** `play → ring → rev` on a voice or percussion sample. tune the carrier
+by ear; note mode sets the carrier's pitch, not the output's musical key.
+
+#### shift
+
+**frequency shifter.** moves every frequency by the same number of hertz, not
+by a shared semitone interval. small shifts create beating against the dry sound;
+larger ones pull harmonics apart. feedback repeats the shift, damp darkens its
+return, and **fine** makes small changes easier. **zero** is not bypass.
+
+**try:** `inst → shift → rev` with a small shift and some dry mix for moving,
+inharmonic tails. use bypass or zero mix when you need the unchanged input.
+
+#### comp
+
+**compressor.** reduces peaks in the incoming chain. lower threshold to catch
+more signal, then adjust ratio, attack and release; makeup restores wet level
+and mix allows parallel compression. detail contains knee, detector high-pass
+and free/synced release. it is not a lookahead limiter or external sidechain.
+
+**try:** `play → comp → rec` to capture a more even loop. compare at similar
+output levels rather than judging the louder version as automatically better.
+
+#### vca
+
+**triggered gain envelope.** attack, hold and decay open and close the incoming
+sound; gain, floor and curves shape the result. **duck** reverses the action.
+current setup adds free/synced stage lengths, soft/reset/ignore retriggering and
+one-shot/cycle operation. cycle needs a trigger; it does not start just by loading.
+
+**try:** `osc → filt → vca` and sequence hits for shaped notes. put `dly` after
+the VCA for tails that outlast each envelope, or before it to chop the echoes too.
+
+### time
+
+#### chor
+
+**two-voice chorus.** short modulated delays thicken incoming sound. rate and
+depth set the motion, mix sets its amount, and spread changes the relative phase
+of the two delay voices; it is not stereo width. **hold dry** temporarily compares
+the unchanged input without rewriting your settings.
+
+**try:** `inst → chor → rev` with a restrained mix for a less static sustained
+part, or turn up depth for an obviously wavering texture.
+
+#### dly
+
+**delay.** repeating echoes with time, feedback and mix. wow and saturation
+colour the repeats; current cards add feedback tone and tempo sync with note
+divisions/feel. tape time changes bend pitch; clean changes crossfade between
+times. hold recirculates the buffer but is not a lossless freeze; clear empties it.
+
+**try:** `fm → dly → rev`; sync the delay to a dotted division so a few short
+strikes become an interlocking pattern.
+
+#### rev
+
+**reverb.** a diffuse tail around the incoming sound. size, decay, damp and mix
+set the space; current cards also offer predelay, send low-cut and local wet
+ducking. freeze holds the reverb state rather than saving a recording. use rec
+or bounce if you want to keep the result as a wav.
+
+**try:** `bird → rev → rec` for a small call turned into sample material, or
+put the reverb before a VCA to shape the whole tail with each trigger.
+
+#### ghost
+
+**resonant memory.** live input excites four drifting delay wells rather than
+being played from a sample file. root/fine tune them, decay feeds the memory,
+smear darkens its return, and drift/cycle move it. freeze seals the existing
+memory against fresh input. use it as an audible layer of resonance, not just
+a background room.
+
+**try:** `mic → ghost → rec`; feed it a short sound, let the tail develop,
+and record a fragment to reuse in play or gran.
+
+#### swarm
+
+**live granular processor.** turns recent incoming audio into overlapping grains.
+position is how far back to read; size, rate, spray and pitch shape the swarm.
+freeze retains history and brings active grains to full wet; **hold**, in setup,
+instead stops new grain launches and lets existing ones finish. setup also adds
+reverse, sync, pitch envelope and cluster. unlike **gran**, it needs incoming
+audio history, not a wav.
+
+**try:** `inst → swarm → rev`; play a few notes into the buffer, freeze it,
+then move position and pitch to play the captured texture.
+
+#### fract
+
+**fragment repeater.** hold **grab** to repeat recent input and release to return
+live; **hold** latches the fragment. size chooses capture length, speed includes
+reverse, and damage progressively shortens the repeated loop. chance/length
+allow automatic interventions; chance starts at zero, so grab it to hear a change.
+
+**try:** `play → fract → filt → dly`; grab part of a loop and pull left to
+increase damage. the sequencer keeps running while the fragment repeats.
+
+#### glitch
+
+**bar rearranger.** alters a sixteen-cell, 4/4 pattern using slices of the previous
+complete bar. density sets how often it intervenes; jump, repeat, drop, reverse
+and pitch are relative operation weights, not separate effect amounts. **keep**
+retains the pattern, not the audio; **reroll** requests another pattern.
+
+**try:** `play → glitch → comp` on a running loop. allow a complete bar of
+history first; keep a pattern you like while the source continues changing.
+
+### tools
+
+#### arp
+
+**clocked note generator.** place it before the source it should play, then start
+transport. it targets the first eligible, non-bypassed source to its right in
+that chain: osc, fm, bird, play, inst, or a current note-mode motor. gran, noise
+and mic are not targets. incoming audio passes through; arp is not a sound source.
+
+rate, gate, order and octaves shape the phrase; **note 1–4** set relative offsets
+and can be switched off individually. it can also retrigger eligible downstream
+VCAs. it does not play all sources at once or send notes to another chain.
+
+**try:** `arp → inst → vca → dly`; choose an instrument, start transport and
+adjust rate/gate. put the arp before the source, not after the effects.
+
+#### rec
+
+**in-chain recorder.** captures the audio arriving at its own position, with
+length, monitor and workspace-slot controls. **save wav** exports a take;
+**> play / > gran** saves it before inserting playback when there is room.
+monitor controls pass-through, not whether recording happens.
+
+**try:** `mic → mouth → rec` to keep a processed voice, then send the take to
+play and sequence it. use [bounce](#bounce) for the master mix or bar-aligned
+chain loops; see [recording](#microphone-and-recording) for finishing/saving takes.

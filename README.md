@@ -15,7 +15,7 @@ the result, then mix, morph and switch patterns while it plays.
 
 from a single loop to a shifting live set. build the patch, then play it.
 
-[user guide & installation](GUIDE.md) · [build from source](BUILDING.md) · [changelog](CHANGELOG.md)
+[user guide & installation](GUIDE.md) · [module reference](GUIDE.md#module-reference) · [build from source](BUILDING.md) · [changelog](CHANGELOG.md)
 
 ## status
 
