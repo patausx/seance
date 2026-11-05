@@ -74,7 +74,9 @@ void nudge_step_values(int direction, bool group) {
             }
             next = std::max(target.bipolar ? -32767 : 0, std::min(32767, next));
             if (next == current) continue;
-            if (!seq_edit::put(step, slot, param, q15(next), target.base)) {
+            const bool pitch_target = slot == g_score.sequence_pitch_slot[g_seq_chain] &&
+                                      param == g_score.sequence_pitch_param[g_seq_chain];
+            if (!seq_edit::put(step, slot, param, q15(next), target.base, pitch_target)) {
                 edit_status("full: needs more than 4 locks");
                 g_seq_lock_flash = 90;
                 return; // only the draft changed: never publish a partial group

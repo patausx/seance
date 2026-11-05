@@ -4,6 +4,7 @@
 #include <new>
 
 #include "module_random_impl.inc"
+#include "paul_engine_impl.inc"
 
 namespace seance {
 
@@ -76,6 +77,8 @@ const char* unit_kind_name(UnitKind k) {
         case UnitKind::Arp:           return "ARP";
         case UnitKind::Glitch:        return "GLITCH";
         case UnitKind::Inst:          return "INST";
+        case UnitKind::Scratch:       return "SCRT";
+        case UnitKind::Paul:          return "PAUL";
         case UnitKind::Strain:        return "STRAIN";
         default:                     return "?";
     }
@@ -537,6 +540,60 @@ const Pattern& Engine::sequence_pattern(int bank) const {
         ? pattern : pattern_banks[bank];
 }
 
+// Shared six-slot source authority for UI projection and runtime pitch ownership.
+// Never scan pattern cells here. Later overwrite-sources (including MIC/NOISE)
+// mask earlier pitch; STRN is a fallback only in the absence of any real source.
+Engine::SequenceSource Engine::resolve_sequence_source(int chain) const {
+    SequenceSource result;
+    if (chain < 0 || chain >= NUM_CHAINS) return result;
+    const Chain& c = chains[chain];
+    int fallback_slot = -1;
+    bool downstream_gate = false;
+    for (int slot = 0; slot < UNITS_PER_CHAIN; ++slot) {
+        const Unit* unit = c.units[slot];
+        if (!unit || unit->bypass) continue;
+        SequencerProperties properties = unit->sequencer_properties();
+        if (unit->kind == UnitKind::Motor) {
+            // MOTOR metadata normally reads the preceding control tick's target.
+            // Use the current unslewed layer+mod law instead: an accepted MODE
+            // lock may enter/exit note mode on this very event, in any lock order.
+            const Param& mode = unit->params[MotorUnit::P_MODE];
+            const q31 value = (q31)mode.control_source() + (mode.mod_enabled
+                ? ((q31)modulation_value(mode.src) * mode.mod_depth >> 15) : 0);
+            properties.pitch_param = static_cast<const MotorUnit*>(unit)->modern() && value >= 16384
+                ? MotorUnit::P_NOTE : -1;
+        } else if (unit->kind == UnitKind::Scratch &&
+                   static_cast<const ScratchUnit*>(unit)->mode != ScratchUnit::Mode::Hold) {
+            properties.pitch_param = -1; // pitch is dormant in the scratch reader
+        }
+        if (properties.pitch_param >= unit->num_params || properties.pitch_param >= PARAM_BANK_SIZE)
+            properties.pitch_param = -1;
+        if (properties.source) {
+            result.slot = (int8_t)slot;
+            result.properties = properties;
+            downstream_gate = false;
+        } else if (result.slot >= 0 && properties.gate_processor) {
+            downstream_gate = true;
+        }
+        if (unit->kind == UnitKind::Stranular) fallback_slot = slot;
+    }
+    if (result.slot < 0 && fallback_slot >= 0) {
+        result.slot = (int8_t)fallback_slot;
+        result.properties = c.units[fallback_slot]->sequencer_properties();
+        for (int slot = fallback_slot + 1; slot < UNITS_PER_CHAIN; ++slot) {
+            const Unit* unit = c.units[slot];
+            if (unit && !unit->bypass && unit->sequencer_properties().gate_processor)
+                downstream_gate = true;
+        }
+    }
+    if (result.slot >= 0 && c.units[(int)result.slot]->kind == UnitKind::SamplePlayer)
+        result.pitch_domain = (uint8_t)static_cast<const PlayUnit*>(c.units[(int)result.slot])->pitch_mode();
+    result.lifecycle = result.slot < 0 ? SequenceLifecycle::Strike : result.properties.lifecycle;
+    if (result.lifecycle == SequenceLifecycle::Flow && downstream_gate)
+        result.lifecycle = SequenceLifecycle::Gate;
+    return result;
+}
+
 void Engine::capture_sequence_snapshot(EngineUiSnapshot& out, int bank) const {
     const Pattern& selected = sequence_pattern(bank);
     // A transition is an event stream, not one playing bank. Suppress the
@@ -553,39 +610,11 @@ void Engine::capture_sequence_snapshot(EngineUiSnapshot& out, int bank) const {
         out.sequence_step[chain] = active ? (sequence_tick
             ? sequence_step_at_tick(chain, sequence_tick - 1)
             : sequence_step_at_tick(chain, 0)) : 255;
-        // Later overwrite-sources erase all upstream audio, including an upstream
-        // VCA. STRN transforms input; use it only as a standalone frozen-memory
-        // fallback when no real source exists anywhere in the chain.
-        int source_slot = -1;
-        int fallback_slot = -1;
-        SequencerProperties source_properties;
-        bool downstream_gate = false;
-        for (int slot = 0; slot < UNITS_PER_CHAIN; ++slot) {
-            const Unit* unit = c.units[slot];
-            if (!unit || unit->bypass) continue;
-            const SequencerProperties properties = unit->sequencer_properties();
-            if (properties.source) {
-                source_slot = slot;
-                source_properties = properties;
-                downstream_gate = false;
-            } else if (source_slot >= 0 && properties.gate_processor) {
-                downstream_gate = true;
-            }
-            if (unit->kind == UnitKind::Stranular) fallback_slot = slot;
-        }
-        if (source_slot < 0 && fallback_slot >= 0) {
-            source_slot = fallback_slot;
-            source_properties = c.units[source_slot]->sequencer_properties();
-            for (int slot = source_slot + 1; slot < UNITS_PER_CHAIN; ++slot) {
-                const Unit* unit = c.units[slot];
-                if (unit && !unit->bypass && unit->sequencer_properties().gate_processor)
-                    downstream_gate = true;
-            }
-        }
+        const SequenceSource source = resolve_sequence_source(chain);
+        const int source_slot = source.slot;
+        const SequencerProperties& source_properties = source.properties;
         const UnitKind source_kind = source_slot < 0 ? UnitKind::Empty : c.units[source_slot]->kind;
-        SequenceLifecycle lifecycle = source_slot < 0 ? SequenceLifecycle::Strike : source_properties.lifecycle;
-        if (lifecycle == SequenceLifecycle::Flow && downstream_gate)
-            lifecycle = SequenceLifecycle::Gate;
+        const SequenceLifecycle lifecycle = source.lifecycle;
         out.sequence_lifecycle[chain] = (uint8_t)lifecycle;
         // Publish event identity independently of the bank being edited. Reuse
         // the existing topology pass; a continuous flow/empty chain has no cell
@@ -729,6 +758,7 @@ void Engine::apply_global_fx(GlobalFxTarget target, q15 value) {
             case GlobalFxTarget::Freeze:
                 if (unit->kind == UnitKind::Delay) set(unit, DelayUnit::P_HOLD, 0, 32767);
                 else if (unit->kind == UnitKind::Ghost) set(unit, GhostUnit::P_FREEZE, 0, 32767);
+                else if (unit->kind == UnitKind::Paul) set(unit, PaulUnit::P_FREEZE, 0, 32767);
                 break;
             case GlobalFxTarget::Wash:
                 if (unit->kind == UnitKind::Reverb) {
@@ -1005,6 +1035,18 @@ void Engine::activate_clock_runtime() {
                 gran->gate_phase_ = true;
             }
         }
+    for(auto& chain:chains)for(Unit* unit:chain.units)if(unit && unit->kind==UnitKind::Scratch) {
+        auto* scratch=static_cast<ScratchUnit*>(unit);
+        if(scratch->gate_deadline_!=UINT64_MAX && !scratch->gate_phase_) {
+            scratch->gate_deadline_=clock_phase_for_frame(scratch->gate_deadline_);scratch->gate_phase_=true;
+        }
+    }
+    for(auto& chain:chains)for(Unit* unit:chain.units)if(unit && unit->kind==UnitKind::Paul) {
+        auto* p=static_cast<PaulUnit*>(unit);
+        if(p->gate_deadline_!=UINT64_MAX && !p->gate_phase_) {
+            p->gate_deadline_=clock_phase_for_frame(p->gate_deadline_);p->gate_phase_=true;
+        }
+    }
     clock_runtime_ = true;
     update_clock_deadlines();
 }
@@ -1237,6 +1279,16 @@ void Engine::set_bpm(int value) {
                 gran->gate_deadline_ = transport_frame +
                     ((gran->gate_deadline_ - transport_frame) * new_gate_beat + old_gate_beat - 1u) / old_gate_beat;
         }
+    if(bpm!=value)for(auto& chain:chains)for(Unit* unit:chain.units)if(unit && unit->kind==UnitKind::Scratch) {
+        auto* scratch=static_cast<ScratchUnit*>(unit);
+        if(scratch->gate_deadline_!=UINT64_MAX && !scratch->gate_phase_ && scratch->gate_deadline_>transport_frame)
+            scratch->gate_deadline_=transport_frame+((scratch->gate_deadline_-transport_frame)*new_gate_beat+old_gate_beat-1)/old_gate_beat;
+    }
+    if(bpm!=value)for(auto& chain:chains)for(Unit* unit:chain.units)if(unit && unit->kind==UnitKind::Paul) {
+        auto* p=static_cast<PaulUnit*>(unit);
+        if(p->gate_deadline_!=UINT64_MAX && !p->gate_phase_ && p->gate_deadline_>transport_frame)
+            p->gate_deadline_=transport_frame+((p->gate_deadline_-transport_frame)*new_gate_beat+old_gate_beat-1)/old_gate_beat;
+    }
     if (bpm != value) { cancel_param_temp(); cancel_sequence_audition(); }
     if (bpm != value && sequence_clock_active_) clear_sequence_runtime();
     bpm = value;
@@ -1267,7 +1319,7 @@ void Engine::transport_stop() {
     stop_bounce(BounceReason::Stopped);
     release_play_gates();
     transition_fx_.stop();
-    clear_sequence_runtime();
+    clear_sequence_runtime(true, true);
     transport_playing = false;
     for (auto& chain : chains) for (Unit* u : chain.units)
         if (u && u->kind==UnitKind::Arp) static_cast<ArpUnit*>(u)->reset();
@@ -1294,7 +1346,7 @@ void Engine::transport_reset() {
     for (int chain = 0; chain < NUM_CHAINS; ++chain) clear_grain_launch_requests(chain);
     transition_fx_.reset();
     clear_pattern_transition();
-    clear_sequence_runtime();
+    clear_sequence_runtime(true, true);
     clear_arp_runtime();
     env_value_ = 0;
     for (auto& chain : chains) for (Unit* u : chain.units)
@@ -1381,6 +1433,7 @@ trackr::synth::SampleEditResult Engine::request_chain_record(int chain, bool sta
         }
     }
     cancel_param_temp();
+    cancel_scratch_gesture();
     launch_quantize = quantize;
     auto apply = [this, chain, start]() {
         for (auto* u : chains[chain].units) {
@@ -1484,6 +1537,7 @@ trackr::synth::SampleEditResult Engine::request_recorder_command(
 void Engine::accept_recorder_command(int chain, int slot, RecorderCommand command, LaunchQuantize quantize) {
     auto* rec = static_cast<RecUnit*>(chains[chain].units[slot]);
     cancel_param_temp();
+    cancel_scratch_gesture();
     launch_quantize = quantize;
     if (quantize == LaunchQuantize::Immediate || !transport_playing) {
         switch (command) {
@@ -1602,7 +1656,7 @@ void Engine::set_swing(int percent) {
 void Engine::activate_pattern(int index, bool start_now) {
     if (index < 0 || index >= NUM_PATTERNS) return;
     clear_pattern_transition();
-    clear_sequence_runtime();
+    clear_sequence_runtime(true, !transport_playing);
     if (active_pattern < NUM_PATTERNS) pattern_banks[active_pattern] = pattern;
     active_pattern = (uint8_t)index;
     pattern_chain_current_pattern = active_pattern;
@@ -2148,6 +2202,8 @@ void Engine::cancel_param_temp() {
 }
 
 bool Engine::begin_param_temp(int chain, int slot, int param) {
+    if (scratch_gesture_.token && chain==scratch_gesture_.chain && slot==scratch_gesture_.slot &&
+        (param==scratch_gesture_.x || param==scratch_gesture_.y)) return false;
     if (!param_temp_allowed(chain, slot, param)) { cancel_param_temp(); return false; }
     if (param_temp_active() && temp_chain_ == chain && temp_slot_ == slot && temp_param_ == param)
         return true; // Repeated begin must not reset an in-flight gesture.
@@ -2169,6 +2225,8 @@ bool Engine::set_param_temp(q15 value) {
     return true;
 }
 
+#include "scratch_engine_impl.inc"
+
 void Engine::capture_param_inspector(int chain, int slot, int param, ParamInspector& out) const {
     out = {};
     out.env_chain = env_chain_; out.env_response = env_response_; out.env_level = env_value_;
@@ -2183,11 +2241,18 @@ void Engine::capture_param_inspector(int chain, int slot, int param, ParamInspec
     if (value.name) {
         for (unsigned i = 0; i + 1 < sizeof out.name && value.name[i]; ++i) out.name[i] = value.name[i];
     }
-    out.base = value.base; out.control = value.control_source(); out.effective = value.effective;
+    out.base = value.base; out.control = unit->kind==UnitKind::Scratch?
+        static_cast<const ScratchUnit*>(unit)->axis_control_source(param):value.control_source();
+    out.effective = value.effective;
     out.source = value.src; out.depth = value.mod_depth; out.bipolar = value.bipolar;
     out.mod_enabled = value.mod_enabled;
     out.temp = value.temp_override;
-    out.layer = value.temp_override ? 4 : (value.performance_override ? 3 :
+    bool scratch_layer=false;
+    if(unit->kind==UnitKind::Scratch && !value.temp_override && !value.performance_override) {
+        const auto* s=static_cast<const ScratchUnit*>(unit);int x,y;s->axis_params(x,y);
+        scratch_layer=s->latched() && (param==x || param==y);
+    }
+    out.layer = value.temp_override ? 4 : (value.performance_override || scratch_layer ? 3 :
                 (value.audition_override ? 2 : (value.step_lock_override ? 1 : 0)));
     out.source_value = value.mod_enabled ? modulation_value(value.src) : 0;
     q31 source_lo = 0, source_hi = 0;
@@ -2241,7 +2306,9 @@ void Engine::refresh_audition_params(int chain, bool release) {
             changed = true;
             if (release) param.audition_override = false;
             if (!param.temp_override) param.slew_ready = false;
-            param.resolve(modulation_value(param.src));
+            if(unit->kind==UnitKind::Scratch) {
+                auto* s=static_cast<ScratchUnit*>(unit);s->synchronize();s->resolve_param(p,modulation_value(param.src));
+            } else param.resolve(modulation_value(param.src));
         }
         if (!changed) continue;
         unit->control_tick();
@@ -2289,13 +2356,50 @@ bool Engine::audition_sequence_step(int chain, int step, int bank) {
     return true;
 }
 
+void Engine::release_sequence_pitch(int chain) {
+    for (int c = 0; c < NUM_CHAINS; ++c) {
+        if (chain >= 0 && chain != c) continue;
+        SequencePitchOwner& owner = sequence_pitch_owner_[c];
+        // Check installation before dereferencing a retained identity. Structural
+        // mutators release before detaching; direct stale identities are dropped.
+        if (owner.unit && owner.slot >= 0 && owner.slot < UNITS_PER_CHAIN &&
+            chains[c].units[(int)owner.slot] == owner.unit &&
+            owner.param >= 0 && owner.param < PARAM_BANK_SIZE) {
+            Param& param = owner.unit->params[(int)owner.param];
+            param.step_lock_override = false;
+            if (!param.temp_override) param.slew_ready = false;
+        }
+        owner = {};
+    }
+}
+
+bool Engine::validate_sequence_pitch(int chain, const SequenceSource& source) {
+    const SequencePitchOwner& owner = sequence_pitch_owner_[chain];
+    if (!owner.unit) return false;
+    const Unit* unit = source.slot < 0 ? nullptr : chains[chain].units[(int)source.slot];
+    if (transport_playing && sequencer_enabled && unit == owner.unit &&
+        source.slot == owner.slot && source.properties.pitch_param == owner.param &&
+        unit->kind == owner.kind && source.pitch_domain == owner.domain &&
+        unit->params[(int)owner.param].bipolar == owner.bipolar &&
+        unit->params[(int)owner.param].step_lock_override) return false;
+    release_sequence_pitch(chain);
+    return true;
+}
+
 void Engine::release_sequence_locks(int chain) {
+    release_sequence_step_locks(chain);
+    release_sequence_pitch(chain);
+}
+
+void Engine::release_sequence_step_locks(int chain) {
     if (chain < 0 || chain == sequence_audition_chain_) cancel_sequence_audition();
     for (auto& active : active_step_locks_) {
         if (!active.valid || (chain >= 0 && active.chain != chain)) continue;
         if (active.chain < NUM_CHAINS && active.slot < UNITS_PER_CHAIN) {
             Unit* unit = chains[active.chain].units[active.slot];
-            if (unit && active.param < unit->num_params) {
+            // Reader/domain edits can shrink the visible count between events.
+            // The fixed bank still exists: never orphan a now-dormant override.
+            if (unit && active.param < PARAM_BANK_SIZE) {
                 Param& param = unit->params[active.param];
                 param.step_lock_override = false;
                 // The next resolve must publish the restored base+mod value at
@@ -2335,9 +2439,10 @@ uint64_t Engine::next_sequence_grid_frame(uint64_t frame) const {
     return frame + (target > frame_in_beat ? target - frame_in_beat : fpb - frame_in_beat + target);
 }
 
-void Engine::clear_sequence_runtime(bool cancel_temp) {
-    if (cancel_temp) cancel_param_temp();
-    release_sequence_locks();
+void Engine::clear_sequence_runtime(bool cancel_temp, bool release_pitch) {
+    if (cancel_temp) { cancel_param_temp(); cancel_scratch_gesture(); }
+    release_sequence_step_locks();
+    if (release_pitch) release_sequence_pitch();
     for (auto& pass : active_sequence_pass_) pass = false;
     for (auto& chain : pending_sequence_events_) for (auto& event : chain) event = {};
     for (int chain = 0; chain < NUM_CHAINS; ++chain) {
@@ -2458,7 +2563,7 @@ void Engine::fire_sequence_event(int chain, uint64_t tick, uint64_t nominal_fram
         if (active.valid && active.chain == chain && active.slot < UNITS_PER_CHAIN &&
             active.param < PARAM_BANK_SIZE)
             refresh_param[active.slot][active.param] = true;
-    release_sequence_locks(chain);
+    release_sequence_step_locks(chain); // ordinary locks end even on condition failure
     SeqStep seq;
     const PendingSequenceEvent* pending = nullptr;
     for (const auto& event : pending_sequence_events_[chain])
@@ -2475,30 +2580,53 @@ void Engine::fire_sequence_event(int chain, uint64_t tick, uint64_t nominal_fram
     active_sequence_source_bank_[chain] = pending ? pending->source_bank : 255;
     active_sequence_tick_[chain] = tick;
     sequence_event_frame_[chain] = transport_frame;
-    if (pass) {
-        int active_count = 0;
-        const int count = seq.lock_count > SEQ_LOCKS ? SEQ_LOCKS : seq.lock_count;
-        for (int i = 0; i < count; ++i) {
-            const StepLock& lock = seq.locks[i];
-            if (lock.slot >= UNITS_PER_CHAIN) continue;
-            Unit* unit = chains[chain].units[lock.slot];
-            if (!unit || lock.param >= unit->num_params) continue;
-            Param& param = unit->params[lock.param];
+    const int count = pass ? (seq.lock_count > SEQ_LOCKS ? SEQ_LOCKS : seq.lock_count) : 0;
+    // Stage at most four accepted values before choosing the primary domain.
+    // MODE and NOTE can appear in either order. No intermediate resolve/tick:
+    // selectors see the final accepted layers, unrelated DSP keeps its old clock.
+    for (int i = 0; i < count; ++i) {
+        const StepLock& lock = seq.locks[i];
+        if (lock.slot >= UNITS_PER_CHAIN) continue;
+        Unit* unit = chains[chain].units[lock.slot];
+        if (!unit || lock.param >= unit->num_params || lock.param >= PARAM_BANK_SIZE) continue;
+        unit->params[lock.param].step_lock = lock.value;
+        unit->params[lock.param].step_lock_override = true;
+    }
+    const SequenceSource source = resolve_sequence_source(chain);
+    const SequencePitchOwner previous_pitch = sequence_pitch_owner_[chain];
+    if (validate_sequence_pitch(chain, source) && previous_pitch.slot >= 0 &&
+        previous_pitch.slot < UNITS_PER_CHAIN && previous_pitch.param >= 0 &&
+        previous_pitch.param < PARAM_BANK_SIZE &&
+        chains[chain].units[(int)previous_pitch.slot] == previous_pitch.unit)
+        refresh_param[(int)previous_pitch.slot][(int)previous_pitch.param] = true;
+
+    int active_count = 0;
+    for (int i = 0; i < count; ++i) {
+        const StepLock& lock = seq.locks[i];
+        if (lock.slot >= UNITS_PER_CHAIN) continue;
+        Unit* unit = chains[chain].units[lock.slot];
+        if (!unit || lock.param >= unit->num_params || lock.param >= PARAM_BANK_SIZE) continue;
+        Param& param = unit->params[lock.param];
+        if (source.slot == lock.slot && source.properties.pitch_param == lock.param) {
+            // Any explicit raw value, including zero/base, is the next written
+            // pitch. Note and generic Lock store the same StepLock provenance.
+            sequence_pitch_owner_[chain] = {unit, (int8_t)lock.slot, (int8_t)lock.param,
+                                            unit->kind, param.bipolar, source.pitch_domain};
+        } else {
             ActiveStepLock& active = active_step_locks_[chain * SEQ_LOCKS + active_count++];
             active = {true, (uint8_t)chain, lock.slot, lock.param};
-            param.step_lock = lock.value;
-            param.step_lock_override = true;
-            refresh_param[lock.slot][lock.param] = true;
-            // Resolve this boundary from the lock plus the live modulation value;
-            // do not spend the first triggered samples slewing from the old step.
-            if (!param.temp_override) param.slew_ready = false;
         }
+        // Reapply after invalidation: a former pitch target may legitimately be
+        // an ordinary upstream/dormant lock in this event; it must stay tracked.
+        param.step_lock = lock.value;
+        param.step_lock_override = true;
+        refresh_param[lock.slot][lock.param] = true;
+        if (!param.temp_override) param.slew_ready = false;
     }
 
-    // Locks end at every step boundary, including skipped steps and trigs with no
-    // locks. Resolve only units whose override state changed so cached PLAY windows
-    // cannot retain the preceding slice without injecting extra slew ticks into
-    // unrelated parameters.
+    // Only the primary pitch survives unwritten/rejected steps. Ordinary locks
+    // still expire every boundary. Refresh changed parameters only, retaining
+    // live modulation and trigger-time caches without extra unrelated slew ticks.
     for (int slot = 0; slot < UNITS_PER_CHAIN; ++slot) {
         Unit* unit = chains[chain].units[slot];
         if (!unit) continue;
@@ -2509,7 +2637,9 @@ void Engine::fire_sequence_event(int chain, uint64_t tick, uint64_t nominal_fram
             Param& param = unit->params[param_index];
             const q15 modulation = param.src == ModSource::None
                 ? 0 : modulation_value(param.src);
-            param.resolve(modulation);
+            if(unit->kind==UnitKind::Scratch) {
+                auto* s=static_cast<ScratchUnit*>(unit);s->synchronize();s->resolve_param(param_index,modulation);
+            } else param.resolve(modulation);
         }
         if (!refresh_unit) continue;
         unit->control_tick();
@@ -2820,6 +2950,7 @@ void Engine::swap_patch_state(Engine& other) {
     for (int c=0;c<NUM_CHAINS;++c) { volume_ramp_[c]={}; other.volume_ramp_[c]={}; }
     cancel_param_temp();
     other.cancel_param_temp();
+    cancel_scratch_gesture();other.cancel_scratch_gesture();
     for (int i = 0; i < NUM_SIGILS; ++i) {
         const SigilConfig config = sigil_config[i];
         sigil_config[i] = other.sigil_config[i]; other.sigil_config[i] = config;
@@ -2907,6 +3038,12 @@ SampleSlotRefs Engine::sample_slot_refs(int sample_slot, const Unit* ignore) con
                 case UnitKind::Grain:
                     if (static_cast<const GrainUnit*>(unit)->sample_slot == sample_slot) ++refs.grain;
                     break;
+                case UnitKind::Scratch:
+                    if (static_cast<const ScratchUnit*>(unit)->sample_slot == sample_slot) ++refs.scratch;
+                    break;
+                case UnitKind::Paul:
+                    if (static_cast<const PaulUnit*>(unit)->sample_slot == sample_slot) ++refs.paul;
+                    break;
                 case UnitKind::Recorder:
                     if (static_cast<const RecUnit*>(unit)->sample_slot == sample_slot) ++refs.rec;
                     break;
@@ -2914,6 +3051,12 @@ SampleSlotRefs Engine::sample_slot_refs(int sample_slot, const Unit* ignore) con
             }
         }
     }
+    // A deleted SCRT retained for structural undo still owns its source alias.
+    const Unit* retained=structural_undo_ && structural_undo_->valid?structural_undo_->retained:nullptr;
+    if(retained && retained!=ignore && retained->kind==UnitKind::Scratch &&
+        static_cast<const ScratchUnit*>(retained)->sample_slot==sample_slot)++refs.scratch;
+    if(retained && retained!=ignore && retained->kind==UnitKind::Paul &&
+        static_cast<const PaulUnit*>(retained)->sample_slot==sample_slot)++refs.paul;
     return refs;
 }
 
@@ -3187,14 +3330,32 @@ Unit* Engine::replace_unit(int chain, int slot, Unit* u) {
     if (chain < 0 || chain >= NUM_CHAINS || slot < 0 || slot >= UNITS_PER_CHAIN)
         { delete u; return nullptr; }
     cancel_param_temp();
+    cancel_scratch_gesture();
     invalidate_structural_undo();
-    release_sequence_locks();
+    release_sequence_step_locks();
+    release_sequence_pitch(chain);
     sequence_hit_[chain] = {};
     clear_arp_runtime(chain);
     clear_grain_launch_requests(chain);
     if (u && u->kind == UnitKind::Grain) static_cast<GrainUnit*>(u)->clear_launch_requests();
     Unit* old = chains[chain].units[slot];
+    // Detach the momentary UI request while the old module is still owned and
+    // valid. A later editor capture cannot safely reach a parked/deleted unit.
+    // Independent HOLD, saved DAMAGE and audio history remain untouched.
+    if(old && old!=u && old->kind==UnitKind::Fract)
+        static_cast<FractUnit*>(old)->set_manual_grab(false);
+    if(old && old!=u && old->kind==UnitKind::Scratch) {
+        auto* scratch=static_cast<ScratchUnit*>(old);scratch->reset();scratch->engine_=nullptr;scratch->chain_=scratch->slot_=-1;
+    }
+    if(old && old!=u && old->kind==UnitKind::Paul) {
+        auto* p=static_cast<PaulUnit*>(old);p->reset();p->engine_=nullptr;p->chain_=p->slot_=-1;
+    }
     chains[chain].units[slot] = u;
+    if(auto* p=bind_paul(chain,slot))p->reset();
+    if(u && u->kind==UnitKind::Scratch) {
+        auto* scratch=static_cast<ScratchUnit*>(u);scratch->reset();
+        scratch->engine_=this;scratch->chain_=int8_t(chain);scratch->slot_=int8_t(slot);
+    }
     if (u && u != old) initialize_module_random(*u);
     return old;
 }
@@ -3277,6 +3438,7 @@ int Engine::insert_unit(int chain, int slot, Unit* unit) {
     }
     if (empty < 0) return -1;
     invalidate_structural_undo();
+    release_sequence_pitch(chain);
     clear_sequence_runtime();
     clear_arp_runtime(chain);
     clear_grain_launch_requests(chain);
@@ -3323,6 +3485,7 @@ int Engine::move_unit_before(int chain, int from_slot, int before_slot) {
     if (to_slot == from_slot) return from_slot;
     if (!structural_edit_in_progress_) invalidate_structural_undo();
 
+    release_sequence_pitch(chain);
     clear_sequence_runtime();
     clear_arp_runtime(chain);
     clear_grain_launch_requests(chain);
@@ -3373,10 +3536,17 @@ Unit* Engine::remove_unit(int chain, int slot) {
     if (chain < 0 || chain >= NUM_CHAINS || slot < 0 ||
         slot >= UNITS_PER_CHAIN || !chains[chain].units[slot]) return nullptr;
     if (!structural_edit_in_progress_) invalidate_structural_undo();
+    release_sequence_pitch(chain);
     clear_sequence_runtime();
     clear_arp_runtime(chain);
     clear_grain_launch_requests(chain);
     Unit* removed = chains[chain].units[slot];
+    if(removed->kind==UnitKind::Scratch) {
+        auto* scratch=static_cast<ScratchUnit*>(removed);scratch->reset();scratch->engine_=nullptr;scratch->chain_=scratch->slot_=-1;
+    }
+    if(removed->kind==UnitKind::Paul) {
+        auto* p=static_cast<PaulUnit*>(removed);p->reset();p->engine_=nullptr;p->chain_=p->slot_=-1;
+    }
     for (int index = slot; index + 1 < UNITS_PER_CHAIN; ++index)
         chains[chain].units[index] = chains[chain].units[index + 1];
     chains[chain].units[UNITS_PER_CHAIN - 1] = nullptr;
@@ -3494,6 +3664,7 @@ bool Engine::undo_structural_edit(int* restored_chain, int* restored_slot) {
         if (!known) { invalidate_structural_undo(); return false; }
     }
 
+    release_sequence_pitch(chain);
     clear_sequence_runtime();
     clear_arp_runtime(chain);
     clear_grain_launch_requests(chain);
@@ -3557,6 +3728,22 @@ void Engine::trigger_sequence_chain(int chain) {
     }
     for (int slot = 0; slot < UNITS_PER_CHAIN; ++slot) {
         Unit* unit = chains[chain].units[slot];
+        if(auto* p=bind_paul(chain,slot)) {
+            if(p->voice_ && p->mode==PaulUnit::Mode::Gate && !p->bypass && !chains[chain].mute && arp_owner_for(chain,slot)<0) {
+                p->sequence_gate_=true;p->manual_remaining_=0;p->gate_phase_=clock_runtime_;
+                p->gate_deadline_=now+std::max<uint64_t>(1,(span*PaulUnit::gate_quarters(p->params[PaulUnit::P_GATE].target)+3)/4);
+            }
+            continue;
+        }
+        if(unit && unit->kind==UnitKind::Scratch && !unit->bypass && !chains[chain].mute) {
+            auto* scratch=static_cast<ScratchUnit*>(unit);
+            if(scratch->voice_) {
+                scratch->sequence_gate_=true;scratch->manual_remaining_=0;
+                scratch->gate_deadline_=now+std::max<uint64_t>(1,(span*ScratchUnit::gate_quarters(scratch->params[ScratchUnit::P_GATE].target)+3)/4);
+                scratch->gate_phase_=clock_runtime_;
+            }
+            continue;
+        }
         if (unit && unit->kind == UnitKind::Grain) {
             static_cast<GrainUnit*>(unit)->begin_sequence_gate(now + span, clock_runtime_);
             continue;
@@ -3577,17 +3764,51 @@ void Engine::release_play_gates() {
             static_cast<PlayUnit*>(unit)->release_sequence_gate();
         else if (unit && unit->kind == UnitKind::Grain)
             static_cast<GrainUnit*>(unit)->release_sequence_gate();
+        else if(unit && unit->kind==UnitKind::Scratch)
+            static_cast<ScratchUnit*>(unit)->release_sequence_gate();
+        else if(unit && unit->kind==UnitKind::Paul)
+            static_cast<PaulUnit*>(unit)->release_sequence_gate();
 }
 
 void Engine::clear_grain_launch_requests(int chain) {
-    for (Unit* unit : chains[chain].units)
-        if (unit && unit->kind == UnitKind::Grain)
+    for(int slot=0;slot<UNITS_PER_CHAIN;++slot) {
+        Unit* unit=chains[chain].units[slot];
+        if(auto* p=bind_paul(chain,slot))p->reset();
+        else if (unit && unit->kind == UnitKind::Grain)
             static_cast<GrainUnit*>(unit)->clear_launch_requests();
+        else if(unit && unit->kind==UnitKind::Scratch) {
+            auto* scratch=static_cast<ScratchUnit*>(unit);scratch->reset();
+            scratch->engine_=this;scratch->chain_=int8_t(chain);scratch->slot_=int8_t(slot);
+        }
+    }
 }
 
 uint64_t Engine::next_play_gate_deadline() {
     uint64_t next = UINT64_MAX;
     for (auto& chain : chains) for (Unit* unit : chain.units) {
+        if(unit && unit->kind==UnitKind::Paul) {
+            auto* p=static_cast<PaulUnit*>(unit);p->synchronize();
+            if(p->gate_deadline_!=UINT64_MAX && (!transport_playing || !sequencer_enabled))p->release_sequence_gate();
+            if(p->gate_deadline_!=UINT64_MAX) {
+                const uint64_t now=p->gate_phase_?clock_phase_:transport_frame;
+                if(p->gate_deadline_<=now)p->release_sequence_gate();
+                else next=std::min(next,p->gate_phase_?clock_frame_for_phase(p->gate_deadline_):p->gate_deadline_);
+            }
+            continue;
+        }
+        if(unit && unit->kind==UnitKind::Scratch) {
+            auto* scratch=static_cast<ScratchUnit*>(unit);scratch->synchronize();
+            if(scratch->gate_deadline_!=UINT64_MAX && (!transport_playing || !sequencer_enabled))scratch->release_sequence_gate();
+            if(scratch->gate_deadline_!=UINT64_MAX) {
+                const uint64_t now=scratch->gate_phase_?clock_phase_:transport_frame;
+                if(scratch->gate_deadline_<=now)scratch->release_sequence_gate();
+                else {
+                    const uint64_t frame=scratch->gate_phase_?clock_frame_for_phase(scratch->gate_deadline_):scratch->gate_deadline_;
+                    if(frame<next)next=frame;
+                }
+            }
+            continue;
+        }
         if (unit && unit->kind == UnitKind::Grain) {
             auto* gran = static_cast<GrainUnit*>(unit);
             gran->synchronize_performance();
@@ -3632,7 +3853,16 @@ void Engine::trigger_chain_internal(int chain, bool audible_only) {
         // never erase a finalized take just because the chain still contains REC.
         if (!unit || unit->kind == UnitKind::Recorder || (audible_only && unit->bypass)) continue;
         if (unit->kind==UnitKind::Arp && (unit->bypass || chains[chain].mute)) continue;
+        if(auto* p=bind_paul(chain,slot)) {
+            for(int i=0;i<p->num_params;++i)p->params[i].resolve(modulation_value(p->params[i].src));
+        }
         if (arp_trigger_owner_for(chain,slot)>=0) continue;
+        if(unit->kind==UnitKind::Scratch) {
+            auto* scratch=static_cast<ScratchUnit*>(unit);
+            scratch->engine_=this;scratch->chain_=int8_t(chain);scratch->slot_=int8_t(slot);
+            scratch->synchronize();
+            for(int p=0;p<unit->num_params;++p)scratch->resolve_param(p,modulation_value(unit->params[p].src));
+        }
         if (unit->kind==UnitKind::Vca) update_clock_unit(unit);
         unit->trigger();
     }
@@ -3685,15 +3915,23 @@ void Engine::control_step() {
     // Only persistent bases change; ordinary resolve below retains every override.
     step_module_random();
 
+    // Validate only the four bounded pitch records before normal resolution.
+    // Bypass/source precedence and live domain edits must not revive a stale note.
+    for (int chain = 0; chain < NUM_CHAINS; ++chain)
+        if (sequence_pitch_owner_[chain].unit)
+            validate_sequence_pitch(chain, resolve_sequence_source(chain));
+
     // 2) resolve all unit params + let units recompute coefficients
     for (auto& c : chains) {
         for (auto* u : c.units) {
             if (!u) continue;
+            ScratchUnit* scratch=u->kind==UnitKind::Scratch?static_cast<ScratchUnit*>(u):nullptr;
+            if(scratch)scratch->synchronize(); // invalid latch never resolves one stale control tick
             for (int p = 0; p < u->num_params; ++p) {
                 Param& pr = u->params[p];
                 q15 mv = (pr.src == ModSource::None)
                     ? 0 : modulation_value(pr.src);
-                pr.resolve(mv);
+                if(scratch)scratch->resolve_param(p,mv);else pr.resolve(mv);
             }
             u->control_tick();
             update_clock_unit(u);
@@ -3705,13 +3943,16 @@ bool Engine::play_editor_busy() const {
     return recording_active_or_pending();
 }
 uint32_t Engine::start_play_preview(int chain, int slot, uint32_t first, uint32_t end,
-                                    bool repeat, bool reverse, uint16_t speed_q8, bool scrub) {
-    if (chain < 0 || chain >= NUM_CHAINS || slot < 0 || slot >= UNITS_PER_CHAIN || play_editor_busy()) return 0;
+                                    bool repeat, bool reverse, uint16_t speed_q8, bool scrub, int8_t part_pitch) {
+    if (chain < 0 || chain >= NUM_CHAINS || slot < 0 || slot >= UNITS_PER_CHAIN || play_editor_busy() ||
+        !play_part_pitch::valid(part_pitch) || speed_q8 < trackr::synth::Sample::CUT_SPEED_MIN ||
+        speed_q8 > trackr::synth::Sample::CUT_SPEED_MAX) return 0;
     const Unit* u = chains[chain].units[slot];
     if (!u || u->kind != UnitKind::SamplePlayer || u->bypass || chains[chain].mute) return 0;
     const auto& source = *static_cast<const PlayUnit*>(u);
     if (source.sample_slot < 0 || source.sample_slot >= trackr::synth::SAMPLE_BANK_SIZE || !source.edit_source_matches()) return 0;
     stop_bounce_preview(); stop_sample_preview(); stop_play_preview();
+    play_preview_.set_modern(source.modern());
     play_preview_.sample_slot = source.sample_slot;
     play_preview_.pitch_quantize = source.pitch_quantize;
     play_preview_.set_pitch_mode(source.pitch_mode());
@@ -3724,7 +3965,7 @@ uint32_t Engine::start_play_preview(int chain, int slot, uint32_t first, uint32_
         play_preview_.params[p].snap();
     }
     play_preview_generation_ = trackr::synth::SampleBank::instance().generation(source.sample_slot);
-    if (!play_preview_.preview_frames(first, end, repeat, play_preview_generation_, reverse, speed_q8, scrub)) return 0;
+    if (!play_preview_.preview_frames(first, end, repeat, play_preview_generation_, reverse, speed_q8, scrub, part_pitch)) return 0;
     play_preview_owner_ = u; play_preview_chain_ = chain; play_preview_slot_ = slot;
     if (!++play_preview_token_) ++play_preview_token_;
     return play_preview_token_;
@@ -3735,22 +3976,32 @@ void Engine::stop_play_preview(uint32_t token) {
     play_preview_.reset(); play_preview_owner_ = nullptr;
     play_preview_chain_ = play_preview_slot_ = -1;
 }
+bool Engine::play_preview_valid() const {
+    if (!play_preview_owner_ || play_preview_chain_ < 0 || play_preview_chain_ >= NUM_CHAINS ||
+        play_preview_slot_ < 0 || play_preview_slot_ >= UNITS_PER_CHAIN || play_editor_busy()) return false;
+    const Unit* unit = chains[play_preview_chain_].units[play_preview_slot_];
+    if (unit != play_preview_owner_ || !unit || unit->kind != UnitKind::SamplePlayer ||
+        unit->bypass || chains[play_preview_chain_].mute) return false;
+    const auto& source = *static_cast<const PlayUnit*>(unit);
+    return source.sample_slot == play_preview_.sample_slot && source.modern() == play_preview_.modern() &&
+        source.pitch_mode() == play_preview_.pitch_mode() && source.edit_source_matches() &&
+        trackr::synth::SampleBank::instance().generation(source.sample_slot) == play_preview_generation_ &&
+        play_preview_.source_matches(play_preview_.voice_source_);
+}
 bool Engine::play_preview_active(uint32_t token) const {
-    return token && token == play_preview_token_ && play_preview_owner_ && play_preview_.playback_active();
+    return token && token == play_preview_token_ && play_preview_valid() && play_preview_.playback_active();
+}
+bool Engine::update_play_preview(uint32_t token, uint32_t first, uint32_t end,
+                                 bool reverse, uint16_t rate, int8_t part_pitch) {
+    return play_preview_active(token) && play_preview_.update_preview_frames(first, end, reverse, rate, part_pitch);
 }
 uint32_t Engine::play_preview_position(uint32_t token) const {
     return play_preview_active(token) ? play_preview_.visual_source_frame() : 0;
 }
 void Engine::process_play_preview(q15* out, int frames) {
     if (!play_preview_owner_) return;
+    if (!play_preview_valid()) { stop_play_preview(); return; }
     const Unit* u = chains[play_preview_chain_].units[play_preview_slot_];
-    if (u != play_preview_owner_ || !u || u->kind != UnitKind::SamplePlayer || u->bypass ||
-        chains[play_preview_chain_].mute || play_editor_busy() ||
-        static_cast<const PlayUnit*>(u)->sample_slot != play_preview_.sample_slot ||
-        static_cast<const PlayUnit*>(u)->pitch_mode() != play_preview_.pitch_mode() ||
-        trackr::synth::SampleBank::instance().generation(play_preview_.sample_slot) != play_preview_generation_) {
-        stop_play_preview(); return;
-    }
     q15 mono[CONTROL_INTERVAL];
     for (int done = 0; done < frames;) {
         const int n = std::min(frames - done, CONTROL_INTERVAL);
@@ -3939,6 +4190,7 @@ void Engine::render(q15* out, int frames) {
                     }
                 }
         }
+        if(scratch_gesture_.token && !scratch_gesture_active(scratch_gesture_.token))cancel_scratch_gesture();
         if (temp_chain_ >= 0 && (!param_temp_active() ||
             !param_temp_allowed(temp_chain_, temp_slot_, temp_param_))) cancel_param_temp();
         if (sequence_audition_chain_ >= 0 &&
@@ -3994,6 +4246,15 @@ void Engine::render(q15* out, int frames) {
                     else u->process(c.scratch, n);
                     any = true;
                     continue;
+                }
+                if(u->kind==UnitKind::Paul) {
+                    for(int s=0;s<UNITS_PER_CHAIN;++s)if(c.units[s]==u)bind_paul(ci,s)->synchronize();
+                }
+                if(u->kind==UnitKind::Scratch) {
+                    auto* scratch=static_cast<ScratchUnit*>(u);
+                    scratch->engine_=this;scratch->chain_=int8_t(ci);
+                    for(int s=0;s<UNITS_PER_CHAIN;++s)if(c.units[s]==u)scratch->slot_=int8_t(s);
+                    scratch->synchronize();
                 }
                 if (u->kind == UnitKind::Fract) {
                     auto* fract = static_cast<FractUnit*>(u);

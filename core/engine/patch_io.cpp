@@ -1,3 +1,17 @@
+// SNCI version18 is required only for clean authored GRAN reading nondefaults.
+// GRNX v1: u8 version1/count1..24, then {chain,slot,reading,reverse_percent}.
+// UNIT bit4 exactly matches sparse records. Runtime mixed phase is never stored.
+// Default/dormant50 old/off saves retain their exact prior container and bytes.
+// SNCH version17 carries append-only PAUL30. All-forward PAUL v1 stays exact:
+// {chain,slot,mode}. Any nonforward card requires PAUL v2 {chain,slot,mode,direction}
+// for EVERY card (Forward=0,Reverse=1,PingPong=2). Source=CORE.extra (<64), flags=0.
+// DSP/FFT/RNG/gates/scan/loop leg/focus are runtime-only. Non-PAUL saves stay exact.
+// Pre17 CORE and SCNE PAUL kinds reject, including incomplete containers.
+// SNCG version16 also carries append-only SCRT29: pre-SCRT readers reject CORE's
+// unknown nonempty kind. SCRT v1 keeps {chain,slot,mode,map}; custom axes require
+// SCRT v2 {chain,slot,mode,map,axis_x,axis_y} for every card (-1 encoded as255).
+// No latch/gesture/gate/read-head state is serialized. Non-SCRT saves stay unchanged.
+// SNCG version16 marks seven-family INST/modal; pre16 INST is rejected, not migrated.
 // SNCE version14 marks reciprocal TILT; Clear6 and both Legacy5 laws keep old flags.
 // SNCF version15 marks extended VCA; old readers must reject new launch/timing modes.
 // patch_io.cpp - transactional SNC7/8/9/A/B/C/D chunks + SNC1-SNC6 migration.
@@ -45,6 +59,9 @@ static constexpr char MAGIC12[4] = { 'S', 'N', 'C', 'C' };
 static constexpr char MAGIC14[4] = { 'S', 'N', 'C', 'E' };
 static constexpr char MAGIC13[4] = { 'S', 'N', 'C', 'D' };
 static constexpr char MAGIC15[4] = { 'S', 'N', 'C', 'F' };
+static constexpr char MAGIC16[4] = { 'S', 'N', 'C', 'G' };
+static constexpr char MAGIC17[4] = { 'S', 'N', 'C', 'H' };
+static constexpr char MAGIC18[4] = { 'S', 'N', 'C', 'I' };
 static constexpr int LEGACY_PARAM_COUNT = 6;
 static constexpr int LEGACY_SIGIL_COUNT = 4;
 static constexpr uint32_t UNIVERSAL_SIGIL_BYTES = 5 + 8 * 274 + NUM_CHAINS * UNITS_PER_CHAIN * 2;
@@ -74,8 +91,12 @@ struct PatchDocument::Impl {
         uint8_t strn_window = 0;
         uint8_t strn_division = 0;
         uint8_t strn_long = 0;
+        uint8_t scratch_mode = 1, scratch_map = 2;
+        int8_t scratch_axis_x = -1, scratch_axis_y = -1;
+        uint8_t paul_mode = 0, paul_direction = 0;
         bool gran_perform = false;
         uint8_t gran_mode = 0, gran_window = 0, gran_count = 4;
+        uint8_t gran_reading = 0, gran_reverse_percent = 50;
         PlayEditState play_edit;
         bool play_position = false, play_hold = false, play_note = false;
         uint8_t play_pitch_mode = 0;
@@ -113,6 +134,7 @@ struct PatchDocument::Impl {
     uint32_t sample_chops[SampleManifest::SLOT_COUNT][trackr::synth::Sample::MAX_CHOPS] = {};
     uint16_t sample_slice_reverse[SampleManifest::SLOT_COUNT] = {};
     uint16_t sample_slice_speed[SampleManifest::SLOT_COUNT][trackr::synth::Sample::MAX_CHOPS] = {};
+    int8_t sample_slice_pitch[SampleManifest::SLOT_COUNT][trackr::synth::Sample::MAX_CHOPS] = {};
     bool sample_exact_native[SampleManifest::SLOT_COUNT] = {};
     uint8_t transport_playing = 0;
     uint8_t beats_per_bar = 4;
@@ -189,6 +211,20 @@ static bool authored_reverb_utilities(const Engine& eng, int chain, int slot, co
     return false;
 }
 
+// Validate raw public config without constructing a unit, normalizing invalid
+// values or resolving against live params. Defaults come from the stable map;
+// axis_params() is deliberately not used because it may mask invalid overrides.
+static bool scratch_axes_valid(uint8_t mode, uint8_t map, int x, int y) {
+    if (mode > 1 || map > 2 || x < -1 || y < -1 ||
+        x >= ScratchUnit::P_COUNT || y >= ScratchUnit::P_COUNT) return false;
+    int default_x, default_y;
+    ScratchUnit::map_params(ScratchUnit::Mode(mode), ScratchUnit::Map(map), default_x, default_y);
+    const int resolved_x = x == -1 ? default_x : x;
+    const int resolved_y = y == -1 ? default_y : y;
+    return ScratchUnit::axis_parameter_available(ScratchUnit::Mode(mode), resolved_x) &&
+        ScratchUnit::axis_parameter_available(ScratchUnit::Mode(mode), resolved_y) && resolved_x != resolved_y;
+}
+
 bool capture(const Engine& eng, PatchDocument& out, const WorkspaceLayout* workspace) {
     using Impl = PatchDocument::Impl;
     if (!out.impl_ || eng.recording_active_or_pending()) return false;
@@ -244,6 +280,12 @@ bool capture(const Engine& eng, PatchDocument& out, const WorkspaceLayout* works
             }
             if (unit && unit->kind == UnitKind::Grain) {
                 const auto* gran = static_cast<const GrainUnit*>(unit);
+                // RAW validation, not runtime normalization. Dormant authored
+                // percentage also requires GRNX; legacy authorship cannot save.
+                target.gran_reading = uint8_t(gran->reading);
+                target.gran_reverse_percent = gran->reverse_percent;
+                if (target.gran_reading > 3 || target.gran_reverse_percent > 100 ||
+                    (!gran->clean && (target.gran_reading || target.gran_reverse_percent != 50))) return false;
                 if (gran->clean) {
                     target.gran_mode = (uint8_t)gran->launch_mode;
                     target.gran_window = (uint8_t)gran->window;
@@ -252,6 +294,23 @@ bool capture(const Engine& eng, PatchDocument& out, const WorkspaceLayout* works
                         !target.gran_count || target.gran_count > 16) return false;
                     target.gran_perform = target.gran_mode || target.gran_window || target.gran_count != 4;
                 }
+            }
+            if (unit && unit->kind == UnitKind::Scratch) {
+                const auto* scratch = static_cast<const ScratchUnit*>(unit);
+                target.scratch_mode = uint8_t(scratch->mode);
+                target.scratch_map = uint8_t(scratch->map);
+                target.scratch_axis_x = scratch->axis_x;
+                target.scratch_axis_y = scratch->axis_y;
+                if (!scratch_axes_valid(target.scratch_mode, target.scratch_map,
+                        target.scratch_axis_x, target.scratch_axis_y) ||
+                    scratch->sample_slot < 0 || scratch->sample_slot >= SampleManifest::SLOT_COUNT) return false;
+            }
+            if (unit && unit->kind == UnitKind::Paul) {
+                const auto* paul = static_cast<const PaulUnit*>(unit);
+                target.paul_mode = uint8_t(paul->mode);
+                target.paul_direction = uint8_t(paul->direction);
+                if (target.paul_mode > 1 || target.paul_direction > 2 || paul->sample_slot < 0 ||
+                    paul->sample_slot >= SampleManifest::SLOT_COUNT) return false;
             }
             if (unit && unit->kind == UnitKind::Glitch) {
                 target.glitch_pattern = static_cast<const GlitchUnit*>(unit)->pattern_state();
@@ -310,6 +369,9 @@ bool capture(const Engine& eng, PatchDocument& out, const WorkspaceLayout* works
             const uint16_t speed = bank.slot(slot).slice_speed_q8[cut];
             if (trackr::synth::Sample::cut_speed(speed) != speed) return false;
             document.sample_slice_speed[slot][cut] = bank.slot(slot).chops[cut] == UINT32_MAX ? 256 : speed;
+            const int8_t pitch = bank.slot(slot).slice_pitch_semitones[cut];
+            if (!play_part_pitch::valid(pitch) || (bank.slot(slot).chops[cut] == UINT32_MAX && pitch)) return false;
+            document.sample_slice_pitch[slot][cut] = pitch;
         }
         document.sample_exact_native[slot] = bank.slot(slot).exact_native_endpoint;
     }
@@ -332,6 +394,7 @@ bool capture(const Engine& eng, PatchDocument& out, const WorkspaceLayout* works
             std::memcmp(document.sample_chops[slot], pending->chops, sizeof pending->chops) ||
             document.sample_slice_reverse[slot] != pending->reverse ||
             std::memcmp(document.sample_slice_speed[slot], pending->speed_q8, sizeof pending->speed_q8) ||
+            std::memcmp(document.sample_slice_pitch[slot], pending->pitch_semitones, sizeof pending->pitch_semitones) ||
             document.sample_exact_native[slot] != pending->exact_native_endpoint ||
             (pending_frames[slot] && play->edit_state().source_frames && pending_frames[slot] != play->edit_state().source_frames))) return false;
         pending_slots[slot] = true; pending_frames[slot] = play->edit_state().source_frames;
@@ -341,7 +404,11 @@ bool capture(const Engine& eng, PatchDocument& out, const WorkspaceLayout* works
         entry.path[sizeof entry.path - 1] = 0;
         std::memcpy(document.sample_chops[slot], pending->chops, sizeof pending->chops);
         document.sample_slice_reverse[slot] = pending->reverse;
+        for (int cut = 0; cut < trackr::synth::Sample::MAX_CHOPS; ++cut)
+            if (!play_part_pitch::valid(pending->pitch_semitones[cut]) ||
+                (pending->chops[cut] == UINT32_MAX && pending->pitch_semitones[cut])) return false;
         std::memcpy(document.sample_slice_speed[slot], pending->speed_q8, sizeof pending->speed_q8);
+        std::memcpy(document.sample_slice_pitch[slot], pending->pitch_semitones, sizeof pending->pitch_semitones);
         document.sample_exact_native[slot] = pending->exact_native_endpoint;
     }
     document.transport_playing = eng.transport_playing ? 1 : 0;
@@ -391,6 +458,8 @@ static uint8_t unit_extra(const Unit* u) {
     switch (u->kind) {
         case UnitKind::SamplePlayer: return (uint8_t)static_cast<const PlayUnit*>(u)->sample_slot;
         case UnitKind::Grain: return (uint8_t)static_cast<const GrainUnit*>(u)->sample_slot;
+        case UnitKind::Scratch: return (uint8_t)static_cast<const ScratchUnit*>(u)->sample_slot;
+        case UnitKind::Paul: return (uint8_t)static_cast<const PaulUnit*>(u)->sample_slot;
         case UnitKind::Recorder: return (uint8_t)static_cast<const RecUnit*>(u)->sample_slot;
         case UnitKind::Osc: {
             const auto* osc = static_cast<const OscUnit*>(u);
@@ -406,6 +475,8 @@ static void apply_extra(Unit* u, uint8_t x) {
     switch (u->kind) {
         case UnitKind::SamplePlayer: static_cast<PlayUnit*>(u)->sample_slot = x % trackr::synth::SAMPLE_BANK_SIZE; break;
         case UnitKind::Grain: static_cast<GrainUnit*>(u)->sample_slot = x % trackr::synth::SAMPLE_BANK_SIZE; break;
+        case UnitKind::Scratch: static_cast<ScratchUnit*>(u)->sample_slot = x; break;
+        case UnitKind::Paul: static_cast<PaulUnit*>(u)->sample_slot = x; break;
         case UnitKind::Recorder: static_cast<RecUnit*>(u)->sample_slot = x % trackr::synth::SAMPLE_BANK_SIZE; break;
         case UnitKind::Osc: if (x < (uint8_t)OscUnit::Wave::Count) static_cast<OscUnit*>(u)->wave = (OscUnit::Wave)x; break;
         case UnitKind::Filter: if (x <= (uint8_t)trackr::dsp::FilterType::Off) static_cast<FilterUnit*>(u)->type = (trackr::dsp::FilterType)x; break;
@@ -449,12 +520,13 @@ static uint8_t unit_flags(const Unit* u) {
     // MIC bit0 distinguishes real low-cut data from the old unused third slot.
     // All in-memory MIC cards expose three params; migration clears old tails.
     if (u->kind == UnitKind::MicIn) return 1u;
-    // GRAN: bit0 = clock_sync, bits1-2 = division, bit3 = clean/independent scan.
-    // Absence of bit3 always means frozen legacy DSP; no new chunk/format bump.
+    // GRAN: bit0 sync, bits1-2 division, bit3 clean; bit4 required GRNX marker.
+    // Absence of bit3 always means frozen legacy DSP. Reading defaults add no bit.
     if (u->kind == UnitKind::Grain) {
         const auto* g = static_cast<const GrainUnit*>(u);
         return (uint8_t)((g->clock_sync ? 1u : 0u) |
-                         (uint32_t)((g->sync_division & 3u) << 1) | (g->clean ? 8u : 0u));
+                         (uint32_t)((g->sync_division & 3u) << 1) | (g->clean ? 8u : 0u) |
+                         (g->clean && (g->reading != GrainUnit::Reading::SignedPitch || g->reverse_percent != 50) ? 16u : 0u));
     }
     return 0;
 }
@@ -1064,11 +1136,22 @@ static bool write_microtiming_data(FILE* f, const Pattern& pattern) {
 bool save(const PatchDocument& captured, const char* path) {
     if (!path || !captured.impl_) return false;
     const PatchDocument::Impl& document = *captured.impl_;
+    uint8_t gran_reading_count = 0;
+    for (const auto& chain : document.chains) for (const auto& unit : chain.units) {
+        if (unit.kind != uint8_t(UnitKind::Grain)) continue;
+        const bool authored = unit.gran_reading || unit.gran_reverse_percent != 50;
+        if (unit.gran_reading > 3 || unit.gran_reverse_percent > 100 ||
+            (authored && !(unit.flags & 8u)) || bool(unit.flags & 16u) != authored) return false;
+        gran_reading_count += authored;
+    }
     char tmp[256]; size_t n = std::strlen(path); if (n + 4 >= sizeof tmp) return false;
     std::memcpy(tmp, path, n); std::memcpy(tmp + n, ".tmp", 5);
     FILE* f = fopen(tmp, "wb"); if (!f) return false;
-    bool extended_motor=false, extended_noise=false, extended_bit=false, extended_strain=false, extended_ring=false, extended_fold=false, extended_tilt=false, extended_vca=false;
+    bool has_paul=false, has_scratch=false, has_inst=false, extended_motor=false, extended_noise=false, extended_bit=false, extended_strain=false, extended_ring=false, extended_fold=false, extended_tilt=false, extended_vca=false;
     for(const auto& chain:document.chains)for(const auto& unit:chain.units) {
+        has_paul |= unit.kind==uint8_t(UnitKind::Paul);
+        has_scratch |= unit.kind==uint8_t(UnitKind::Scratch);
+        has_inst |= unit.kind==uint8_t(UnitKind::Inst);
         extended_motor |= unit.kind==uint8_t(UnitKind::Motor) && (unit.flags&1u);
         extended_noise |= unit.kind==uint8_t(UnitKind::Noise) && (unit.flags&2u);
         extended_bit |= unit.kind==uint8_t(UnitKind::Bitcrush) && (unit.flags&1u);
@@ -1078,8 +1161,11 @@ bool save(const PatchDocument& captured, const char* path) {
         extended_tilt |= unit.kind==uint8_t(UnitKind::Tilt) && unit.flags==2u;
         extended_fold |= unit.kind==uint8_t(UnitKind::Fold) && (unit.flags&1u);
     }
-    const uint8_t version=extended_vca ? 15 : extended_tilt ? 14 : extended_fold ? 13 : extended_ring ? 12 : extended_strain ? 11 : extended_bit ? 10 : extended_noise ? 9 : extended_motor ? 8 : VERSION7;
-    bool ok = wbytes(f, extended_vca ? MAGIC15 : extended_tilt ? MAGIC14 : extended_fold ? MAGIC13 : extended_ring ? MAGIC12 : extended_strain ? MAGIC11 : extended_bit ? MAGIC10 : extended_noise ? MAGIC9 : extended_motor ? MAGIC8 : MAGIC7, 4) && w8(f, version);
+    // A scene-only PAUL kind must not be written into a pre17 container either.
+    for (const auto& chain : document.scenes) for (const auto& scene : chain)
+        for (UnitKind kind : scene.kind) has_paul |= kind == UnitKind::Paul;
+    const uint8_t version=gran_reading_count ? 18 : has_paul ? 17 : (has_scratch || has_inst) ? 16 : extended_vca ? 15 : extended_tilt ? 14 : extended_fold ? 13 : extended_ring ? 12 : extended_strain ? 11 : extended_bit ? 10 : extended_noise ? 9 : extended_motor ? 8 : VERSION7;
+    bool ok = wbytes(f, gran_reading_count ? MAGIC18 : has_paul ? MAGIC17 : (has_scratch || has_inst) ? MAGIC16 : extended_vca ? MAGIC15 : extended_tilt ? MAGIC14 : extended_fold ? MAGIC13 : extended_ring ? MAGIC12 : extended_strain ? MAGIC11 : extended_bit ? MAGIC10 : extended_noise ? MAGIC9 : extended_motor ? MAGIC8 : MAGIC7, 4) && w8(f, version);
 
     if (ok) {
         ChunkWriter c(f, "CORE");
@@ -1134,6 +1220,52 @@ bool save(const PatchDocument& captured, const char* path) {
     if (ok) {
         ChunkWriter c(f, "UNIT");
         for (int ch = 0; ch < NUM_CHAINS; ++ch) for (int s = 0; s < UNITS_PER_CHAIN; ++s) c.ok = c.ok && w8(f, document.chains[ch].units[s].flags);
+        ok = c.finish();
+    }
+    if (ok && has_paul) {
+        uint8_t count = 0;
+        bool directed = false;
+        for (const auto& chain : document.chains) for (const auto& unit : chain.units)
+            if (unit.kind == uint8_t(UnitKind::Paul)) {
+                ++count;
+                directed |= unit.paul_direction != 0;
+            }
+        // No empty PAUL chunk for scene-only state; every actual card is required.
+        // Keep v1 byte-exact for all-forward cards. Old v1 readers reject v2.
+        if (count) {
+            ChunkWriter c(f, "PAUL");
+            c.ok = c.ok && w8(f, directed ? 2 : 1) && w8(f, count);
+            for (int ch=0; ch<NUM_CHAINS && c.ok; ++ch) for (int s=0; s<UNITS_PER_CHAIN && c.ok; ++s) {
+                const auto& unit = document.chains[ch].units[s];
+                if (unit.kind != uint8_t(UnitKind::Paul)) continue;
+                c.ok = unit.paul_mode <= 1 && unit.paul_direction <= 2 && !unit.flags &&
+                    unit.extra < SampleManifest::SLOT_COUNT &&
+                    w8(f, ch) && w8(f, s) && w8(f, unit.paul_mode);
+                if (directed) c.ok = c.ok && w8(f, unit.paul_direction);
+            }
+            ok = c.finish();
+        }
+    }
+    if (ok && has_scratch) {
+        uint8_t count = 0;
+        for (const auto& chain : document.chains) for (const auto& unit : chain.units)
+            count += unit.kind == uint8_t(UnitKind::Scratch);
+        bool custom_axes = false;
+        for (const auto& chain : document.chains) for (const auto& unit : chain.units)
+            if (unit.kind == uint8_t(UnitKind::Scratch))
+                custom_axes |= unit.scratch_axis_x != -1 || unit.scratch_axis_y != -1;
+        ChunkWriter c(f, "SCRT");
+        c.ok = w8(f, custom_axes ? 2 : 1) && w8(f, count);
+        for (int ch=0; ch<NUM_CHAINS && c.ok; ++ch) for (int s=0; s<UNITS_PER_CHAIN && c.ok; ++s) {
+            const auto& unit = document.chains[ch].units[s];
+            if (unit.kind != uint8_t(UnitKind::Scratch)) continue;
+            c.ok = scratch_axes_valid(unit.scratch_mode, unit.scratch_map,
+                    unit.scratch_axis_x, unit.scratch_axis_y) &&
+                unit.extra < SampleManifest::SLOT_COUNT && w8(f, ch) && w8(f, s) &&
+                w8(f, unit.scratch_mode) && w8(f, unit.scratch_map);
+            if (custom_axes) c.ok = c.ok && w8(f, uint8_t(unit.scratch_axis_x)) &&
+                w8(f, uint8_t(unit.scratch_axis_y));
+        }
         ok = c.finish();
     }
     if (ok) {
@@ -1295,6 +1427,16 @@ bool save(const PatchDocument& captured, const char* path) {
             c.ok = c.ok && trackr::synth::Sample::cut_speed(speed) == speed && wu16(f, speed);
         ok = c.finish();
     }
+    bool any_cut_pitch = false;
+    for (const auto& pitches : document.sample_slice_pitch) for (auto pitch : pitches) any_cut_pitch |= pitch != 0;
+    if (ok && any_cut_pitch) {
+        // Independent optional SPITv1; old readers skip, no container bump.
+        ChunkWriter c(f, "SPIT");
+        c.ok = w8(f, 1) && w8(f, SampleManifest::SLOT_COUNT) && w8(f, trackr::synth::Sample::MAX_CHOPS);
+        for (const auto& pitches : document.sample_slice_pitch) for (auto pitch : pitches)
+            c.ok = c.ok && play_part_pitch::valid(pitch) && w8(f, (uint8_t)pitch);
+        ok = c.finish();
+    }
     if (ok) {
         ChunkWriter c(f, "TRNS");
         c.ok = c.ok && w8(f, document.transport_playing) && w8(f, document.beats_per_bar) &&
@@ -1398,6 +1540,17 @@ bool save(const PatchDocument& captured, const char* path) {
         }
     }
 
+    if (ok && gran_reading_count) {
+        ChunkWriter c(f, "GRNX");
+        c.ok = w8(f, 1) && w8(f, gran_reading_count);
+        for (int ch=0; ch<NUM_CHAINS; ++ch) for (int slot=0; slot<UNITS_PER_CHAIN; ++slot) {
+            const auto& unit = document.chains[ch].units[slot];
+            if (unit.kind != uint8_t(UnitKind::Grain) || !(unit.flags & 16u)) continue;
+            c.ok = c.ok && w8(f, ch) && w8(f, slot) && w8(f, unit.gran_reading) && w8(f, unit.gran_reverse_percent);
+        }
+        ok = c.finish();
+    }
+
     // Physical bindings are optional patch state. Older SNC7 readers skip this
     // chunk; newer readers retain constructor defaults when it is absent.
     if (ok) {
@@ -1466,7 +1619,7 @@ bool save(const Engine& eng, const char* path) {
 }
 
 static bool read_core(FILE* f, Engine& target, int param_count,
-                      uint8_t (&raw_extra)[NUM_CHAINS][UNITS_PER_CHAIN]) {
+                      uint8_t (&raw_extra)[NUM_CHAINS][UNITS_PER_CHAIN], uint8_t format) {
     bool ok = param_count >= 0 && param_count <= PARAM_BANK_SIZE;
     for (int c = 0; c < NUM_CHAINS && ok; ++c) {
         int16_t vol, pan; uint8_t mute; ok = r16(f, vol) && r16(f, pan) && r8(f, mute);
@@ -1476,6 +1629,8 @@ static bool read_core(FILE* f, Engine& target, int param_count,
         target.chains[c].mute = mute != 0;
         for (int s = 0; s < UNITS_PER_CHAIN && ok; ++s) {
             uint8_t kind, bypass, extra; ok = r8(f, kind) && r8(f, bypass) && r8(f, extra);
+            // Validate before construction, not behind the required-chunks gate.
+            if (ok && kind == uint8_t(UnitKind::Paul) && format < 17) return false;
             if (ok) raw_extra[c][s] = extra;
             Unit* u = ok && kind < (uint8_t)UnitKind::Count ? make_loaded_unit((UnitKind)kind) : nullptr;
             if (ok && kind != (uint8_t)UnitKind::Empty && !u) ok = false;
@@ -1703,6 +1858,8 @@ static PlayUnit::EditSourceMetadata play_source_metadata(const SampleManifest& m
     source.reverse = manifest.has_slice_reverse ? manifest.slice_reverse[slot] : 0;
     for (int i = 0; i < trackr::synth::Sample::MAX_CHOPS; ++i)
         source.speed_q8[i] = manifest.has_slice_speed ? manifest.slice_speed_q8[slot][i] : 256;
+    for (int i = 0; i < trackr::synth::Sample::MAX_CHOPS; ++i)
+        source.pitch_semitones[i] = manifest.has_slice_pitch ? manifest.slice_pitch_semitones[slot][i] : 0;
     source.exact_native_endpoint = manifest.exact_native[slot];
     return source;
 }
@@ -1710,13 +1867,26 @@ static PlayUnit::EditSourceMetadata play_source_metadata(const SampleManifest& m
 static bool load_v7(FILE* f, Engine& target, SampleManifest& manifest,
                     WorkspaceLayout& workspace, uint8_t format=7) {
     bool seen_envr = false, seen_clock = false, seen_play_edit = false, seen_sext = false;
-    bool seen_ppos = false, seen_pspd = false, seen_phld = false, seen_pnot = false;
+    bool seen_ppos = false, seen_pspd = false, seen_spit = false, seen_phld = false, seen_pnot = false;
+    bool seen_paul = false;
+    struct PaulConfig { bool present = false; uint8_t mode = 0, direction = 0; };
+    PaulConfig parsed_paul[NUM_CHAINS][UNITS_PER_CHAIN];
+    bool seen_scratch = false;
+    struct ScratchConfig {
+        bool present = false;
+        uint8_t mode = 1, map = 2;
+        int8_t axis_x = -1, axis_y = -1;
+    };
+    ScratchConfig parsed_scratch[NUM_CHAINS][UNITS_PER_CHAIN];
     bool seen_arpm = false;
     bool seen_mrnd = false;
     ModSource parsed_random[NUM_CHAINS][UNITS_PER_CHAIN] = {};
     bool seen_grnp = false;
     struct GrainPerform { bool present = false; uint8_t mode = 0, window = 0, count = 4; };
     GrainPerform parsed_gran[NUM_CHAINS][UNITS_PER_CHAIN];
+    bool seen_grnx = false;
+    struct GrainReading { bool present = false; uint8_t reading = 0, percent = 50; };
+    GrainReading parsed_reading[NUM_CHAINS][UNITS_PER_CHAIN];
     ArpUnit::NoteRecall parsed_arp_recall[NUM_CHAINS][UNITS_PER_CHAIN];
     bool parsed_note[NUM_CHAINS][UNITS_PER_CHAIN] = {};
     uint8_t parsed_pitch_mode[NUM_CHAINS][UNITS_PER_CHAIN] = {};
@@ -1745,7 +1915,39 @@ static bool load_v7(FILE* f, Engine& target, SampleManifest& manifest,
         char id[4]; size_t got = fread(id, 1, 4, f); if (got == 0 && feof(f)) break; if (got != 4) return false;
         uint32_t len; if (!ru32(f, len) || len > MAX_CHUNK_SIZE) return false;
         long start = ftell(f); if (start < 0) return false; bool ok = true;
-        if (!std::memcmp(id,"MRND",4)) {
+        if (!std::memcmp(id,"PAUL",4)) {
+            if (format < 17 || seen_paul || len < 2) return false;
+            seen_paul = true;
+            uint8_t version=0, count=0;
+            ok = r8(f,version) && r8(f,count) && (version==1 || version==2) && count>0 &&
+                count<=NUM_CHAINS*UNITS_PER_CHAIN && len==2u+(version==1?3u:4u)*count;
+            for (int i=0; i<count && ok; ++i) {
+                uint8_t ch=0, slot=0, mode=0, direction=0; // v1 defaults Forward
+                ok = r8(f,ch) && r8(f,slot) && r8(f,mode) &&
+                    ch<NUM_CHAINS && slot<UNITS_PER_CHAIN && mode<=1;
+                if (version==2) ok = ok && r8(f,direction) && direction<=2;
+                if (!ok || parsed_paul[ch][slot].present) return false;
+                parsed_paul[ch][slot] = {true, mode, direction};
+            }
+        }
+        else if (!std::memcmp(id,"SCRT",4)) {
+            if (format < 16 || seen_scratch || len < 2) return false;
+            seen_scratch = true;
+            uint8_t version=0, count=0;
+            ok = r8(f,version) && r8(f,count) && (version==1 || version==2) && count>0 &&
+                count<=NUM_CHAINS*UNITS_PER_CHAIN && len==2u+(version==1?4u:6u)*count;
+            for (int i=0; i<count && ok; ++i) {
+                uint8_t ch=0, slot=0, mode=0, map=0, raw_x=255, raw_y=255;
+                ok = r8(f,ch) && r8(f,slot) && r8(f,mode) && r8(f,map) &&
+                    ch<NUM_CHAINS && slot<UNITS_PER_CHAIN;
+                if (version==2) ok = ok && r8(f,raw_x) && r8(f,raw_y);
+                const int x = raw_x==255 ? -1 : int(raw_x);
+                const int y = raw_y==255 ? -1 : int(raw_y);
+                if (!ok || !scratch_axes_valid(mode,map,x,y) || parsed_scratch[ch][slot].present) return false;
+                parsed_scratch[ch][slot] = {true, mode, map, int8_t(x), int8_t(y)};
+            }
+        }
+        else if (!std::memcmp(id,"MRND",4)) {
             if (seen_mrnd || len < 2) return false;
             seen_mrnd = true;
             uint8_t version=0, count=0;
@@ -1907,6 +2109,21 @@ static bool load_v7(FILE* f, Engine& target, SampleManifest& manifest,
                 ok = ok && ru16(f, speed) && trackr::synth::Sample::cut_speed(speed) == speed;
             manifest.has_slice_speed = ok;
         }
+        else if (!std::memcmp(id,"SPIT",4)) {
+            if (seen_spit || len != 3u + SampleManifest::SLOT_COUNT * trackr::synth::Sample::MAX_CHOPS) return false;
+            seen_spit = true;
+            uint8_t version = 0, slots = 0, cuts = 0;
+            ok = r8(f, version) && r8(f, slots) && r8(f, cuts) && version == 1 &&
+                slots == SampleManifest::SLOT_COUNT && cuts == trackr::synth::Sample::MAX_CHOPS;
+            for (auto& pitches : manifest.slice_pitch_semitones) for (auto& pitch : pitches) {
+                uint8_t raw = 0;
+                ok = ok && r8(f, raw);
+                const int value = raw < 128 ? raw : int(raw) - 256;
+                ok = ok && play_part_pitch::valid(value);
+                if (ok) pitch = (int8_t)value;
+            }
+            manifest.has_slice_pitch = ok;
+        }
         else if (!std::memcmp(id,"SEXT",4)) {
             if (seen_sext || len != 2u + SampleManifest::SLOT_COUNT) return false;
             seen_sext = true;
@@ -1962,6 +2179,21 @@ static bool load_v7(FILE* f, Engine& target, SampleManifest& manifest,
                 if (ok) parsed_clock[i] = {(ModSource)source, depth};
             }
         }
+        else if (!std::memcmp(id,"GRNX",4)) {
+            if (format < 18 || seen_grnx || len < 2) return false;
+            seen_grnx = true;
+            uint8_t version=0, count=0;
+            ok = r8(f,version) && r8(f,count) && version==1 && count>0 &&
+                count<=NUM_CHAINS*UNITS_PER_CHAIN && len==2u+4u*count;
+            for (int i=0; i<count && ok; ++i) {
+                uint8_t ch=0, slot=0, reading=0, percent=50;
+                ok = r8(f,ch) && r8(f,slot) && r8(f,reading) && r8(f,percent) &&
+                    ch<NUM_CHAINS && slot<UNITS_PER_CHAIN && reading<=3 && percent<=100 &&
+                    (reading || percent!=50);
+                if (!ok || parsed_reading[ch][slot].present) return false;
+                parsed_reading[ch][slot] = {true, reading, percent};
+            }
+        }
         else if (!std::memcmp(id,"GRNP",4)) {
             if (seen_grnp || len < 2) return false;
             seen_grnp = true;
@@ -1976,7 +2208,7 @@ static bool load_v7(FILE* f, Engine& target, SampleManifest& manifest,
                 parsed_gran[chain][slot] = {true, mode, window, burst};
             }
         }
-        else if (!std::memcmp(id,"CORE",4)) { if (seen_core || len != NUM_CHAINS * (5 + UNITS_PER_CHAIN * (3 + PARAM_BANK_SIZE * 5))) return false; seen_core=true; ok=read_core(f,target,PARAM_BANK_SIZE,parsed_core_extra); }
+        else if (!std::memcmp(id,"CORE",4)) { if (seen_core || len != NUM_CHAINS * (5 + UNITS_PER_CHAIN * (3 + PARAM_BANK_SIZE * 5))) return false; seen_core=true; ok=read_core(f,target,PARAM_BANK_SIZE,parsed_core_extra,format); }
         else if (!std::memcmp(id,"SIGL",4)) { if (seen_sigl || len != LEGACY_SIGIL_COUNT * (1+2*SIGIL_POINTS+4)) return false; seen_sigl=true; ok=read_sigils(f,target); }
         else if (!std::memcmp(id,"ROUT",4)) {
             if (seen_rout || len != 2 + LEGACY_SIGIL_COUNT * 6) return false;
@@ -2001,7 +2233,24 @@ static bool load_v7(FILE* f, Engine& target, SampleManifest& manifest,
         else if (!std::memcmp(id,"SDIR",4) && !seen_sdir) { seen_sdir=true;ok=read_sequence_directions(f,parsed_directions); }
         else if (!std::memcmp(id,"MTIM",4) && !seen_mtim) { seen_mtim=true;ok=read_microtiming(f,parsed_timing.get()); }
         else if (!std::memcmp(id,"PCHN",4) && !seen_pchn) { seen_pchn=true;ok=read_pattern_chain(f,target); }
-        else if (!std::memcmp(id,"SCNE",4) && !seen_scne) { seen_scne=true;for(int c=0;c<NUM_CHAINS&&ok;++c){int16_t morph;ok=r16(f,morph);if(ok)target.scene_morph[c]=morph;for(int n=0;n<2&&ok;++n){PersistentScene&sc=target.scenes[c][n];uint8_t valid;int16_t volume,pan;ok=r8(f,valid)&&r16(f,volume)&&r16(f,pan);if(ok){sc.valid=valid!=0;sc.volume=volume;sc.pan=pan;}for(int s=0;s<UNITS_PER_CHAIN&&ok;++s){uint8_t kind;ok=r8(f,kind);sc.kind[s]=kind<(uint8_t)UnitKind::Count?(UnitKind)kind:UnitKind::Empty;for(int p=0;p<MAX_PARAMS&&ok;++p){int16_t v;ok=r16(f,v);if(ok)sc.base[s][p]=v;}}}} }
+        else if (!std::memcmp(id,"SCNE",4)) {
+            if (seen_scne || len != NUM_CHAINS * (2u + 2u * (5u + UNITS_PER_CHAIN * (1u + MAX_PARAMS * 2u)))) return false;
+            seen_scne = true;
+            for (int c=0; c<NUM_CHAINS && ok; ++c) {
+                ok = r16(f,target.scene_morph[c]);
+                for (int n=0; n<2 && ok; ++n) {
+                    auto& scene = target.scenes[c][n]; uint8_t valid=0;
+                    ok = r8(f,valid) && r16(f,scene.volume) && r16(f,scene.pan);
+                    scene.valid = valid != 0;
+                    for (int s=0; s<UNITS_PER_CHAIN && ok; ++s) {
+                        uint8_t kind=0; ok = r8(f,kind);
+                        if (ok && kind == uint8_t(UnitKind::Paul) && format < 17) return false;
+                        scene.kind[s] = kind < uint8_t(UnitKind::Count) ? UnitKind(kind) : UnitKind::Empty;
+                        for (int p=0; p<MAX_PARAMS && ok; ++p) ok = r16(f,scene.base[s][p]);
+                    }
+                }
+            }
+        }
         else if (!std::memcmp(id,"MPAD",4) && !seen_mpad) { seen_mpad=true;for(int p=0;p<8&&ok;++p){MacroPad&pad=target.macro_pads[p];ok=fread(pad.name,1,sizeof pad.name,f)==sizeof pad.name&&r8(f,pad.route_count);pad.name[sizeof pad.name-1]=0;if(pad.route_count>MacroPad::MAX_ROUTES)pad.route_count=MacroPad::MAX_ROUTES;for(int r=0;r<MacroPad::MAX_ROUTES&&ok;++r){MacroPadRoute&x=pad.routes[r];int16_t lo=0,hi=0;ok=r8(f,x.chain)&&r8(f,x.slot)&&r8(f,x.param)&&r16(f,lo)&&r16(f,hi);if(ok){x.minimum=lo;x.maximum=hi;}}} }
         else if (!std::memcmp(id,"WSPC",4) && !seen_wspc) {
             seen_wspc=true; ok=read_workspace(f,workspace,len);
@@ -2049,6 +2298,12 @@ static bool load_v7(FILE* f, Engine& target, SampleManifest& manifest,
             for (int cut = 0; cut < trackr::synth::Sample::MAX_CHOPS; ++cut)
                 if (manifest.chops[slot][cut] == UINT32_MAX && manifest.slice_speed_q8[slot][cut] != 256) return false;
     }
+    if (seen_spit) {
+        if (!manifest.has_chops) return false;
+        for (int slot = 0; slot < SampleManifest::SLOT_COUNT; ++slot)
+            for (int cut = 0; cut < trackr::synth::Sample::MAX_CHOPS; ++cut)
+                if (manifest.chops[slot][cut] == UINT32_MAX && manifest.slice_pitch_semitones[slot][cut]) return false;
+    }
     const bool required = seen_core && seen_sigl && seen_rout && seen_unit && seen_samp && seen_trns && seen_strn;
     if (required && seen_glitch) for (int c=0; c<NUM_CHAINS; ++c) for (int s=0; s<UNITS_PER_CHAIN; ++s) {
         if (!parsed_glitch[c][s]) continue;
@@ -2062,13 +2317,45 @@ static bool load_v7(FILE* f, Engine& target, SampleManifest& manifest,
         Unit* unit = target.chains[c].units[s];
         const PlayEditState& edit = parsed_play_edit[c][s];
         const auto& performance = parsed_gran[c][s];
+        const auto& reading_config = parsed_reading[c][s];
+        if (reading_config.present && (!unit || unit->kind != UnitKind::Grain ||
+            (parsed_unit_flags[c][s] & 24u) != 24u)) return false;
         if (performance.present && (!unit || unit->kind != UnitKind::Grain ||
             !(parsed_unit_flags[c][s] & 8u))) return false;
         if (edit.enabled && (!unit || unit->kind != UnitKind::SamplePlayer ||
             !(parsed_unit_flags[c][s] & 2u) || parsed_core_extra[c][s] != parsed_play_source[c][s])) return false;
         if ((parsed_position[c][s] || parsed_hold[c][s] || parsed_note[c][s]) && (!unit || unit->kind != UnitKind::SamplePlayer || !(parsed_unit_flags[c][s] & 2u))) return false;
+        const auto& paul_config = parsed_paul[c][s];
+        if (paul_config.present && (!unit || unit->kind != UnitKind::Paul)) return false;
+        const auto& scratch_config = parsed_scratch[c][s];
+        if (scratch_config.present && (!unit || unit->kind != UnitKind::Scratch)) return false;
         if (!unit) continue;
         const uint8_t flags = parsed_unit_flags[c][s];
+        if (unit->kind == UnitKind::Paul) {
+            if (format < 17 || !paul_config.present || flags ||
+                parsed_core_extra[c][s] >= SampleManifest::SLOT_COUNT) return false;
+            auto* paul = static_cast<PaulUnit*>(unit);
+            paul->set_mode(PaulUnit::Mode(paul_config.mode));
+            paul->set_direction(PaulUnit::Direction(paul_config.direction));
+            continue;
+        }
+        if (unit->kind == UnitKind::Scratch) {
+            if (format < 16 || !scratch_config.present || flags ||
+                parsed_core_extra[c][s] >= SampleManifest::SLOT_COUNT) return false;
+            auto* scratch = static_cast<ScratchUnit*>(unit);
+            scratch->set_mode(ScratchUnit::Mode(scratch_config.mode));
+            scratch->set_map(ScratchUnit::Map(scratch_config.map));
+            // The complete pair has already validated in the parser. Assign it
+            // together on this fresh staged unit: calling set_axis one at a time
+            // would incorrectly reject swaps against the other preset default.
+            scratch->axis_x = scratch_config.axis_x;
+            scratch->axis_y = scratch_config.axis_y;
+            continue;
+        }
+        if (unit->kind == UnitKind::Inst) {
+            if (format<16 || flags || parsed_core_extra[c][s]) return false;
+            continue;
+        }
         if (unit->kind == UnitKind::Vca) {
             if ((flags & ~3u) || flags==2u || ((flags & 2u) && format<15)) return false;
             canonicalize_vca(target,c,s,flags);
@@ -2100,9 +2387,15 @@ static bool load_v7(FILE* f, Engine& target, SampleManifest& manifest,
             continue;
         }
         if (unit->kind == UnitKind::Grain) {
-            if (flags & ~15u) return false;
+            if ((flags & ~31u) || ((flags & 16u) && (format < 18 || !(flags & 8u))) ||
+                bool(flags & 16u) != reading_config.present) return false;
             apply_unit_flags(unit, flags); // UNIT may precede CORE; bit3 may be absent
             canonicalize_grain_scan(target, c, s);
+            if (reading_config.present) {
+                auto* gran = static_cast<GrainUnit*>(unit);
+                gran->reading = GrainUnit::Reading(reading_config.reading);
+                gran->reverse_percent = reading_config.percent;
+            }
             if (performance.present) {
                 auto* gran = static_cast<GrainUnit*>(unit);
                 gran->set_launch_mode((GrainUnit::LaunchMode)performance.mode);
@@ -2268,7 +2561,7 @@ static bool load_legacy(FILE* f, Engine& target, SampleManifest& manifest, int v
     for (int c=0;c<NUM_CHAINS&&ok;++c) {
         int16_t vol,pan=0;uint8_t mute;ok=r16(f,vol);if(ok&&ver>=2)ok=r16(f,pan);if(ok)ok=r8(f,mute);if(!ok)break;
         target.chains[c].volume=vol;target.chains[c].pan=clamp_pan(pan);target.chains[c].mute=mute!=0;
-        for(int s=0;s<UNITS_PER_CHAIN&&ok;++s){uint8_t kind,bypass,extra;ok=r8(f,kind)&&r8(f,bypass)&&r8(f,extra);Unit*u=ok&&kind<(uint8_t)UnitKind::Count?make_loaded_unit((UnitKind)kind):nullptr;if(ok&&kind!=(uint8_t)UnitKind::Empty&&!u)ok=false;if(u){u->bypass=bypass!=0;apply_extra(u,extra);}for(int p=0;p<LEGACY_PARAM_COUNT&&ok;++p){int16_t base,depth;uint8_t src;ok=r16(f,base)&&r8(f,src)&&r16(f,depth);if(ok)apply_param(u,p,base,src,depth);}if(!ok){delete u;break;}delete target.replace_unit(c,s,u);}
+        for(int s=0;s<UNITS_PER_CHAIN&&ok;++s){uint8_t kind,bypass,extra;ok=r8(f,kind)&&r8(f,bypass)&&r8(f,extra);if(ok&&kind==uint8_t(UnitKind::Paul))return false;Unit*u=ok&&kind<(uint8_t)UnitKind::Count?make_loaded_unit((UnitKind)kind):nullptr;if(ok&&kind!=(uint8_t)UnitKind::Empty&&!u)ok=false;if(u){u->bypass=bypass!=0;apply_extra(u,extra);}for(int p=0;p<LEGACY_PARAM_COUNT&&ok;++p){int16_t base,depth;uint8_t src;ok=r16(f,base)&&r8(f,src)&&r16(f,depth);if(ok)apply_param(u,p,base,src,depth);}if(!ok){delete u;break;}delete target.replace_unit(c,s,u);}
     }
     ok=ok&&read_sigils(f,target);
     for(int i=0;i<LEGACY_SIGIL_COUNT&&ok;++i){uint8_t src;int16_t depth;ok=r8(f,src)&&r16(f,depth);if(ok)target.set_sigil_mod(i,src<(uint8_t)ModSource::Count?(ModSource)src:ModSource::None,depth);}
@@ -2327,12 +2620,25 @@ bool load(Engine& eng, const char* path, SampleManifest* out_manifest,
     if(!parsed||!manifest||!workspace){delete parsed;delete manifest;delete workspace;fclose(f);return false;}
     workspace_layout_defaults(*workspace);
     char magic[4];uint8_t ver;bool ok=fread(magic,1,4,f)==4&&magic[0]=='S'&&magic[1]=='N'&&magic[2]=='C'&&r8(f,ver);
-    if(ok&&((magic[3]>='7'&&magic[3]<='9'&&ver==(uint8_t)(magic[3]-'0')) || (magic[3]=='A'&&ver==10) || (magic[3]=='B'&&ver==11) || (magic[3]=='C'&&ver==12) || (magic[3]=='F'&&ver==15) || (magic[3]=='E'&&ver==14) || (magic[3]=='D'&&ver==13)))ok=load_v7(f,*parsed,*manifest,*workspace,ver);
+    if(ok&&((magic[3]>='7'&&magic[3]<='9'&&ver==(uint8_t)(magic[3]-'0')) || (magic[3]=='A'&&ver==10) || (magic[3]=='B'&&ver==11) || (magic[3]=='C'&&ver==12) || (magic[3]=='I'&&ver==18) || (magic[3]=='H'&&ver==17) || (magic[3]=='G'&&ver==16) || (magic[3]=='F'&&ver==15) || (magic[3]=='E'&&ver==14) || (magic[3]=='D'&&ver==13)))ok=load_v7(f,*parsed,*manifest,*workspace,ver);
     else if(ok&&magic[3]>='1'&&magic[3]<='6'&&ver==(uint8_t)(magic[3]-'0'))ok=load_legacy(f,*parsed,*manifest,ver);
     else ok=false;
     fclose(f);
+    // The instrument q15 source map now has seven bins instead of six. No
+    // heuristic migration: user explicitly chose the new source contract.
+    if(ok && ver<16)for(const auto& chain:parsed->chains)for(const Unit* unit:chain.units)
+        if(unit && (unit->kind==UnitKind::Inst || unit->kind==UnitKind::Scratch))ok=false;
+    if(ok && ver<17)for(const auto& chain:parsed->chains)for(const Unit* unit:chain.units)
+        if(unit && unit->kind==UnitKind::Paul)ok=false;
     if(!ok || eng.recording_active_or_pending()){delete parsed;delete manifest;delete workspace;return false;}
     eng.swap_patch_state(*parsed);
+    // SCRT is installed into the parser first, so its runtime context must not
+    // point at that soon-to-be-retired staging Engine. Reinstall the SAME unit
+    // through the normal ownership hook; no allocation, clone or config change.
+    for (int ch=0; ch<NUM_CHAINS; ++ch) for (int slot=0; slot<UNITS_PER_CHAIN; ++slot) {
+        Unit* unit = eng.chains[ch].units[slot];
+        if (unit && unit->kind == UnitKind::Scratch) eng.replace_unit(ch, slot, unit);
+    }
     if(out_manifest)*out_manifest=*manifest;
     else if(ver>=5){auto&bank=trackr::synth::SampleBank::instance();for(int slot=0;slot<SampleManifest::SLOT_COUNT;++slot){const auto&e=manifest->slots[slot];bank.set_provenance(slot,(trackr::synth::SampleOrigin)e.origin,e.path,e.missing);}}
     if(out_workspace)*out_workspace=*workspace;
@@ -2375,6 +2681,10 @@ bool commit_restored_samples(const SampleManifest& manifest, RestoredSamples& de
     // decoded owns the complete old bank, so its multi-megabyte vectors are
     // destroyed by the controller only after AudioOut::Guard is released.
     // decode_samples already reset every absent staged slot before this call.
+    // Disarm PAUL before replacing the bank behind its latched FFT source.
+    // Budget rejection above leaves both bank and live runtime untouched.
+    if (hydrated) for (auto& chain : hydrated->chains) for (Unit* unit : chain.units)
+        if (unit && unit->kind == UnitKind::Paul) static_cast<PaulUnit*>(unit)->reset();
     bank.swap_all(decoded.decoded, SampleManifest::SLOT_COUNT);
     for (int slot = 0; slot < trackr::synth::SAMPLE_BANK_SIZE; ++slot) {
         bank.slot(slot).exact_native_endpoint = manifest.exact_native[slot];
@@ -2397,11 +2707,22 @@ bool commit_restored_samples(const SampleManifest& manifest, RestoredSamples& de
         if (manifest.has_slice_speed) for (int cut = 0; cut < trackr::synth::Sample::MAX_CHOPS; ++cut)
             if (bank.slot(slot).chops[cut] != UINT32_MAX)
                 bank.slot(slot).slice_speed_q8[cut] = manifest.slice_speed_q8[slot][cut];
+        bank.slot(slot).reset_cut_pitches();
+        if (manifest.has_slice_pitch) for (int cut = 0; cut < trackr::synth::Sample::MAX_CHOPS; ++cut)
+            if (bank.slot(slot).chops[cut] != UINT32_MAX)
+                bank.slot(slot).slice_pitch_semitones[cut] = manifest.slice_pitch_semitones[slot][cut];
         const auto& entry = manifest.slots[slot];
         bank.set_provenance(slot, (trackr::synth::SampleOrigin)entry.origin,
                             entry.path, entry.missing);
     }
     if (hydrated) for (auto& chain : hydrated->chains) for (Unit* unit : chain.units) {
+        if (unit && unit->kind == UnitKind::Scratch) {
+            // SCRT reads the same committed slot as PLAY/GRAN. Never keep an old
+            // gate/gesture/source pointer across hydration (including missing
+            // sources); the next explicit trigger latches this bank generation.
+            static_cast<ScratchUnit*>(unit)->reset();
+            continue;
+        }
         if (!unit || unit->kind != UnitKind::SamplePlayer) continue;
         auto* play = static_cast<PlayUnit*>(unit);
         const int slot = play->sample_slot;

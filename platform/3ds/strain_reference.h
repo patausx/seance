@@ -26,8 +26,8 @@ inline void append(Trace& trace,int column,uint8_t value,bool first) {
     trace.last[column]=value;
 }
 inline void plot(const q15* params,bool bypass,Plot& result) {
-    // Private reset state, stack-only storage. Match tools/strain_review.cpp:
-    // snapped params, reset's own tick, then 1kHz pre-block ticks. Never use the
+    // Private reset state, stack-only storage: snapped params, reset's own
+    // tick, then 1kHz pre-block ticks. Never use the
     // live unit/phase/PCM, nor treat this 32ms test as a full body-motion cycle.
     StrainUnit reference(false); // explicit historical six-parameter DSP
     for(int p=0;p<PARAMS;++p){reference.params[p].base=params[p];reference.params[p].snap();}

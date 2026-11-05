@@ -109,7 +109,9 @@ void edit_group_lock(int value, bool relative=false, bool remove=false) {
         }
         const int low=param.bipolar?-32767:0;
         next=next<low?low:next>32767?32767:next;
-        if(!seq_edit::put(step,g_lock_slot,g_lock_param,(q15)next,param.base)) {
+        const bool pitch_target=g_lock_slot==g_score.sequence_pitch_slot[g_seq_chain] &&
+                                g_lock_param==g_score.sequence_pitch_param[g_seq_chain];
+        if(!seq_edit::put(step,g_lock_slot,g_lock_param,(q15)next,param.base,pitch_target)) {
             if(g_value_drag) { cancel_edit(); g_value_drag=false; }
             edit_status("full: needs more than 4 locks"); g_seq_lock_flash=90; return;
         }

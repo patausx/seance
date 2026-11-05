@@ -24,7 +24,7 @@ enum class Title : uint8_t {
 
 constexpr int title_y(Title title) {
     // Original Gossip-MedPixel.otf at 28ppem, threshold 128, baseline anchor.
-    // Verified independently from the font by tools/test_page_headings.py.
+    // Baseline offsets follow the original font's ascenders and descenders.
     switch (title) {
         case Title::GoTo: case Title::Tempo: return kBaseline - 15;
         case Title::AddModule: case Title::Sigils: case Title::Swing:

@@ -165,18 +165,44 @@ static Policy policy(const Unit& u) {
             if (ArpUnit::note_semitones(u.params[n].base)!=ArpUnit::NOTE_OFF) p.domain[n]=ArpNote;
         break;
     case UnitKind::Glitch:p.range(0,GlitchUnit::P_KEEP);break; // pattern/RNG/KEEP preserved
-    case UnitKind::Inst:
-        p.range(InstUnit::P_NOTE,InstUnit::P_COUNT);
-        // Drum note chooses a source/sample identity. Preserve it and its inactive LEN.
-        if (InstUnit::instrument_index(u.params[InstUnit::P_INSTRUMENT].base)==5)
-            p.domain[InstUnit::P_NOTE]=p.domain[InstUnit::P_LENGTH]=Skip;
+    case UnitKind::Paul: {
+        const auto& v=static_cast<const PaulUnit&>(u);
+        mode=uint32_t(v.mode) | (uint32_t(uint8_t(v.sample_slot))<<8) | (uint32_t(v.direction)<<16);
+        // Preserve prepared source/region/gates/commands/direction configuration.
+        p.domain[PaulUnit::P_STRETCH]=p.domain[PaulUnit::P_WINDOW]=
+            p.domain[PaulUnit::P_GAIN]=p.domain[PaulUnit::P_PITCH]=Continuous;
+        break;
+    }
+    case UnitKind::Scratch: {
+        const auto& v=static_cast<const ScratchUnit&>(u);
+        mode=uint32_t(v.mode) | (uint32_t(v.map)<<8) | (uint32_t(uint8_t(v.sample_slot))<<16);
+        p.range(ScratchUnit::P_GAIN,ScratchUnit::P_GATE); // source/POS/gate/config stay prepared
+        if(v.mode==ScratchUnit::Mode::Scratch)
+            p.domain[ScratchUnit::P_WINDOW]=p.domain[ScratchUnit::P_PITCH]=Skip;
+        break;
+    }
+    case UnitKind::Inst: {
+        const int family=InstUnit::instrument_index(u.params[InstUnit::P_INSTRUMENT].base);
+        mode=uint32_t(family);
+        // Source identity is prepared, never randomized. Sample-only controls
+        // exclude dormant model parameters; model strength is per-strike gain.
+        p.range(InstUnit::P_NOTE,family==InstUnit::MODEL_INSTRUMENT?InstUnit::P_COUNT:InstUnit::P_LEVEL+1);
+        if (family==5) p.domain[InstUnit::P_NOTE]=p.domain[InstUnit::P_LENGTH]=Skip;
         else p.domain[InstUnit::P_NOTE]=InstNote;
         break;
+    }
     default: break;
     }
     // Stable context key for undo. All bases are compared separately. Runtime
     // phase, effective values and modulation/override state never affect policy.
     p.identity=(uint64_t(uint8_t(u.kind))<<56) | (uint64_t(uint8_t(u.num_params))<<48) | mode;
+    if (u.kind == UnitKind::Grain) {
+        const auto& v = static_cast<const GrainUnit&>(u);
+        // Separate 32..47 bits: no collision with GRAN mode/source bits0..23,
+        // kind/param bits48..63. Default XOR50 is zero: old keys stay exact.
+        p.identity ^= (uint64_t(uint8_t(v.reading)) << 32) |
+            (uint64_t(v.reverse_percent ^ 50u) << 40);
+    }
     for (int i=0;i<PARAM_BANK_SIZE;++i) {
         if (i>=u.num_params) p.domain[i]=Skip;
         p.identity ^= (uint64_t(p.domain[i])+uint64_t(u.params[i].bipolar)*31u) *

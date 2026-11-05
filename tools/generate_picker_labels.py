@@ -11,7 +11,10 @@ import json
 from pathlib import Path
 import re
 import textwrap
-from PIL import Image, ImageDraw, ImageFont
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except ModuleNotFoundError:
+    Image = ImageDraw = ImageFont = None
 
 ROOT = Path(__file__).resolve().parents[1]
 FONT = ROOT / 'assets/fonts/Gossip-MedPixel.otf'
@@ -52,6 +55,9 @@ def fit(text, size, width):
 
 
 def generate():
+    if Image is None:
+        from generate_scratch_resources import retained_picker
+        return retained_picker()
     records = entries()
     data, labels, rows = [], [], {}
     def label(name, text, size, width):

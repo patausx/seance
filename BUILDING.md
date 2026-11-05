@@ -24,7 +24,8 @@ make -j2 cia MAKEROM=/path/to/makerom
 
 `MAKEROM` defaults to `$HOME/tools/3ds/makerom`; CIA packaging uses devkitPro's
 `smdhtool`, not bannertool. `seance.rsf` holds the application's title identity.
-`VERSION` supplies the version string. keep the existing identity for updates.
+`VERSION` supplies the version string, currently `0.1.0-alpha.1`; a source update
+does not imply a new release version. keep the existing title identity for updates.
 
 normal builds use checked-in font data, artwork, instrument samples and menu
 PCM. they require no Python, Pillow, ffmpeg, test files or downloaded sample
@@ -41,6 +42,16 @@ original inputs, licenses and commands.
 release scripts need Python 3.10+; rebuilding menu audio additionally needs the
 conversion tools named by its generator. source export and packaging never
 publish, upload or install anything.
+
+check an exported source tree with:
+
+```sh
+python3 -B scripts/audit_public_source.py
+```
+
+this read-only audit checks exported text/paths and relative documentation links;
+it is not a build, a complete secret/license review or a hardware test. local
+development test suites are not included in the public source export.
 
 review [third-party notices](THIRD_PARTY_NOTICES.md) and
 [dependency sources](distribution/dependency-sources.md) when redistributing.

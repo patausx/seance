@@ -32,10 +32,12 @@ INST_LABELS = ('inst', 'piano', 'violin', 'brass', 'flute', 'bass', 'drums',
 INST_HERO_LABELS = tuple('inst-' + name for name in INST_LABELS[7:])
 # Display rename only; append to preserve every existing mask/index/offset.
 SWARM_LABELS = ('swarm',)
+# Held-B bank selector: append the approved 28ppem whole-word mask only.
+BANK_LABELS = ('bank',)
 
 
 def masks():
-    for text in LABELS + OSC_HERO_LABELS + MOTOR_HERO_LABELS + BOUNCE_LABELS + NAV_INK_LABELS + ('comp', 'patchbay', 'source', 'sigilbay') + tuple('abcdefgh0123456789') + ('mouth', 'vowel') + MOUTH_HERO_LABELS + POPUP_LABELS + ('arp', 'glitch') + INST_LABELS + INST_HERO_LABELS + SWARM_LABELS:
+    for text in LABELS + OSC_HERO_LABELS + MOTOR_HERO_LABELS + BOUNCE_LABELS + NAV_INK_LABELS + ('comp', 'patchbay', 'source', 'sigilbay') + tuple('abcdefgh0123456789') + ('mouth', 'vowel') + MOUTH_HERO_LABELS + POPUP_LABELS + ('arp', 'glitch') + INST_LABELS + INST_HERO_LABELS + SWARM_LABELS + BANK_LABELS:
         hero = text in OSC_HERO_LABELS + MOTOR_HERO_LABELS + MOUTH_HERO_LABELS + INST_HERO_LABELS
         raster_text = text[5:] if text in INST_HERO_LABELS else text[-1] if text in MOUTH_HERO_LABELS else text
         face = ImageFont.truetype(str(FONT), 56 if hero else 28)

@@ -335,6 +335,8 @@ const char* explanation() {
 } // namespace
 
 bool module_inspector_supports(UnitKind kind) {
+    if (kind == UnitKind::Paul) return true;
+    if (kind == UnitKind::Scratch) return true;
     if (kind == UnitKind::Inst) return true;
     if (kind == UnitKind::Glitch) return true;
     if (kind == UnitKind::Arp) return true;
@@ -346,6 +348,8 @@ bool module_inspector_supports(UnitKind kind) {
     return kind == UnitKind::Osc || kind == UnitKind::Grain || kind == UnitKind::Motor || kind == UnitKind::SamplePlayer || kind == UnitKind::Vca || kind == UnitKind::Chorus || kind == UnitKind::Delay || kind == UnitKind::Filter || kind == UnitKind::Fold || kind == UnitKind::Bitcrush || kind == UnitKind::Tilt || kind == UnitKind::Ring || kind == UnitKind::Strain || kind == UnitKind::MicIn || kind == UnitKind::Recorder || kind == UnitKind::Noise;
 }
 int module_inspector_selected(UnitKind kind) {
+    if (kind == UnitKind::Paul) return paul_focus_selected();
+    if (kind == UnitKind::Scratch) return scratch_focus_selected();
     if (kind == UnitKind::Inst) return inst_focus_selected();
     if (kind == UnitKind::Glitch) return glitch_focus_selected();
     if (kind == UnitKind::Arp) return arp_focus_selected();
@@ -373,6 +377,8 @@ int module_inspector_selected(UnitKind kind) {
     return -1;
 }
 void module_inspector_select(UnitKind kind, int param) {
+    if (kind == UnitKind::Paul) { paul_focus_select(param); return; }
+    if (kind == UnitKind::Scratch) { scratch_focus_select(param); return; }
     if (kind == UnitKind::Inst) { inst_focus_select(param); return; }
     if (kind == UnitKind::Glitch) { glitch_focus_select(param); return; }
     if (kind == UnitKind::Arp) { arp_focus_select(param); return; }
@@ -400,6 +406,8 @@ void module_inspector_select(UnitKind kind, int param) {
 }
 void module_inspector_value_text(char* out, size_t size, UnitKind kind, int param, q15 value, bool flexible_vca, bool modern_delay, bool modern_tilt, bool legacy_tilt_zero, bool modern_play, bool quantize_play) {
     if (!out || !size) return;
+    if (kind == UnitKind::Paul) { paul_focus_value_text(out,size,param,value); return; }
+    if (kind == UnitKind::Scratch) { scratch_focus_value_text(out,size,param,value); return; }
     if (kind == UnitKind::Inst) { inst_readout::value_text(out,size,param,value); return; }
     if (kind == UnitKind::Glitch) { glitch_focus_value_text(out,size,param,value); return; }
     if (kind == UnitKind::Arp) { arp_focus_value_text(out,size,param,value); return; }
@@ -613,6 +621,8 @@ void module_inspector_value_text(char* out, size_t size, UnitKind kind, int para
 
 void module_inspector_capture() {
     frame = {};
+    paul_focus_capture();
+    scratch_focus_capture();
     inst_focus_capture();
     glitch_focus_capture();
     arp_focus_capture();
@@ -640,7 +650,7 @@ void module_inspector_capture() {
     platform::AudioOut::Guard guard(*g_audio);
     const auto& chain = g_eng->chains[g_edit_chain];
     const Unit* unit = chain.units[g_edit_slot];
-    if (!unit || !module_inspector_supports(unit->kind) || unit->kind == UnitKind::Inst || unit->kind == UnitKind::Glitch || unit->kind == UnitKind::Arp || unit->kind == UnitKind::Mouth || unit->kind == UnitKind::Shift || unit->kind == UnitKind::Comp || unit->kind == UnitKind::Fract || unit->kind == UnitKind::Bird || unit->kind == UnitKind::Vca || unit->kind == UnitKind::SamplePlayer) return;
+    if (!unit || !module_inspector_supports(unit->kind) || unit->kind == UnitKind::Paul || unit->kind == UnitKind::Scratch || unit->kind == UnitKind::Inst || unit->kind == UnitKind::Glitch || unit->kind == UnitKind::Arp || unit->kind == UnitKind::Mouth || unit->kind == UnitKind::Shift || unit->kind == UnitKind::Comp || unit->kind == UnitKind::Fract || unit->kind == UnitKind::Bird || unit->kind == UnitKind::Vca || unit->kind == UnitKind::SamplePlayer) return;
     if ((unit->kind == UnitKind::Osc || unit->kind == UnitKind::Grain || unit->kind == UnitKind::Motor || unit->kind == UnitKind::Filter || unit->kind == UnitKind::Fold || unit->kind == UnitKind::Bitcrush || unit->kind == UnitKind::Tilt || unit->kind == UnitKind::Ring || unit->kind == UnitKind::Strain || unit->kind == UnitKind::MicIn || unit->kind == UnitKind::Recorder || unit->kind == UnitKind::Noise) && g_view != View::Chains &&
         !(g_view == View::Sequencer && g_seq_lock_armed)) return;
     if(unit->kind==UnitKind::Delay || unit->kind==UnitKind::Chorus)return; // each has one dedicated shared dual-screen capture
@@ -883,6 +893,8 @@ void motor_inspector() {
 } // namespace
 
 bool module_inspector_draw_top() {
+    if (paul_focus_draw_top()) return true;
+    if (scratch_focus_draw_top()) return true;
     if (fold_focus_draw_top()) return true;
     if (strain_focus_draw_top()) return true;
     if (ring_focus_draw_top()) return true;

@@ -1,5 +1,13 @@
 // patch_io - binary save/load of the whole patch state.
-// format "SNC7" chunk container with 12-parameter banks; legacy SNC1-SNC6 load.
+// versioned SNC7..SNCI chunk container with 12-parameter banks.
+// Nondefault clean GRAN reading/percentage requires SNCI18 + GRNX v1 and
+// matching UNIT bit4; default SignedPitch/50 keeps former container bytes.
+// PAUL requires SNCH17: all-forward v1 remains exact; any reverse/ping-pong
+// card uses required PAUL v2 per-card mode/direction. DSP/loop leg stays runtime-only.
+// Current INST and append-only SCRT29 require SNCG16; pre16 instances reject.
+// SCRT config is required per card: v1 preset bytes, v2 independent axes.
+// Latch stays runtime-only; files without SCRT retain their format.
+// Other legacy SNC1-SNC6 modules retain their existing loader behavior.
 // plain fopen/fwrite, no exceptions. load() parses transactionally into a staging
 // Engine and swaps only after the complete file and sample manifest validate.
 #pragma once
@@ -47,6 +55,9 @@ struct SampleManifest {
     // Optional PSPD, normalized 64..1024 q8. Absent => unity.
     bool has_slice_speed = false;
     uint16_t slice_speed_q8[SLOT_COUNT][trackr::synth::Sample::MAX_CHOPS] = {};
+    // Optional SPITv1: independent signed musical semitones, absent => zero.
+    bool has_slice_pitch = false;
+    int8_t slice_pitch_semitones[SLOT_COUNT][trackr::synth::Sample::MAX_CHOPS] = {};
     struct Entry {
         unsigned char origin = 0;
         bool missing = false;
@@ -73,8 +84,10 @@ bool load(Engine& eng, const char* path, SampleManifest* manifest = nullptr,
 // commit_restored_samples must run while the audio engine is excluded.
 int decode_samples(SampleManifest& manifest, int target_sr, int max_frames, RestoredSamples& out);
 // Returns false without mutation when the staged aggregate exceeds the bank budget.
-// Optional hydrated engine receives exact PLAY source binding only after the
-// bank swap; missing sources retain source metadata for a safe later resave.
+// Optional hydrated engine receives exact PLAY source binding and SCRT runtime
+// invalidation only after the bank swap. SCRT/GRAN share the committed slot bank;
+// missing sources become empty rather than borrowing PCM from a previous patch.
+// PLAY's pending metadata remains available for a safe later resave.
 bool commit_restored_samples(const SampleManifest& manifest, RestoredSamples& decoded,
                              Engine* hydrated = nullptr);
 // Convenience for single-threaded/offline users.

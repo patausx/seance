@@ -68,6 +68,8 @@ const char* short_unit_name(UnitKind kind) {
         case UnitKind::Fm:           return "FM";
         case UnitKind::Motor:        return "MTR";
         case UnitKind::Strain:       return "STAI";
+        case UnitKind::Scratch:      return "SCR";
+        case UnitKind::Paul:         return "PAU";
         default:                     return "---";
     }
 }
@@ -105,7 +107,8 @@ const char* top_sequence_source_name(int chain) {
     if (kind == UnitKind::Motor) return "motor";
     if (kind == UnitKind::Noise) return "noise";
     if (kind == UnitKind::MicIn) return "mic";
-    if (kind == UnitKind::Stranular) return m::module_name(kind);
+    if (kind == UnitKind::Stranular || kind == UnitKind::Scratch || kind == UnitKind::Paul)
+        return m::module_name(kind);
     return "chain";
 }
 
@@ -396,7 +399,7 @@ void draw_sequence_profile(const SequencerInspector& d, int mode) {
     } else if (mode == 1 || mode == 2) {
         ui::text(208, 167, "dot lock / pale base", m::ghost());
         ui::text(208, 182, "hollow = conditional", m::ghost());
-        ui::text(208, 197, "one step / then base", m::ghost());
+        ui::text(208, 197, mode == 1 ? "hold until next note" : "one step / then base", m::ghost());
         if (mode == 1 && profile.available)
             ui::text(208, 206, "note mode / edit to hear", m::spot());
     } else {

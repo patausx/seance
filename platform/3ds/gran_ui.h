@@ -11,7 +11,9 @@ constexpr Box pad{214,26,98,30},source{8,58,170,24},wave{8,84,304,74};
 constexpr Box mode(int i){return {8+62*i,26,58,30};}
 constexpr Box tab(int i){return {182+42*i,58,40,24};}
 constexpr Box param(int i){return {8+(i%3)*104,161+(i/3)*34,96,33};}
-constexpr Box setup(int i){return {8+(i%2)*156,161+(i/2)*34,148,33};}
+// Existing four config ids retain their order in the first two columns.
+constexpr Box setup(int i){return {8+(i%2)*104,161+(i/2)*34,96,33};}
+constexpr Box reading{216,161,96,33},reverse_percent{216,195,96,33};
 inline void mask(int x,int baseline,int offset,int w,int h,int top,uint32_t colour){
     const int stride=(w+7)/8;
     for(int y=0;y<h;++y){int run=-1;

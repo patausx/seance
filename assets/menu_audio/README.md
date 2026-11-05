@@ -18,6 +18,7 @@ python3 tools/prepare_menu_audio.py
 ```
 
 Requires Python's standard library and ffmpeg; application builds need neither.
-The Makefile links prepared `.bin` files with devkitPro `bin2o`. Playback levels,
-fades and integration are documented in `docs/menu-audio.md`. This is prepared
-source audio, not a console capture or a claim of a listening-approved loop.
+The Makefile links prepared `.bin` files with devkitPro `bin2o`; playback lives
+in `platform/3ds/menu_audio.cpp` and `menu_sound_player.h`. The startup drone fades
+in over 3000ms, and menu sound can be disabled in settings. This is prepared source
+audio, not a console capture or a claim of a listening-approved loop.

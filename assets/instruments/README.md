@@ -7,7 +7,7 @@ into the program; the source wavs do not go on the sd card.
 
 ## provenance and license
 
-all 22 selected recordings are distributed under **cc0 1.0 universal** by their
+all 22 archived recordings are distributed under **cc0 1.0 universal** by their
 upstream projects. verbatim licenses and relevant readmes are retained in
 [`licenses/`](licenses/). this is not an invented license for unrelated sounds.
 
@@ -41,11 +41,11 @@ and its preparation are documented openly with the requested credits.
 
 - **1,221,500 bytes** of shared mono signed pcm16 at **24,000 hz** (about 1.165 mib).
 - 610,728 playable frames plus 22 single-frame interpolation guards.
-- 22 zones: 4 piano, 3 each violin/trumpet/flute/plucked bass, 6 drum one-shots.
+- 22 zones: 19 recorded zones (4 piano, 3 each violin/trumpet/flute, 6 drums) plus 3 generated clean bass plucks.
 - 440 bytes of fixed zone descriptors, plus tiny family-range tables.
-- pcm sha256: `c49a3fd513bb60e92fdf215726626f8502cd444ea354eadaaa64aa189beb1027`.
+- pcm sha256: `3890f6e948434dcbbef1f7b11fcb890f01735a784d6cdb2aed1db52c2291eb7f`.
 - embedded header sha256:
-  `646d744eb99f92badf912cc2bf45254031d15d343cb7e76fdd98dcdd9364c18c`.
+  `453bb02ac62f546cb8ff69df30d0e39072b270baab2ef3af0cab9b511b28637f`.
 
 [`bank.json`](bank.json) contains exact per-zone source starts, frame counts,
 root/key zones, loop start/end, crossfade length, pcm hashes, dc/peak measurements
@@ -58,13 +58,28 @@ little-endian concatenation represented by `core/engine/inst_bank_data.h`.
 | violin | solo arco vibrato, forte | 55, 67, 79 | ~1.05 s attack/body, prepared sustained loop |
 | brass | trumpet sustain, velocity layer 3 | 53, 67, 81 | ~0.9 s attack/body, prepared sustained loop |
 | flute | non-vibrato sustain, medium/strong layer | 60, 72, 84 | ~0.9 s attack/body, prepared sustained loop |
-| bass | solo contrabass pizzicato | 36, 45, 59 | finite recorded pluck, retained 1.5 / 1.5 / 1.3 s |
+| bass | clean generated pluck; no recorded room/noise | 36, 45, 59 | finite 1.5 / 1.5 / 1.3 s, same key zones |
 | drums | bass drum, snare on, closed hat, stick tom, open hat, stick cymbal | 36, 38, 42, 45, 46, 49 | six unpitched finite hits |
 
 roots come from actual upstream `pitch_keycenter`, **not a universal interpretation
 of octave names**: this library calls flute/trumpet/bass middle c `c3`, but violin
 middle c `c4`. the piano uses numbered filenames and its own mapping chart. the
 preparation script validates all 16 pitched selections against the pinned sfzs.
+
+## bass-only sound replacement (2026-10-30)
+
+only the three bass PCM regions were replaced to avoid recorded background noise.
+they are newly generated plucks, not denoised VSCO recordings or a claim of realistic
+contrabass emulation. original bass WAVs/pins/licenses remain archived unchanged.
+all other 19 zone bytes, all descriptors, roots/IDs and runtime controls stay exact.
+
+preparation generates a fundamental plus two faster-decaying harmonics (q15 gains
+32767/8500/2600), a 4ms smooth onset and 90ms final safety fade. fundamental T60 is
+1400/1200/1000ms for roots36/45/59. fixed-precision Decimal builds Q30 coefficients;
+integer recurrence produces the final mono24khz PCM offline. no recorded background,
+random noise, new runtime synthesis, new dependency or per-voice state is introduced.
+`bank.json` explicitly marks each bass source as archived reference only and records
+the generation recipe. the generated replacement PCM is distributed under CC0-1.0.
 
 ## deterministic preparation
 
@@ -94,10 +109,10 @@ mismatch. an ordinary build, check, and application startup do not download.
    recorded pair rather than forcing a zero seam or crossfading per audio sample.
 4. remove dc (cycle mean for sustained recordings), add a 1 ms start safety fade,
    and a 60 ms retained-tail fade for finite recordings; normalize peak to 24576.
-   no noise generator, synthetic attack, oscillator or fabricated sustain is added.
+   these 19 recorded zones are unchanged; no synthetic attack or sustain is added to them.
 5. write little-endian pcm, exact descriptors, hashes and the const c++ table.
 
-there is one velocity layer / round robin per zone. shortening piano/bass/drum
+there is one velocity layer / round robin per zone. shortening the recorded piano/drum
 recordings preserves their **retained natural decay**, not their complete original
 multi-second room/release tails. the sustain loops repeat about half a second of
 real performance; this is deliberately compact, not a concert-library claim.

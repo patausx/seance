@@ -49,8 +49,23 @@ def write_archive(path: Path, files: dict[str, bytes]) -> None:
     print(f"wrote {path} ({path.stat().st_size} bytes, sha256 {digest(path.read_bytes())})")
 
 
+def input_path(root: Path, relative: str) -> Path:
+    """Reject symlinks in every input component, including in-root aliases."""
+    parts = Path(relative).parts
+    if not parts or Path(relative).is_absolute() or ".." in parts or "\\" in relative:
+        raise ValueError("unsafe release input path")
+    path = root
+    for part in parts:
+        path = path / part
+        if path.is_symlink():
+            raise RuntimeError(f"symlink/escaped public input: {relative}")
+    if not path.resolve().is_relative_to(root):
+        raise RuntimeError(f"symlink/escaped public input: {relative}")
+    return path
+
+
 def required(root: Path, relative: str) -> bytes:
-    path = root / relative
+    path = input_path(root.resolve(), relative)
     if not path.is_file():
         raise FileNotFoundError(f"required release input is missing: {relative}")
     return path.read_bytes()
@@ -83,8 +98,7 @@ def public_source_payload(root: Path) -> dict[str, bytes]:
         if any(part == "__pycache__" or (part.startswith(".") and part not in PUBLIC_HIDDEN_PARTS)
                for part in path.relative_to(root).parts):
             return
-        if path.is_symlink() or not path.resolve().is_relative_to(root):
-            raise RuntimeError(f"symlink/escaped public input: {relative}")
+        path = input_path(root, relative)
         if path.is_file():
             files[relative] = path.read_bytes()
 
@@ -92,8 +106,8 @@ def public_source_payload(root: Path) -> dict[str, bytes]:
         required(root, relative)
         add(root / relative)
     for directory in PUBLIC_TREES:
-        base = root / directory
-        if not base.is_dir() or base.is_symlink():
+        base = input_path(root, directory)
+        if not base.is_dir():
             raise FileNotFoundError(f"required public source directory: {directory}")
         for path in sorted(base.rglob("*")):
             add(path)
@@ -131,16 +145,37 @@ def source_payload(root: Path) -> dict[str, bytes]:
     return {f"source/{name}": data for name, data in public_source_payload(root).items()}
 
 
+# Keep application documentation at its existing relative paths. These are only
+# the guide/notices and their linked documents/resources, not a source export.
+# Matching application/dependency source remains a separate distribution duty.
+APPLICATION_DOC_FILES = (
+    "README.md", "GUIDE.md", "BUILDING.md", "CHANGELOG.md",
+    "assets/branding/readme-wordmark.gif",
+    "tools/README.md", "scripts/README.md",
+    "assets/instruments/README.md", "assets/instruments/sources.json",
+    "assets/instruments/bank.json", "assets/instruments/bank.pcm",
+    "docs/inst-bank.md",
+    "sample_library/starter_cc0/README.md", "sample_library/starter_cc0/CC0-1.0.txt",
+    "distribution/dependency-sources.md", "distribution/dependency-sources/manifest.json",
+)
+
+
 def license_payload(root: Path) -> dict[str, bytes]:
-    files = {
-        "3ds/seance/licenses/LICENSE": required(root, "LICENSE"),
-        "3ds/seance/licenses/THIRD_PARTY_NOTICES.md": required(root, "THIRD_PARTY_NOTICES.md"),
-        "3ds/seance/licenses/Seance-Note-OFL.txt": required(root, "assets/fonts/OFL.txt"),
-        "3ds/seance/licenses/Seance-Note-README.md": required(root, "assets/fonts/README.md"),
-    }
-    for path in sorted((root / "licenses").rglob("*")):
-        if path.is_file():
-            files[f"3ds/seance/licenses/{path.relative_to(root / 'licenses').as_posix()}"] = path.read_bytes()
+    """Retain notices verbatim at source-layout paths; never relocate link bases."""
+    root = root.resolve()
+    bases = [input_path(root, directory) for directory in ("licenses", "assets/instruments/licenses")]
+    for base in bases:
+        if not base.is_dir():
+            raise FileNotFoundError(f"required release notice directory: {base.relative_to(root).as_posix()}")
+    files = {name: required(root, name) for name in (
+        "LICENSE", "THIRD_PARTY_NOTICES.md", "assets/fonts/OFL.txt", "assets/fonts/README.md",
+    )}
+    for base in bases:
+        for path in sorted(base.rglob("*")):
+            relative = path.relative_to(root).as_posix()
+            path = input_path(root, relative)
+            if path.is_file():
+                files[relative] = required(root, relative)
     return files
 
 
@@ -148,13 +183,8 @@ def build_main(root: Path, version: str) -> None:
     files = {
         "3ds/seance/seance.3dsx": required(root, "seance.3dsx"),
         "seance.cia": required(root, "seance.cia"),
-        "GUIDE.md": required(root, "GUIDE.md"),
-        "README.md": required(root, "README.md"),
-        "assets/branding/readme-wordmark.gif": required(root, "assets/branding/readme-wordmark.gif"),
-        "LICENSE": required(root, "LICENSE"),
-        "3ds/seance/licenses/Seance-Note-OFL.txt": required(root, "assets/fonts/OFL.txt"),
-        "3ds/seance/licenses/Seance-Note-README.md": required(root, "assets/fonts/README.md"),
     }
+    files.update({name: required(root, name) for name in APPLICATION_DOC_FILES})
     files.update(license_payload(root))
     write_archive(root / "release" / f"seance-{version}.zip", files)
 
@@ -164,20 +194,23 @@ def build_source(root: Path, version: str) -> None:
 
 
 def build_samples(root: Path) -> None:
-    source = root / "sample_library" / "starter_cc0"
-    wavs = sorted((source / "wav").glob("*.wav"))
+    root = root.resolve()
+    directory = "sample_library/starter_cc0"
+    wav_directory = input_path(root, f"{directory}/wav")
+    wavs = [input_path(root, path.relative_to(root).as_posix())
+            for path in sorted(wav_directory.glob("*.wav"))]
     if len(wavs) != 16:
         raise RuntimeError(f"expected 16 starter WAV files, found {len(wavs)}")
     files: dict[str, bytes] = {
-        "README.md": required(source, "README.md"),
-        "CC0-1.0.txt": required(source, "CC0-1.0.txt"),
+        "README.md": required(root, f"{directory}/README.md"),
+        "CC0-1.0.txt": required(root, f"{directory}/CC0-1.0.txt"),
     }
     for path in wavs:
         with wave.open(str(path), "rb") as wav:
             actual = (wav.getnchannels(), wav.getsampwidth(), wav.getframerate())
             if actual != (1, 2, 32000):
                 raise RuntimeError(f"unexpected WAV format for {path.name}: {actual}")
-        files[f"3ds/seance/samples/{path.name}"] = path.read_bytes()
+        files[f"3ds/seance/samples/{path.name}"] = required(root, path.relative_to(root).as_posix())
     write_archive(root / "release" / "seance-cc0-starter-samples.zip", files)
 
 

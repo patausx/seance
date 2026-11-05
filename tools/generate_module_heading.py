@@ -4,7 +4,10 @@ import argparse
 import hashlib
 import re
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
+try:
+    from PIL import Image, ImageDraw, ImageFont
+except ModuleNotFoundError:
+    Image = ImageDraw = ImageFont = None
 from module_catalogue import kind_ids, same_members
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +17,9 @@ OUT = ROOT / 'platform/3ds/module_heading_data.h'
 
 
 def generate():
+    if Image is None:
+        from generate_scratch_resources import retained_heading
+        return retained_heading()
     entries = re.findall(r'^PICKER_ENTRY\((\w+), "([^"]+)"', META.read_text(), re.M)
     kinds = kind_ids((ROOT / 'core/engine/unit.h').read_text())
     same_members([kind for kind, _ in entries], kinds, 'heading generator catalogue')

@@ -8,6 +8,7 @@
 #include "sample_browser_store.h"
 #include "sample_ownership.h"
 #include "ui_nav.h"
+#include "sample_browser_file_safety.h"
 #include <3ds.h>
 #include "../../core/synth/wav_loader.h"
 #include "../../core/synth/wav_writer.h"
@@ -29,6 +30,7 @@ int sample_slot_for_unit(const Unit* unit) {
 
 void set_sample_slot_for_unit(Unit* unit, int slot) {
     if (!unit || unit->kind == UnitKind::Recorder || (g_eng && g_eng->recording_active_or_pending())) return;
+    if (unit->kind == UnitKind::Paul && g_seq_lock_armed) return;
     const int previous = sample_slot_for_unit(unit);
     if (slot < 0) slot = trackr::synth::SAMPLE_BANK_SIZE - 1;
     if (slot >= trackr::synth::SAMPLE_BANK_SIZE) slot = 0;
@@ -42,6 +44,18 @@ void set_sample_slot_for_unit(Unit* unit, int slot) {
         play->sample_slot = slot;
     } else if (unit->kind == UnitKind::Grain)
         static_cast<GrainUnit*>(unit)->sample_slot = slot;
+    else if (unit->kind == UnitKind::Paul) {
+        paul_focus_release();
+        auto* paul = static_cast<PaulUnit*>(unit);
+        paul->sample_slot = slot;
+        paul->reset(); // also clears an old consumed FFT after source hydration
+    }
+    else if (unit->kind == UnitKind::Scratch) {
+        if (g_eng) g_eng->cancel_scratch_gesture();
+        auto* scratch = static_cast<ScratchUnit*>(unit);
+        scratch->sample_slot = slot;
+        if (slot != previous) scratch->reset();
+    }
     if (slot != previous) mark_project_mutated();
 }
 
@@ -97,11 +111,11 @@ static void sample_wave_capture(const trackr::synth::Sample& source, SampleWaveV
 }
 } // namespace
 
-// The legacy mode integer remains ABI-local: library=0, project=1,
-// favorites=2, recordings=3. All sources now share one six-row controller.
+// ABI-local source integers: library=0, project=1, recordings=3.
+// Retired mode 2 normalizes to library; legacy sidecar entries remain untouched.
 namespace {
 constexpr int kRows = 6, kRowHeight = 24, kListTop = 56, kListBottom = 200;
-constexpr int kLibrary = 0, kProject = 1, kFavorites = 2, kRecordings = 3;
+constexpr int kLibrary = 0, kProject = 1, kRecordings = 3;
 struct BrowserEntry {
     char path[192] = {};
     int slot = -1;
@@ -119,14 +133,16 @@ sample_browser_store::State browser_store, browser_store_draft;
 char browser_store_path[256] = {};
 char browser_notice[48] = {};
 bool browser_store_loaded = false, browser_limited = false, browser_truncated = false;
-int browser_menu = 0, browser_menu_selected = 0; // 1 sources, 2 more, 3 confirm removal
+int browser_menu = 0, browser_menu_selected = 0; // 1 sources, 3 direct confirmation
+uint64_t browser_listing_revision = 0;
+char browser_cwd[browser_file_safety::kPath] = {}; // captured by scan, never filesystem work in draw
 int browser_pending = 0;
 bool browser_pending_play = false;
 int browser_wave_slot = -1;
 uint32_t browser_wave_generation = 0;
 uintptr_t browser_owner = 0;
 int browser_owner_chain = -1, browser_owner_slot = -1;
-// Every control commits on lift in its original target, including stars and use.
+// Every control commits on lift in its original target, including delete and use.
 int browser_touch_action = 0;
 bool browser_touch_inside = false;
 }
@@ -138,6 +154,8 @@ static int g_sample_selected = -1, g_sample_slot_selected = -1, g_sample_slot_pr
 static int g_sample_touch_entry = -1, g_sample_touch_x = 0, g_sample_touch_y = 0;
 static int g_sample_touch_scroll_q8 = 0;
 static bool g_sample_touch_list = false, g_sample_scrollbar_drag = false, g_sample_touch_scrolling = false;
+
+static void browser_name_reset();
 
 static void browser_message(const char* text) {
     std::snprintf(browser_notice, sizeof browser_notice, "%s", text ? text : "");
@@ -388,7 +406,8 @@ struct SampleCommitToken {
 };
 
 static bool same_refs(const SampleSlotRefs& a, const SampleSlotRefs& b) {
-    return a.play == b.play && a.grain == b.grain && a.rec == b.rec && a.bounce == b.bounce && a.external == b.external;
+    return a.play == b.play && a.grain == b.grain && a.scratch == b.scratch && a.paul == b.paul &&
+        a.rec == b.rec && a.bounce == b.bounce && a.external == b.external;
 }
 
 static bool capture_sample_token(Unit* owner, int target_slot, SampleCommitToken& token) {
@@ -456,6 +475,9 @@ static void browser_append(const char* path, const char* name, bool directory, i
     g_sample_file_is_dir[i] = directory;
 }
 static void browser_rebuild() {
+    ++browser_listing_revision;
+    if (g_sample_browser_mode != kLibrary && g_sample_browser_mode != kProject &&
+        g_sample_browser_mode != kRecordings) g_sample_browser_mode = kLibrary;
     sample_browser_stop_preview();
     sample_browser_reset_motion();
     browser_clear_wave();
@@ -481,11 +503,6 @@ static void browser_rebuild() {
             browser_append(p.path, p.path[0] ? browser_basename(p.path) : generated, false, slot);
             browser_entries[index].generation = bank.generation(slot);
             g_sample_file_info[index] = {frames, ENGINE_SR, true, frames > 0};
-        }
-    } else if (g_sample_browser_mode == kFavorites) {
-        for (int i = 0; i < browser_store.count; ++i) {
-            const auto& e = browser_store.entries[i];
-            browser_append(e.path, browser_basename(e.path), e.directory);
         }
     } else {
         char directory[192];
@@ -541,9 +558,12 @@ static void browser_rebuild() {
         break;
     }
     scan_sample_file_page_metadata();
+    browser_name_reset();
 }
 void scan_sample_files() {
     if (browser_owner) browser_remember();
+    browser_cwd[0] = 0;
+    (void)::getcwd(browser_cwd, sizeof browser_cwd);
     char path[256];
     const int n = std::snprintf(path, sizeof path, "%s/.browser.dat", SAMPLE_DIR);
     if (!browser_store_loaded || std::strcmp(path, browser_store_path)) {
@@ -559,14 +579,16 @@ void scan_sample_files() {
         if (sample_slot_for_unit(edited_unit()) >= 0) browser_owner = uintptr_t(edited_unit());
     }
     browser_owner_chain = g_edit_chain; browser_owner_slot = g_edit_slot;
-    if (g_sample_browser_mode < 0 || g_sample_browser_mode > 3) g_sample_browser_mode = kLibrary;
+    if (g_sample_browser_mode != kLibrary && g_sample_browser_mode != kProject &&
+        g_sample_browser_mode != kRecordings) g_sample_browser_mode = kLibrary;
     browser_menu = 0;
     browser_rebuild();
 }
 static void browser_switch_source(int mode) {
+    if (mode != kLibrary && mode != kProject && mode != kRecordings) mode = kLibrary;
     browser_remember();
     g_sample_browser_mode = mode;
-    std::snprintf(g_sample_relative_dir, sizeof g_sample_relative_dir, "%s",
+    std::snprintf(g_sample_relative_dir, sizeof g_sample_relative_dir, "%.127s",
         mode == kLibrary || mode == kRecordings ? browser_directories[mode == kRecordings] : "");
     browser_menu = 0;
     browser_rebuild();
@@ -608,11 +630,15 @@ static int sample_slot_ref_count(int slot, const Unit* ignore) {
     return sample_ownership::count(*g_eng, slot, g_clip_unit, ignore);
 }
 
-static bool delete_sample_slot_for_owner(int slot, Unit* owner) {
-    if (slot < 0 || slot >= trackr::synth::SAMPLE_BANK_SIZE) return false;
+static bool delete_sample_slot_for_owner(int slot, Unit* owner, const SampleCommitToken* expected = nullptr) {
+    // Old private two-argument probes remain source-compatible, not authority:
+    // only the explicit confirmation supplies the captured token.
+    if (!expected || slot < 0 || slot >= trackr::synth::SAMPLE_BANK_SIZE) return false;
     trackr::synth::Sample retired;
     {
         platform::AudioOut::Guard guard(*g_audio);
+        if (!browser_owner_current() || !token_is_current(*expected) ||
+            g_eng->recording_active_or_pending() || g_eng->play_editor_busy()) return false;
         const int references = sample_slot_ref_count(slot, nullptr);
         const bool owner_uses_slot = owner && sample_slot_for_unit(owner) == slot;
         const bool safe_owner_only = owner_uses_slot && owner->kind != UnitKind::Recorder && references == 1;

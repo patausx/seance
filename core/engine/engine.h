@@ -120,7 +120,9 @@ constexpr int NUM_PERFORMANCE_BINDINGS = (int)PerformanceControl::Count;
 
 struct SampleSlotRefs {
     uint8_t play = 0, grain = 0, rec = 0, bounce = 0, external = 0;
-    uint8_t total() const { return (uint8_t)(play + grain + rec + bounce + external); }
+    uint8_t scratch = 0; // appended: old aggregate field order retained
+    uint8_t paul = 0; // append-only source alias counter
+    uint8_t total() const { return (uint8_t)(play + grain + rec + bounce + external + scratch + paul); }
 };
 
 struct RecWorkspacePlan {
@@ -539,6 +541,21 @@ public:
     q15 param_temp_value() const;
     void capture_param_inspector(int chain, int slot, int param, ParamInspector& out) const;
 
+    // Guard-owned paired control transaction. The source-at-press entry installs
+    // absolute parameter-domain x/y, then initializes the actual source head at
+    // normalized source_position without an audible sweep. The origin entry is
+    // for non-positional callers and captures the current control pair.
+    uint32_t begin_scratch_gesture(int chain, int slot);
+    uint32_t begin_scratch_gesture_at(int chain,int slot,q15 x,q15 y,q15 source_position);
+    void end_scratch_gesture(uint32_t token);
+    bool set_scratch_latch(int chain,int slot,bool enabled);
+    bool set_scratch_gesture(uint32_t token, q15 x, q15 y);
+    void cancel_scratch_gesture(uint32_t token = 0);
+    bool scratch_gesture_active(uint32_t token) const;
+    // Controller-only capture; hot EngineUiSnapshot budget stays unchanged.
+    void capture_scratch_visual(int chain, int slot, ScratchUnit::Visual& out) const;
+    void capture_paul_visual(int chain, int slot, PaulUnit::Visual& out) const;
+
     void clear_step_locks(int chain, int step);
     void set_step_microtiming(int chain, int step, int amount);
     int step_microtiming(int chain, int step) const;
@@ -730,15 +747,22 @@ public:
 
     // Private mono PLAY audition bus; never borrows a sequencer/chain voice.
     // Guarded controller calls. Token ownership prevents a stale editor stop.
+    // Independent part pitch matches musical playback; old q8 remains tempo in
+    // Stretch, dormant in Normal, varispeed in tape. Preview excludes ARP.
     uint32_t start_play_preview(int chain, int slot, uint32_t first, uint32_t end,
                                 bool repeat, bool reverse = false, uint16_t speed_q8 = 256,
-                                bool scrub = false);
+                                bool scrub = false, int8_t part_pitch = 0);
     bool scrub_play_preview(uint32_t token, q15 position, bool initialize = false) {
         return play_preview_active(token) && play_preview_.preview_scrub(position, initialize);
     }
     bool set_play_preview_speed(uint32_t token, uint16_t rate) {
         return play_preview_active(token) && play_preview_.set_preview_speed(rate);
     }
+    // Live private drag audition: end exclusive, >=2 frames, rate64..1024.
+    // No trigger/Param/score writes. Refuses stale source, recording, mute/bypass
+    // or an already releasing voice. Independent semitones are validated -24..24.
+    bool update_play_preview(uint32_t token, uint32_t first, uint32_t end,
+                             bool reverse, uint16_t rate, int8_t part_pitch = 0);
     void stop_play_preview(uint32_t token = 0);
     bool play_preview_active(uint32_t token) const;
     uint32_t play_preview_position(uint32_t token) const;
@@ -775,6 +799,9 @@ public:
     int scope_pos = 0;
 
 private:
+    friend class ScratchUnit; // truthful sequence-deadline activity in controller visual()
+    friend class PaulUnit;
+    PaulUnit* bind_paul(int chain,int slot);
     BounceState bounce_;
     BounceSnapshot bounce_preview_take_;
     uint32_t bounce_preview_frame_ = 0;
@@ -849,13 +876,25 @@ private:
     PatternTransitionState pattern_transition_;
     int transition_bank_at_tick(int chain, uint64_t tick) const;
     void initialize_sequence_clock(bool start_now);
-    void clear_sequence_runtime(bool cancel_temp = true);
+    // Queue/geometry rebuilds expire ordinary locks, not a valid written pitch.
+    // Transport stop/reset explicitly request the full runtime release.
+    void clear_sequence_runtime(bool cancel_temp = true, bool release_pitch = false);
     void schedule_sequence_tick(uint64_t tick, uint64_t nominal_frame);
     void dispatch_sequence_events();
     void fire_sequence_event(int chain, uint64_t tick, uint64_t nominal_frame);
     void advance_sequence_clock();
     void fire_sequence_retrigs();
-    void release_sequence_locks(int chain = -1);
+    void release_sequence_locks(int chain = -1); // full release: audition, step locks, pitch
+    void release_sequence_step_locks(int chain = -1);
+    void release_sequence_pitch(int chain = -1);
+    struct SequenceSource {
+        int8_t slot = -1;
+        SequencerProperties properties;
+        SequenceLifecycle lifecycle = SequenceLifecycle::Strike;
+        uint8_t pitch_domain = 0; // PLAY's reader mode; other kinds keep their raw domain
+    };
+    SequenceSource resolve_sequence_source(int chain) const;
+    bool validate_sequence_pitch(int chain, const SequenceSource& source);
     bool sequence_audition_allowed(int chain) const;
     void refresh_audition_params(int chain, bool release);
     int arp_owner_for(int chain, int slot) const;
@@ -876,6 +915,17 @@ private:
         uint8_t chain = 0, slot = 0, param = 0;
     };
     ActiveStepLock active_step_locks_[NUM_CHAINS * SEQ_LOCKS];
+    // One primary written pitch per chain, outside the four ordinary-lock slots.
+    // The value remains in Param::step_lock; this record owns only its lifetime.
+    // Kind + parameter + bipolar identify the existing raw domain (PLAY note vs
+    // varispeed, MOTOR note mode, SCRT hold); no new layer or persistent field.
+    struct SequencePitchOwner {
+        Unit* unit = nullptr;
+        int8_t slot = -1, param = -1;
+        UnitKind kind = UnitKind::Empty;
+        bool bipolar = false;
+        uint8_t domain = 0;
+    } sequence_pitch_owner_[NUM_CHAINS];
     struct PendingSequenceEvent {
         bool valid = false;
         uint64_t tick = 0;
@@ -919,6 +969,16 @@ private:
     EnvResponse env_response_ = EnvResponse::Fast;
     bool param_temp_allowed(int chain, int slot, int param) const;
     int8_t temp_chain_ = -1, temp_slot_ = -1, temp_param_ = -1;
+    struct ScratchGesture {
+        ScratchUnit* unit=nullptr;
+        ScratchUnit::Source source;
+        ScratchUnit::Mode mode=ScratchUnit::Mode::Hold;
+        ScratchUnit::Map map=ScratchUnit::Map::SpeedPitch;
+        int8_t chain=-1, slot=-1, x=-1, y=-1;
+        uint32_t token=0, epoch=0;
+    } scratch_gesture_;
+    uint32_t scratch_token_=0;
+    uint32_t begin_scratch_gesture_impl(int chain,int slot,bool absolute,q15 x,q15 y,q15 source_position);
     int  control_countdown_ = 0;
     int  scope_decim_ = 0;                // scope decimation counter
     q15 master_gain_ = trackr::fx::Q15_ONE; // fast attack / slow release limiter
@@ -928,6 +988,7 @@ private:
 
     void process_sample_preview(q15* out, int frames);
     void process_play_preview(q15* out, int frames);
+    bool play_preview_valid() const;
     PlayUnit play_preview_;
     const Unit* play_preview_owner_ = nullptr;
     int play_preview_chain_ = -1, play_preview_slot_ = -1;

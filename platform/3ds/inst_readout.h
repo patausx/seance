@@ -20,6 +20,11 @@ inline void value_text(char* out, size_t size, int param, q15 value) {
         case I::P_LENGTH: std::snprintf(out,size,"%ums",unsigned(I::length_ms(value))); break;
         case I::P_ATTACK: std::snprintf(out,size,"%ums",unsigned(I::attack_ms(value))); break;
         case I::P_RELEASE: std::snprintf(out,size,"%ums",unsigned(I::release_ms(value))); break;
+        case I::P_DECAY: std::snprintf(out,size,"%ums",unsigned(I::decay_ms(value))); break;
+        case I::P_HARDNESS:
+        case I::P_POSITION:
+        case I::P_DAMPING:
+        case I::P_STRENGTH:
         case I::P_TONE:
         case I::P_LEVEL: std::snprintf(out,size,"%d%%",((value < 0 ? 0 : int(value))*100+16383)/32767); break;
         default: std::snprintf(out,size,"--"); break;

@@ -17,6 +17,10 @@ bool module_focus_touch_header(Unit& unit, int tx, int ty) {
 
 bool module_focus_touch_body(Unit& unit, int tx, int ty) {
     switch (unit.kind) {
+        case UnitKind::Paul:
+            return paul_focus_touch_body(static_cast<PaulUnit&>(unit), tx, ty);
+        case UnitKind::Scratch:
+            return scratch_focus_touch_body(static_cast<ScratchUnit&>(unit), tx, ty);
         case UnitKind::Inst:
             return inst_focus_touch_body(static_cast<InstUnit&>(unit), tx, ty);
         case UnitKind::Glitch:
@@ -93,6 +97,12 @@ bool module_focus_draw_header(const Unit& unit) {
 
 void module_focus_draw_body(const Unit& unit) {
     switch (unit.kind) {
+        case UnitKind::Paul:
+            paul_focus_draw(static_cast<const PaulUnit&>(unit));
+            break;
+        case UnitKind::Scratch:
+            scratch_focus_draw(static_cast<const ScratchUnit&>(unit));
+            break;
         case UnitKind::Inst:
             inst_focus_draw(static_cast<const InstUnit&>(unit));
             break;
@@ -181,3 +191,7 @@ void module_focus_draw_body(const Unit& unit) {
 
 
 } // namespace seance::platform::ui3ds
+
+// Included once: keeps the existing production/host translation-unit lists intact.
+#include "ui_module_focus_scratch.h"
+#include "ui_module_focus_paul.h"

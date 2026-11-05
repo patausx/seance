@@ -1,5 +1,6 @@
 #include "ui_editor.h"
 #include "ui_param_lens.h"
+#include "ui_play_editor.h"
 #include "ui_module_rand.h"
 #include "strn_focus.h"
 #include "ui_sample_library.h"
@@ -32,6 +33,8 @@ Unit* edited_unit() { return g_eng->chains[g_edit_chain].units[g_edit_slot]; }
 bool editor_back() {
     if (param_lens_is_open()) { param_lens_cancel(); return true; }
     Unit* unit = edited_unit();
+    if (unit && unit->kind == UnitKind::Paul) return paul_focus_back();
+    if (unit && unit->kind == UnitKind::Scratch) return scratch_focus_back();
     if (unit && unit->kind == UnitKind::Recorder) return recorder_focus_back();
     if (unit && unit->kind == UnitKind::Comp) return comp_focus_back();
     if (unit && unit->kind == UnitKind::Bitcrush) return bit_focus_back();
@@ -42,13 +45,14 @@ bool editor_back() {
 }
 
 void editor_touch_down(int tx, int ty) {
+    if (play_editor_word_touch(tx, ty)) return;
     if (module_rand_touch_down(tx, ty)) return;
     if (recorder_focus_return_touch(tx, ty, true)) return;
     // INST owns release-only footer buttons too; an already-open lens keeps its
     // existing controller. Do not open MOD on the press that only arms its label.
     if (!param_lens_is_open()) {
         Unit* candidate = edited_unit();
-        if (candidate && candidate->kind == UnitKind::Inst) {
+        if (candidate && (candidate->kind == UnitKind::Inst || candidate->kind == UnitKind::Paul)) {
             small_press::begin(tx, ty, osGetTime(), candidate, button_context());
             module_focus_touch_body(*candidate, tx, ty);
             return;
@@ -58,6 +62,7 @@ void editor_touch_down(int tx, int ty) {
     Unit* u = edited_unit();
     if (!u) { g_overlay = Overlay::None; return; }
     small_press::begin(tx, ty, osGetTime(), u, button_context());
+    if (u->kind == UnitKind::Scratch) { module_focus_touch_body(*u, tx, ty); return; }
     if (u->kind == UnitKind::Glitch) { module_focus_touch_body(*u, tx, ty); return; }
     if (u->kind == UnitKind::Arp) { module_focus_touch_body(*u, tx, ty); return; }
     if (u->kind == UnitKind::Mouth) { module_focus_touch_body(*u, tx, ty); return; }
@@ -90,13 +95,18 @@ void editor_touch_down(int tx, int ty) {
 }
 
 void editor_touch_drag(int tx, int ty) {
+    if (play_editor_word_drag(tx, ty)) return;
     if (module_rand_touch_drag(tx, ty)) return;
     if (recorder_focus_return_touch(tx, ty, false)) return;
     small_press::drag(tx, ty);
     if (param_lens_touch_drag(tx, ty)) return;
     Unit* unit = edited_unit();
     if (!unit) return;
-    if (unit->kind == UnitKind::SamplePlayer)
+    if (unit->kind == UnitKind::Paul)
+        paul_focus_drag(*static_cast<PaulUnit*>(unit), tx, ty);
+    else if (unit->kind == UnitKind::Scratch)
+        scratch_focus_drag(*static_cast<ScratchUnit*>(unit), tx, ty);
+    else if (unit->kind == UnitKind::SamplePlayer)
         play_focus_drag(*static_cast<PlayUnit*>(unit), tx, ty);
     else if (unit->kind == UnitKind::Osc)
         osc_focus_drag(*static_cast<OscUnit*>(unit), tx, ty);
@@ -155,14 +165,17 @@ void editor_touch_drag(int tx, int ty) {
 }
 
 void editor_touch_release() {
+    if (play_editor_word_release()) return;
     if (module_rand_touch_release()) return;
+    paul_focus_touch_release();
+    scratch_focus_touch_release();
     reverb_focus_touch_release();
     inst_focus_touch_release();
     glitch_focus_release();
     arp_focus_release();
     mouth_focus_release();
     comp_focus_release();
-    fract_focus_release();
+    fract_focus_touch_release();
     osc_focus_release();
     fm_focus_release();
     chorus_focus_release();
@@ -194,7 +207,10 @@ void editor_touch_release() {
 }
 
 void editor_cancel_input() {
+    play_editor_word_cancel();
     module_rand_cancel();
+    paul_focus_release();
+    scratch_focus_release();
     reverb_focus_release(); inst_focus_release(); delay_focus_release();
     play_focus_release(); glitch_focus_release(); arp_focus_release();
     mouth_focus_release(); comp_focus_release(); fract_focus_release();
@@ -213,6 +229,8 @@ void draw_module_editor() {
     if (stranular_focus_draw_bottom()) return;
     Unit* u = edited_unit();
     if (!u) return;
+    if (u->kind == UnitKind::Paul) { module_focus_draw_body(*u); return; }
+    if (u->kind == UnitKind::Scratch) { module_focus_draw_body(*u); return; }
     if (u->kind == UnitKind::Inst) { module_focus_draw_body(*u); return; }
     if (u->kind == UnitKind::Glitch) { module_focus_draw_body(*u); return; }
     if (u->kind == UnitKind::Arp) { module_focus_draw_body(*u); return; }
@@ -263,7 +281,7 @@ void editor_draw() {
     // One ordinary module surface and one frozen modulation layer. Keeping the
     // existing facade avoids a duplicate module dispatch or cached screenshot.
     draw_module_editor();
-    module_rand_draw();
+    if (!play_editor_word_modal()) module_rand_draw();
     recorder_focus_draw_return();
     if (param_lens_is_open()) param_lens_draw_bottom();
 }

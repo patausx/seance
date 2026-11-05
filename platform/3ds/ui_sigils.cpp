@@ -3,6 +3,9 @@
 #include "ui_patchbay.h"
 #include "ui_nav.h"
 #include "sigil_surface.h"
+#include "sigils_flow.h"
+#include "sigils_soft_upper.h"
+#include "word_menu.h"
 #include "ui_chains.h"
 #include "menu_style.h"
 #include "module_fader_painter.h"
@@ -116,6 +119,7 @@ struct Frame {
     uint8_t sigil=0,mode=0,division=0,chain=0,menu_item=0;
     ModSource source=ModSource::None;Menu menu=Menu::None;
     bool valid=false,sync=false,drawn=false,undo=false,periodic=false,running=false,follow_active=false;
+    sigils_flow::Frame flow;
 };
 static_assert(sizeof(Frame)<=1024,"bounded eight-sigil frame");
 static_assert(std::is_trivially_copyable<Frame>::value,"no live pointers in draw");
@@ -127,7 +131,7 @@ uint32_t blur_colors[4]={};
 struct Gesture {
     Kind kind=Kind::None;Engine* engine=nullptr;platform::AudioOut* audio=nullptr;
     int sigil=-1,x=0,y=0,initial=0;SigilMode mode=SigilMode::Loop;SigilShape shape=SigilShape::Drawn;
-    bool sync=false,relative=false;
+    bool sync=false,relative=false,rate_edited=false;
 } gesture;
 int clamp(int v,int lo,int hi){return std::max(lo,std::min(hi,v));}
 int percent(q15 v){return int(v)*100/32767;}
@@ -150,31 +154,26 @@ void config_change(const SigilConfig& c){
 int mod_count(){return g_sel_sigil+2;}
 ModSource mod_at(int row){return row==0?ModSource::None:row<=g_sel_sigil?sigil_mod_source(row-1):ModSource::EnvFollow;}
 int menu_count(Menu m){switch(m){case Menu::Sigil:return NUM_SIGILS;case Menu::Shape:return 7;case Menu::Mode:return 6;case Menu::Mod:return mod_count();case Menu::None:return 0;default:return 2;}}
-struct MenuLayout {int branch,x,y,step,left,right;};
-MenuLayout layout(Menu m){switch(m){case Menu::Sigil:return {143,157,55,18,132,254};case Menu::Shape:return {62,76,78,20,51,178};case Menu::Mode:return {232,246,78,20,222,314};case Menu::Polarity:return {20,34,141,20,10,132};case Menu::Restart:return {176,190,141,20,165,308};case Menu::Mod:return {66,80,38,18,55,159};default:return {};}}
+word_menu::Layout layout(Menu m){switch(m){case Menu::Sigil:return {143,157,55,18,132,254};case Menu::Shape:return {62,76,78,20,51,178};case Menu::Mode:return {232,246,78,20,222,314};case Menu::Polarity:return {20,34,141,20,10,132};case Menu::Restart:return {176,190,141,20,165,308};case Menu::Mod:return {66,80,38,18,55,159};default:return {};}}
 // UI-only, fixed-size motion. Inputs queue feedback; capture advances it after
 // the audio guard. Draw uses only motion_frame, never clocks or live pointers.
 constexpr unsigned TRIGGER=6,TRAIL_RESET=1u<<7;
 struct TrailPoint {uint64_t at=0;uint32_t phase=0;q15 value=0;};
 struct Motion {
     Engine* engine=nullptr;platform::AudioOut* audio=nullptr;int sigil=-1;
-    uint64_t last=0,opened=0,focused=0,pulses[7]={};
-    Menu menu=Menu::None;int item=-1;bool opening=false;
+    uint64_t last=0,pulses[7]={};
+    word_menu::State words;bool opening=false;
     unsigned pending=0;int pen=-1;
-    float from_y=0,from_width=0,y=0,width=0;
     TrailPoint trail[6];int trail_count=0;
 } motion;
 struct MotionFrame {
-    unsigned reveal=255,pulses[7]={};int underline_y=0,underline_width=0,pen=-1;
+    word_menu::Frame words;
+    unsigned pulses[7]={};int pen=-1;
     struct Point {uint32_t phase=0;q15 value=0;unsigned alpha=0;} trail[6];
     int trail_count=0;
 } motion_frame;
 static_assert(sizeof(Motion)+sizeof(MotionFrame)<=640,"bounded UI-only sigil motion");
 uint32_t faded(uint32_t color,unsigned alpha){return (color&0xffffffu)|(((color>>24)*alpha/255)<<24);}
-float ease(uint64_t now,uint64_t start,unsigned duration){
-    const float t=now<start?1.f:std::min(1.f,float(now-start)/duration);
-    return t*t*(3.f-2.f*t);
-}
 constexpr unsigned HISTORY_MS=3000,HISTORY_STEP_MS=50,HISTORY_SIZE=64;
 struct History {
     struct Sample {uint64_t at=0;q15 value=0;} samples[HISTORY_SIZE];
@@ -246,7 +245,7 @@ void capture_motion(const Frame& previous,bool same_context){
     if(now<motion.last||now-motion.last>200){
         // A stalled/backwards UI clock must not replay an old stroke or sweep.
         for(auto& pulse:motion.pulses)pulse=0;
-        motion.trail_count=0;motion.menu=Menu::None;
+        motion.trail_count=0;
     }
     motion_frame={};
     for(unsigned i=1;i<=TRIGGER;++i){
@@ -256,28 +255,10 @@ void capture_motion(const Frame& previous,bool same_context){
             motion_frame.pulses[i]=255-unsigned((now-(stamp-1))*255/duration);
     }
     motion_frame.pen=motion.pen;
-    if(frame.menu!=Menu::None){
-        const auto l=layout(frame.menu);char text[24];
-        const float target_y=l.y+frame.menu_item*l.step+12;
-        const float target_width=ui::text_w(menu_label(frame.menu,frame.menu_item,text,sizeof text))-1;
-        if(motion.opening||motion.menu!=frame.menu){
-            motion.opened=motion.focused=now;motion.item=frame.menu_item;
-            motion.from_y=motion.y=target_y;motion.from_width=motion.width=target_width;
-        }else{
-            const float t=ease(now,motion.focused,100);
-            const float old_y=l.y+motion.item*l.step+12;
-            const float old_width=ui::text_w(menu_label(frame.menu,motion.item,text,sizeof text))-1;
-            motion.y=motion.from_y+(old_y-motion.from_y)*t;
-            motion.width=motion.from_width+(old_width-motion.from_width)*t;
-            if(motion.item!=frame.menu_item){
-                motion.from_y=motion.y;motion.from_width=motion.width;
-                motion.focused=now;motion.item=frame.menu_item;
-            }
-        }
-        motion_frame.reveal=unsigned(ease(now,motion.opened,140)*255);
-        motion_frame.underline_y=int(motion.y+.5f);motion_frame.underline_width=int(motion.width+.5f);
-    }
-    motion.menu=frame.menu;motion.opening=false;
+    char text[24];
+    motion_frame.words=word_menu::capture(motion.words,now,unsigned(frame.menu),frame.menu_item,layout(frame.menu),
+        [&](int row){return menu_label(frame.menu,row,text,sizeof text);},motion.opening);
+    motion.opening=false;
     const bool changed=!same_context||!previous.valid||previous.menu!=Menu::None||
         previous.mode!=frame.mode||previous.config.shape!=frame.config.shape||
         previous.config.unipolar!=frame.config.unipolar||previous.depth!=frame.depth||
@@ -359,7 +340,9 @@ void apply_drag(int x,int y){
     if(gesture.kind==Kind::Canvas){plot(clamp(x,-1024,1024),clamp(y,-1024,1024));return;}
     if(gesture.kind==Kind::Rate){
         if(gesture.sync){int v=clamp(gesture.initial+dx/20,0,5);if(v!=g_eng->sigil_div[g_sel_sigil]){g_eng->set_sigil_div(g_sel_sigil,v);mark_project_mutated();feedback(Kind::Rate);}}
-        else if(dx){auto c=editable_config();c.legacy_rate=false;c.rate_millihz=uint16_t(clamp(gesture.initial+dx*50,50,20000));config_change(c);}
+        // A stationary tap keeps legacy rate intact. After explicit movement,
+        // dx==0 restores the captured free rate instead of retaining the last edit.
+        else if(dx||gesture.rate_edited){auto c=editable_config();c.legacy_rate=false;c.rate_millihz=uint16_t(clamp(gesture.initial+dx*50,50,20000));config_change(c);gesture.rate_edited=true;}
     }else if(gesture.kind==Kind::Phase){const int v=clamp((x-110)*359/190,0,359);if(v!=g_eng->sigil_config[g_sel_sigil].phase_degrees){auto c=editable_config();c.phase_degrees=uint16_t(v);config_change(c);}}
     else {
         const bool depth=gesture.kind==Kind::Depth;const int center=depth?254:245,width=depth?92:110;
@@ -453,20 +436,26 @@ void shape_miniature(const Painter& p,int row,int y,uint32_t color){
 void menu_draw(){
     Painter p;anchor(p,frame.menu);const auto l=layout(frame.menu);
     const int count=frame.menu==Menu::Mod?frame.sigil+2:frame.menu==Menu::Sigil?NUM_SIGILS:frame.menu==Menu::Shape?7:frame.menu==Menu::Mode?6:2;
-    const int reveal=int(motion_frame.reveal),root=l.y+frame.menu_item*l.step+4;
-    const int first=root+(l.y+4-root)*reveal/255,last=root+(l.y+(count-1)*l.step+4-root)*reveal/255;
-    p.line(l.branch,first,l.branch,last,faded(m::branch(),unsigned(reveal)));
-    const unsigned alpha=unsigned(40+215*reveal/255);
-    if(frame.menu==Menu::Sigil)p.right(248,43,"links",faded(m::ghost(),alpha));
-    for(int i=0;i<count;++i){char text[24];const char* name=menu_label(frame.menu,i,text,sizeof text);
-        const bool selected=i==frame.menu_item;const auto color=selected?m::spot():m::ink();const int y=l.y+i*l.step;
-        if(y+4>=first&&y+4<=last)p.line(l.branch,y+4,l.branch+(l.x-7-l.branch)*reveal/255,y+4,faded(selected?color:m::branch(),unsigned(reveal)));
-        p.text(l.x,y,name,faded(color,alpha));
-        if(frame.menu==Menu::Shape)shape_miniature(p,i,y,faded(selected?m::spot():m::ghost(),alpha));
-        if(frame.menu==Menu::Sigil){std::snprintf(text,sizeof text,"%u",unsigned(frame.assignments[i]));
-            p.right(248,y,text,faded(selected&&frame.assignments[i]?m::spot():m::ghost(),alpha));}
-    }
-    p.line(l.x,motion_frame.underline_y,l.x+motion_frame.underline_width,motion_frame.underline_y,faded(m::spot(),unsigned(40+215*reveal/255)));
+    // The links caption stays outside the generic row/tree grammar, at its
+    // original command position just after the trunk (including reveal alpha).
+    struct MenuPainter : Painter {
+        mutable bool trunk=true;
+        bool links=false;uint32_t links_color=0;
+        void line(int x0,int y0,int x1,int y1,uint32_t color) const {
+            Painter::line(x0,y0,x1,y1,color);
+            if(trunk){trunk=false;if(links)right(248,43,"links",links_color);}
+        }
+    } words;
+    words.links=frame.menu==Menu::Sigil;
+    words.links_color=faded(m::ghost(),40+215*motion_frame.words.reveal/255);
+    char text[24];
+    word_menu::draw(words,l,motion_frame.words,count,frame.menu_item,
+        [&](int row){return menu_label(frame.menu,row,text,sizeof text);},
+        [&](int row,int y,unsigned alpha,bool selected){
+            if(frame.menu==Menu::Shape)shape_miniature(p,row,y,faded(selected?m::spot():m::ghost(),alpha));
+            if(frame.menu==Menu::Sigil){std::snprintf(text,sizeof text,"%u",unsigned(frame.assignments[row]));
+                p.right(248,y,text,faded(selected&&frame.assignments[row]?m::spot():m::ghost(),alpha));}
+        },m::ink(),m::spot(),m::branch());
 }
 } // namespace
 
@@ -537,11 +526,12 @@ void sigils_view_touch_down(int x,int y){
 void sigils_view_touch_drag(int x,int y){if(gesture.kind==Kind::None)return;if(!ready()){sigils_close_mode_menu();return;}platform::AudioOut::Guard guard(*g_audio);if(!gesture_valid()){sigils_view_touch_release();return;}apply_drag(x,y);}
 void sigils_capture(){
     const Frame previous=frame;
-    frame={};
-    if(!g_eng||!g_audio||g_view!=View::Sigils||g_sel_sigil<0||g_sel_sigil>=NUM_SIGILS){sigils_close_mode_menu();return;}
+    frame={};soft_upper::raw={};soft_upper::result={};
+    if(!g_eng||!g_audio||g_view!=View::Sigils||g_sel_sigil<0||g_sel_sigil>=NUM_SIGILS){soft_upper::clear();sigils_close_mode_menu();return;}
     if(g_overlay!=Overlay::None||nav_is_open())sigils_close_mode_menu();
     if(menu!=Menu::None&&(menu_engine!=g_eng||menu_audio!=g_audio||menu_sigil!=g_sel_sigil))close_menu();
     const bool same_context=motion_context();
+    if(!same_context)soft_upper::clear();
     {
         platform::AudioOut::Guard guard(*g_audio);
         if(gesture.kind!=Kind::None&&!gesture_valid())sigils_view_touch_release();
@@ -551,18 +541,56 @@ void sigils_capture(){
         frame.sync=g_eng->sigil_sync[g_sel_sigil];frame.division=uint8_t(clamp(g_eng->sigil_div[g_sel_sigil],0,5));frame.rate=g_eng->sigil_rate(g_sel_sigil);
         frame.source=g_eng->sigil_mods[g_sel_sigil].src;frame.mod_depth=g_eng->sigil_mods[g_sel_sigil].depth;frame.chain=uint8_t(g_eng->step_dest[g_sel_sigil]);
         frame.undo=g_sigil_undo_valid[g_sel_sigil];frame.menu=menu;frame.menu_item=uint8_t(menu_item);
+        frame.flow.valid=ready();
+        const bool stochastic=legacy_random(frame.mode)||frame.config.shape==SigilShape::Random||frame.config.shape==SigilShape::Smooth;
+        frame.flow.source_active=frame.flow.valid&&frame.config.enabled&&sigil_config_valid(frame.config)&&frame.depth!=0&&
+            !(frame.mode==1&&!frame.running)&&!(frame.mode==5&&!frame.follow_active)&&
+            !(frame.config.shape==SigilShape::Drawn&&!frame.drawn&&!stochastic);
         const ModSource src=sigil_mod_source(g_sel_sigil);
         for(int c=0;c<NUM_CHAINS;++c)for(int slot=0;slot<UNITS_PER_CHAIN;++slot){const Unit* u=g_eng->chains[c].units[slot];if(!u)continue;
             for(int p=0;p<u->num_params;++p){const auto& param=u->params[p];const int source=mod_source_sigil(param.src);
                 if(source>=0)++frame.assignments[source];
-                if(param.src==src){if(frame.route_count<3){auto& r=frame.routes[frame.route_count];char name[23];lower(name,sizeof name,param.name);std::snprintf(r.name,sizeof r.name,"%c:%c %.8s / %.22s",'1'+c,'1'+slot,m::module_name(u->kind),name);r.depth=param.mod_depth;r.enabled=param.mod_enabled;}++frame.route_count;}}}
+                if(param.src==src){
+                    if(!frame.route_count&&frame.flow.valid){
+                        // The SAME first-route visit and original single audio guard.
+                        auto& raw=soft_upper::raw;raw.parameter_base=param.base;raw.amount=param.mod_depth;
+                        if(u->kind==UnitKind::Filter){
+                            const auto& filter=*static_cast<const FilterUnit*>(u);raw.filter=true;
+                            raw.type=filter.type;raw.bypass=u->bypass;raw.mute=g_eng->chains[c].mute;
+                            raw.base[0]=u->params[0].base;raw.base[1]=u->params[1].base;raw.base[2]=u->params[3].base;
+                            raw.live[0]=q15(filter.visual_cutoff());raw.live[1]=q15(filter.visual_resonance());raw.live[2]=u->params[3].effective;
+                        }
+                        auto& t=frame.flow.target;t.kind=sigils_flow::TargetKind::Module;
+                        lower(t.module,sizeof t.module,m::module_name(u->kind));lower(t.param,sizeof t.param,param.name);
+                        std::snprintf(t.identity,sizeof t.identity,"%d:%d",c+1,slot+1);t.effective=param.effective;
+                        t.state=!param.mod_enabled?sigils_flow::RouteState::Off:!param.mod_depth?sigils_flow::RouteState::Zero:
+                            g_eng->chains[c].mute?sigils_flow::RouteState::Mute:u->bypass?sigils_flow::RouteState::Bypass:
+                            u->kind==UnitKind::Filter&&static_cast<const FilterUnit*>(u)->type==trackr::dsp::FilterType::Off?
+                            sigils_flow::RouteState::Suspended:sigils_flow::RouteState::On;
+                    }
+                    if(frame.route_count<3){auto& r=frame.routes[frame.route_count];char name[23];lower(name,sizeof name,param.name);std::snprintf(r.name,sizeof r.name,"%c:%c %.8s / %.22s",'1'+c,'1'+slot,m::module_name(u->kind),name);r.depth=param.mod_depth;r.enabled=param.mod_enabled;}++frame.route_count;}}}
         for(int i=0;i<2;++i){const auto mod=g_eng->clock_mod(i==0?ClockTarget::Tempo:ClockTarget::Swing);const int source=mod_source_sigil(mod.src);
             if(source>=0)++frame.assignments[source];
-            if(mod.src==src){if(frame.route_count<3)std::snprintf(frame.routes[frame.route_count].name,sizeof frame.routes[0].name,"project / %s",i==0?"tempo":"swing");++frame.route_count;}}
+            if(mod.src==src){
+                if(!frame.route_count&&frame.flow.valid){
+                    auto& t=frame.flow.target;t.kind=sigils_flow::TargetKind::Clock;
+                    std::snprintf(t.module,sizeof t.module,"project");std::snprintf(t.param,sizeof t.param,"%s",i==0?"tempo":"swing");
+                    t.state=mod.depth?sigils_flow::RouteState::On:sigils_flow::RouteState::Zero;
+                }
+                if(frame.route_count<3)std::snprintf(frame.routes[frame.route_count].name,sizeof frame.routes[0].name,"project / %s",i==0?"tempo":"swing");++frame.route_count;}}
         for(int i=0;i<NUM_SIGILS;++i){const auto mod=g_eng->sigil_mods[i];const int source=mod_source_sigil(mod.src);
             if(source>=0)++frame.assignments[source];
-            if(i>g_sel_sigil&&mod.src==src){if(frame.route_count<3){auto& r=frame.routes[frame.route_count];std::snprintf(r.name,sizeof r.name,"sigil %c / rate",'a'+i);r.depth=mod.depth;r.enabled=!g_eng->sigil_sync[i]&&g_eng->sigils[i].mode!=SigilMode::Follow;}++frame.route_count;}}
+            if(i>g_sel_sigil&&mod.src==src){
+                if(!frame.route_count&&frame.flow.valid){
+                    auto& t=frame.flow.target;t.kind=sigils_flow::TargetKind::Rate;
+                    std::snprintf(t.module,sizeof t.module,"sigil %c",'a'+i);std::snprintf(t.param,sizeof t.param,"rate");
+                    t.state=g_eng->sigil_sync[i]||g_eng->sigils[i].mode==SigilMode::Follow||!g_eng->sigil_config[i].enabled?
+                        sigils_flow::RouteState::Suspended:!mod.depth?sigils_flow::RouteState::Zero:sigils_flow::RouteState::On;
+                }
+                if(frame.route_count<3){auto& r=frame.routes[frame.route_count];std::snprintf(r.name,sizeof r.name,"sigil %c / rate",'a'+i);r.depth=mod.depth;r.enabled=!g_eng->sigil_sync[i]&&g_eng->sigils[i].mode!=SigilMode::Follow;}++frame.route_count;}}
     }
+    sigils_flow::project(frame.flow,frame);
+    soft_upper::project(frame.flow); // Bounded coverage/model preparation AFTER guard.
     capture_motion(previous,same_context);
     capture_history(previous,same_context,motion.last);
     // Software blur after releasing audio, immutable until menu/theme changes.
@@ -578,17 +606,12 @@ void sigils_view_draw(){
 void sigils_top_draw(){
     m::paper(400);if(!frame.valid)return;sigil_surface::TopPainter p;char text[64];
     m::page_heading(page_layout::Title::Sigils,m::ink());std::snprintf(text,sizeof text,"sigil %c / %s",'a'+frame.sigil,MODES[frame.mode]);p.right(380,25,text,m::ghost());
-    std::snprintf(text,sizeof text,"output %+d%%",percent(frame.value));p.text(20,54,text,m::spot());
-    const char* status=!frame.config.enabled?"inactive / choose shape":legacy_random(frame.mode)?"legacy mode owns random output":frame.mode==5?"follow / actual play cursor":frame.config.legacy||frame.config.legacy_rate?"legacy rate preserved":SHAPES[int(frame.config.shape)];
-    p.right(380,54,status,m::ghost());
-    if(frame.periodic){int py=110-int(frame.wave[0])*37/32767;for(int i=1;i<SIGIL_POINTS;++i){int x=20+i*360/127,y=110-int(frame.wave[i])*37/32767;p.line(20+(i-1)*360/127,py,x,y,m::ink());py=y;}
-        draw_trail(p,20,360,110,37);
-        p.bead(20+int((uint64_t(frame.phase)*360)>>32),110-int(frame.value)*37/32767,m::spot(),true);}
-    else if(history_frame.active)draw_history(p);
-    else {int y=110-int(frame.value)*37/32767;p.line(20,y,380,y,m::ink());p.text(20,145,"live output / not a predicted waveform",m::ghost());}
-    p.line(20,169,380,169,m::branch());std::snprintf(text,sizeof text,"destinations / %02u",frame.route_count);p.text(20,178,text,m::ghost());
-    for(int i=0;i<std::min(3,int(frame.route_count));++i){p.text(28,192+i*13,frame.routes[i].name,m::ink());std::snprintf(text,sizeof text,frame.routes[i].enabled?"%+d%%":"off",percent(frame.routes[i].depth));p.right(380,192+i*13,text,m::spot());}
-    if(!frame.route_count)p.text(28,199,"none / open sigilbay to connect",m::ghost());
+    const char* status=!frame.config.enabled?"inactive":frame.mode==1&&!frame.running?"shot stopped":
+        frame.mode==5&&!frame.follow_active?"no play":
+        frame.config.shape==SigilShape::Drawn&&!frame.drawn&&!legacy_random(frame.mode)?"empty":
+        !frame.depth?"source depth zero":legacy_random(frame.mode)?MODES[frame.mode]:SHAPES[int(frame.config.shape)];
+    sigils_flow::draw(p,frame.flow,frame.sigil,frame.route_count,status);
+    soft_upper::content(p,frame);
     const bool paused=frame.sync||frame.mode==5;
     m::footer(400,paused?"rate mod paused / sync or follow":"one source / separate cable amounts",frame.mode==1||frame.mode==5?"a trigger":"a reset");
 }

@@ -4,6 +4,7 @@
 #pragma once
 #include "../synth/sampler.h"
 #include "play_edit.h"
+#include "../ui/play_part_pitch.h"
 
 namespace seance {
 
@@ -132,6 +133,8 @@ inline PlayWindow play_window(const trackr::synth::Sample& sample,
                        speed, start, length, slice, pitch_quantize, modern);
     if (modern && out.slice) out.increment = (int32_t)((int64_t)out.increment *
         trackr::synth::Sample::cut_speed(sample.slice_speed_q8[out.slice - 1]) / 256);
+    if (modern && out.slice) out.increment = (int32_t)((int64_t)out.increment *
+        play_part_pitch::ratio_q16(sample.slice_pitch_semitones[out.slice - 1]) / 65536);
     return out;
 }
 
@@ -189,6 +192,8 @@ inline PlayWindow play_edit_window(const trackr::synth::Sample& sample,
         sample.slice_reverse_mask, speed, start, length, slice, pitch_quantize, modern, edit);
     if (modern && out.slice) out.increment = (int32_t)((int64_t)out.increment *
         trackr::synth::Sample::cut_speed(sample.slice_speed_q8[out.slice - 1]) / 256);
+    if (modern && out.slice) out.increment = (int32_t)((int64_t)out.increment *
+        play_part_pitch::ratio_q16(sample.slice_pitch_semitones[out.slice - 1]) / 65536);
     return out;
 }
 

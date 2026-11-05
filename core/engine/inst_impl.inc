@@ -1,6 +1,7 @@
 // Included by units.cpp outside namespace seance, like arp_impl.inc.
 // PCM and zone descriptors have one internal-linkage, read-only definition here.
 #include "inst_unit.h"
+#include "inst_scope.h"
 #include "inst_bank_data.h"
 
 namespace seance {
@@ -9,7 +10,8 @@ constexpr int inst_note_min=24, inst_note_max=96;
 constexpr uint32_t inst_env_one=65536, inst_declick_frames=64;
 constexpr int inst_level_frames=128;
 static_assert(ENGINE_SR==32000 && inst_bank::SAMPLE_RATE==24000, "inst rate ratio is exactly 3/4");
-static_assert(InstUnit::INSTRUMENT_COUNT==6 && InstUnit::VOICE_COUNT==4, "inst fixed bank/mix contracts");
+static_assert(InstUnit::SAMPLE_INSTRUMENT_COUNT==6 && InstUnit::INSTRUMENT_COUNT==7 &&
+              InstUnit::VOICE_COUNT==4 && InstUnit::MODEL_VOICE_COUNT==2, "inst bounded bank/model contracts");
 static_assert(inst_bank::ZONE_COUNT==22, "inst bank zones must match the fixed descriptors");
 
 int inst_clamp(int value, int lo, int hi) { return value<lo ? lo : value>hi ? hi : value; }
@@ -29,7 +31,7 @@ q15 inst_time_value(unsigned ms, unsigned low, unsigned high) {
     while(a<b){const unsigned middle=(a+b)/2;if(inst_time(q15(middle),low,high)<ms)a=middle+1;else b=middle;}
     return q15(a);
 }
-const char* const inst_names[] = {"piano","violin","brass","flute","bass","drums"};
+const char* const inst_names[] = {"piano","violin","brass","flute","bass","drums","vibes"};
 const char* const inst_drum_names[] = {"kick","snare","hat","tom","openhat","cymbal"};
 constexpr int inst_drum_notes[]={36,38,42,45,46,49};
 
@@ -68,21 +70,28 @@ unsigned InstUnit::release_ms(q15 value){return inst_time(value,5,3000);}
 q15 InstUnit::length_value(unsigned ms){return inst_time_value(ms,20,4000);}
 q15 InstUnit::attack_value(unsigned ms){return inst_time_value(ms,0,1000);}
 q15 InstUnit::release_value(unsigned ms){return inst_time_value(ms,5,3000);}
+unsigned InstUnit::decay_ms(q15 value){return inst_time(value,120,6000);}
+q15 InstUnit::decay_value(unsigned ms){return inst_time_value(ms,120,6000);}
 
 InstUnit::InstUnit(){
     kind=UnitKind::Inst;
-    add_param("INST",instrument_value(0)); add_param("NOTE",note_value(60));
-    add_param("LEN",length_value(480)); add_param("ATK",attack_value(8));
-    add_param("REL",release_value(640)); add_param("TONE",19660); add_param("LEVEL",24575);
+    add_param("INST",instrument_value(MODEL_INSTRUMENT)); add_param("NOTE",note_value(60));
+    add_param("LEN",length_value(4000)); add_param("ATK",attack_value(1));
+    add_param("REL",release_value(800)); add_param("BODY",0); add_param("LEVEL",32767);
+    add_param("DECAY",decay_value(2300)); add_param("HARD",18000); add_param("POS",11000);
+    add_param("DAMP",15000); add_param("STRENGTH",26000);
     reset();
 }
+InstUnit::~InstUnit(){inst_scope::recorder.release(this);}
 void InstUnit::reset(){
+    inst_scope::recorder.reset(this);
     for(auto& voice:voices_)voice=Voice{};
-    strikes_=0;steal_cursor_=0;
+    strikes_=0;steal_cursor_=0;model_strikes_=0;modal_.reset();
     level_current_=level_target_=inst_positive(params[P_LEVEL].target)*65536;
     level_step_=0;level_error_=level_remainder_=level_left_=0;level_sign_=0;
 }
 void InstUnit::control_tick(){
+    params[P_TONE].name=modeled()?"BODY":"TONE";
     // Read resolved TARGET, not the preceding one-pole Param slew. INST owns its
     // exact sample-clock level ramp, including a no-jump mid-ramp retarget.
     const int32_t target=inst_positive(params[P_LEVEL].target)*65536;
@@ -108,6 +117,21 @@ void InstUnit::trigger(){
     // Arp transposition is consumed ONCE, on this edge. Engine owns the arp gate.
     // Legato does not repitch an accepted acoustic recording or retune old tails.
     const int note=inst_clamp(note_midi(params[P_NOTE].target)+int(arp_voice.semitones),inst_note_min,inst_note_max);
+    if(instrument==MODEL_INSTRUMENT){
+        inst_modal::Instrument::Strike strike;
+        strike.note=note;
+        strike.body=uint16_t(inst_positive(params[P_BODY].target));
+        strike.decay_ms=decay_ms(params[P_DECAY].target);
+        strike.hardness=uint16_t(inst_positive(params[P_HARDNESS].target));
+        strike.position=uint16_t(inst_positive(params[P_POSITION].target));
+        strike.damping=uint16_t(inst_positive(params[P_DAMPING].target));
+        strike.strength=uint16_t(inst_positive(params[P_STRENGTH].target));
+        strike.length_ms=length_ms(params[P_LENGTH].target);
+        strike.attack_ms=attack_ms(params[P_ATTACK].target);
+        strike.release_ms=release_ms(params[P_RELEASE].target);
+        modal_.strike(strike);++strikes_;++model_strikes_;
+        return;
+    }
     const inst_bank::Zone* zone=inst_zone(instrument,note);
     int slot=-1;
     for(int i=0;i<VOICE_COUNT;++i)if(voices_[i].stage==Stage::Off){slot=i;break;}
@@ -149,8 +173,8 @@ void InstUnit::trigger(){
 void InstUnit::process(q15* buf, int frames){
     if(!buf || frames<=0)return;
     // Engine bypass skips this function, exactly as it does for other sources.
-    // Fixed four-voice loop: no heap, filesystem, lock, random lookup, float,
-    // division/modulo, coefficient construction or sample search on this path.
+    // Four sample tails plus two modal tails remain independent across source
+    // changes. No heap, filesystem, lock, coefficient building or float here.
     for(int frame=0;frame<frames;++frame){
         advance_level();
         int32_t mixed=0;
@@ -193,10 +217,14 @@ void InstUnit::process(q15* buf, int frames){
                 v.stage=Stage::Sustain;v.envelope=inst_env_one;v.envelope_error=0;
             }
         }
-        // 12dB fixed polyphony headroom; max four bounded ±24576 recordings.
-        // Q31 live level, then /4. No limiter, wraparound or hidden compressor.
-        buf[frame]=q15((int64_t(mixed)*level_current_)>>33);
+        // Samples keep their four-tail scaling. A further fixed 6dB reserve
+        // covers simultaneous old sample + new model tails without a limiter,
+        // wraparound, backend-dependent gain jump or implicit voice cancellation.
+        const int32_t combined=(mixed>>2)+int32_t(modal_.next());
+        buf[frame]=q15((int64_t(combined)*level_current_)>>32);
     }
+    // Read-only post-block observer; disarmed path is constant work.
+    inst_scope::recorder.write(this,buf,frames);
 }
 InstUnit::Visual InstUnit::visual()const{
     Visual result{};result.strikes=strikes_;
@@ -206,6 +234,18 @@ InstUnit::Visual InstUnit::visual()const{
         out.age=v.age;out.instrument=v.instrument;out.note=v.note;out.stage=uint8_t(v.stage);
         out.envelope=uint16_t(v.envelope>=inst_env_one ? 32767 : v.envelope>>1);
         if(v.stage!=Stage::Off)++result.active;
+    }
+    return result;
+}
+InstUnit::ModelVisual InstUnit::model_visual()const{
+    ModelVisual result{};result.strikes=model_strikes_;
+    for(int i=0;i<MODEL_VOICE_COUNT;++i){
+        const auto voice=modal_.info(i);auto& out=result.voices[i];
+        out.age=voice.age;out.end=voice.end;out.envelope=voice.envelope;
+        out.note=uint8_t(voice.note);out.stage=voice.stage;out.active=voice.active;
+        out.decay_ms=voice.decay_ms;out.damping=voice.damping;out.hardness=voice.hardness;
+        out.position=voice.position;out.body=voice.body;out.strength=voice.strength;
+        if(voice.active)++result.active;
     }
     return result;
 }

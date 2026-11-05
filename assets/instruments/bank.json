@@ -8,10 +8,10 @@
   "pcm_bytes": 1221500,
   "playable_frames": 610728,
   "guard_frames": 22,
-  "pcm_sha256": "c49a3fd513bb60e92fdf215726626f8502cd444ea354eadaaa64aa189beb1027",
-  "header_sha256": "646d744eb99f92badf912cc2bf45254031d15d343cb7e76fdd98dcdd9364c18c",
+  "pcm_sha256": "3890f6e948434dcbbef1f7b11fcb890f01735a784d6cdb2aed1db52c2291eb7f",
+  "header_sha256": "453bb02ac62f546cb8ff69df30d0e39072b270baab2ef3af0cab9b511b28637f",
   "sources_sha256": "6909cfa6f18f73f4f36e2f0feec001d37998c54db1a16b357ac8adba23c7d01e",
-  "generator_sha256": "d0f71e6fdc90cebe4063d089dda025e691cb96617a3ec4a5a2c4885759763844",
+  "generator_sha256": "703ee9c373b352d689ca582572068d68279703459475036ae3ff34aa4a7d8e08",
   "fir": {
     "input_rate": 44100,
     "output_rate": 24000,
@@ -344,16 +344,40 @@
         "width": 2,
         "frames": 100073
       },
+      "source_role": "archived reference only; not used by generated bass",
       "source_start": 0,
       "frames": 36000,
       "loop_start": 0,
       "loop_end": 0,
       "crossfade_frames": 0,
       "peak": 24576,
-      "mean_q16": 8088,
+      "mean_q16": 1635489,
       "loop_mean_q16": 0,
+      "generation": {
+        "kind": "clean plucked bass v1",
+        "harmonics": [
+          1,
+          2,
+          3
+        ],
+        "gains_q15": [
+          32767,
+          8500,
+          2600
+        ],
+        "decay_percent": [
+          100,
+          45,
+          25
+        ],
+        "fundamental_t60_ms": 1400,
+        "attack_ms": 4,
+        "tail_fade_ms": 90,
+        "noise": false,
+        "runtime_synthesis": false
+      },
       "offset": 407221,
-      "pcm_sha256": "53abd54bcf6b65e57843ed73db18c6a8a281aa909ad7a89e3bf928bafec45433",
+      "pcm_sha256": "ff739564a8af91c722e390822d6645932283cfb30302a3b47aec567537a9e25d",
       "low": 24,
       "high": 40
     },
@@ -368,16 +392,40 @@
         "width": 2,
         "frames": 155789
       },
+      "source_role": "archived reference only; not used by generated bass",
       "source_start": 0,
       "frames": 36000,
       "loop_start": 0,
       "loop_end": 0,
       "crossfade_frames": 0,
       "peak": 24576,
-      "mean_q16": 27736,
+      "mean_q16": 185476,
       "loop_mean_q16": 0,
+      "generation": {
+        "kind": "clean plucked bass v1",
+        "harmonics": [
+          1,
+          2,
+          3
+        ],
+        "gains_q15": [
+          32767,
+          8500,
+          2600
+        ],
+        "decay_percent": [
+          100,
+          45,
+          25
+        ],
+        "fundamental_t60_ms": 1200,
+        "attack_ms": 4,
+        "tail_fade_ms": 90,
+        "noise": false,
+        "runtime_synthesis": false
+      },
       "offset": 443222,
-      "pcm_sha256": "fd35db3de073a68955e9460bd6e49ea429f54c752562fd229cfc03604d6650f3",
+      "pcm_sha256": "be2874c995bf47fc8ceed7a1cbd3e71339acac3f608d93b8ad3e426cfccf453b",
       "low": 41,
       "high": 52
     },
@@ -392,16 +440,40 @@
         "width": 2,
         "frames": 104342
       },
+      "source_role": "archived reference only; not used by generated bass",
       "source_start": 0,
       "frames": 31200,
       "loop_start": 0,
       "loop_end": 0,
       "crossfade_frames": 0,
       "peak": 24576,
-      "mean_q16": 43949,
+      "mean_q16": -251471,
       "loop_mean_q16": 0,
+      "generation": {
+        "kind": "clean plucked bass v1",
+        "harmonics": [
+          1,
+          2,
+          3
+        ],
+        "gains_q15": [
+          32767,
+          8500,
+          2600
+        ],
+        "decay_percent": [
+          100,
+          45,
+          25
+        ],
+        "fundamental_t60_ms": 1000,
+        "attack_ms": 4,
+        "tail_fade_ms": 90,
+        "noise": false,
+        "runtime_synthesis": false
+      },
       "offset": 479223,
-      "pcm_sha256": "dc9e975a3bf3a34bf2328db40b10835a4137709c8d055078e0cf67370c369c96",
+      "pcm_sha256": "eb73ab5aebc28f7569f8f8875d27238978f0352a0cabbfc71b38956b9c6bbf63",
       "low": 53,
       "high": 96
     },

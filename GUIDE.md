@@ -1,6 +1,6 @@
 # seance guide
 
-user guide for `0.1.0-alpha.1`. start with [installation](#installation).
+user guide for the current `0.1.0-alpha.1` source. start with [installation](#installation).
 projects are saved explicitly; keep a backup of `sdmc:/3ds/seance/`.
 
 ## contents
@@ -13,7 +13,7 @@ projects are saved explicitly; keep a backup of `sdmc:/3ds/seance/`.
 - [samples](#play-and-samples), [recording](#microphone-and-recording) and [bounce](#bounce)
 - [perform, banks and order](#perform)
 - [projects and backups](#projects-and-data-safety), [troubleshooting](#troubleshooting)
-- [module reference](#module-reference): all 28 modules, controls and patch ideas
+- [module reference](#module-reference): all 30 modules, controls and patch ideas
 
 ## installation
 
@@ -44,8 +44,8 @@ keep the accompanying license notices when redistributing either format.
 - **Old 3DS has not been tested; performance on older models is unknown.**
   New 3DS uses its CPU speedup, but demanding patches can still exceed the audio budget.
 
-there is no binary release attached to the initial source import. see
-[building](BUILDING.md) if you are working from source.
+the current source update does not announce a new binary release. if no application
+archive is supplied, see [building](BUILDING.md) to build from source.
 
 ## controls at a glance
 
@@ -174,14 +174,15 @@ selecting an entry and confirming it are separate actions.
 
 | family | modules | use |
 | --- | --- | --- |
-| sources | [osc](#osc), [fm](#fm), [motor](#motor), [noise](#noise), [bird](#bird), [inst](#inst), [play](#play), [gran](#gran), [mic](#mic) | create sound, play a sample or bring in the microphone |
+| sources | [osc](#osc), [fm](#fm), [motor](#motor), [noise](#noise), [bird](#bird), [inst](#inst), [play](#play), [scrt](#scrt), [paul](#paul), [gran](#gran), [mic](#mic) | create sound, play a sample or bring in the microphone |
 | tone | [filt](#filt), [tilt](#tilt), [mouth](#mouth), [fold](#fold), [strain](#strain), [bit](#bit), [ring](#ring), [shift](#shift), [comp](#comp), [vca](#vca) | shape frequencies, dynamics and gain |
 | time | [chor](#chor), [dly](#dly), [rev](#rev), [ghost](#ghost), [swarm](#swarm), [fract](#fract), [glitch](#glitch) | chorus, echoes, space and live-buffer processing |
 | tools | [arp](#arp), [rec](#rec) | clocked note patterns and in-chain recording |
 
-**inst** includes built-in acoustic instruments and drums. **play** works with a
-loaded WAV; **gran** turns one into overlapping grains. **swarm**, in contrast,
-works on the live incoming signal. **strain** is distortion, not swarm.
+**inst** includes built-in instruments and drums. **play** edits and plays a loaded
+WAV; **scrt** scratches or holds it, **paul** stretches it spectrally, and **gran**
+turns it into overlapping grains. these are separate source modules. **swarm**, in
+contrast, works on the live incoming signal. **strain** is distortion, not swarm.
 use each editor's named controls and upper display; parameter order varies.
 
 the starter VCA uses a triggered envelope: **A** or a sequencer hit opens it.
@@ -233,6 +234,11 @@ stroke/drawn state.
 - rate modulation offers earlier sources and the envelope follower. sync/follow
   can suspend its effect without deleting its saved settings.
 - **X** opens shape; arrows select a source/change rate; **Y** returns to Chains.
+
+the upper arc shows the selected sigil's phase/output and its first saved destination,
+with stored base and live value kept separate. a filter destination also shows a
+model of its response, not a measured audio spectrum. inactive/off routes remain
+visible rather than being replaced by a different active destination.
 
 **sigilbay** shows the selected source's destinations. source names there open
 the same editor; there are no separately created LFO units. old projects migrate
@@ -300,35 +306,113 @@ lock mode stores a per-step parameter override, not a new module base. select th
 parameter with the lock inspector; unsupported/structural operations remain
 unavailable. lock editing owns input while it is open.
 
+**primary pitch holds until the next accepted written pitch**, even across empty
+steps or a new trigger with no note. an accepted pitch record does not need its own
+trigger; an explicit zero/base note is still a new record. a failed condition does
+not change the held pitch. the same rule applies to a generic lock on that primary
+pitch parameter. level, slice and other ordinary locks end at each step boundary,
+including a step whose condition fails. holding pitch does not extend a voice's
+gate or release. stop/reset, project loading or replacing/changing the pitch target
+releases this runtime hold; switching playing banks with the same target retains it.
+unwritten step readouts still show stored/base values, not a prediction of conditional
+playback. older sparse-note patterns can therefore sound different in this build.
+
 slice mode uses the selected PLAY's existing cut IDs. slice IDs may be sparse;
 changing a slice walks available IDs, rather than assuming consecutive values.
 editing the cuts themselves belongs to the PLAY editor, not to the step grid.
 
 ## play and samples
 
-put your WAV files in `sdmc:/3ds/seance/samples/`. the PLAY/GRAN source header
-opens the browser. selecting, listening, and assigning are different actions;
-browsing a file does not automatically replace a module's sample.
+put your WAV files in `sdmc:/3ds/seance/samples/`. the source name in PLAY, GRAN,
+SCRT or PAUL opens the shared browser. browsing, listening and assigning are
+separate actions; browsing a file does not replace a module's sample.
+
+### sample browser
+
+choose **library / project / recordings** from the source word or **L/R**. drag to
+scroll, or select with up/down. the upper display scrolls long filenames so their
+suffixes can be read; list edges fade when more rows lie outside the view.
+
+- tap a file row and lift to select and audition it; dragging past rows does not
+  audition them. tap a folder to open it. **B / left** returns to its parent;
+  **B** at the root closes the browser.
+- **Y / listen** restarts or stops audition. **A / use** installs the successfully
+  loaded selection and returns to the editor. auto preview affects d-pad selection,
+  not explicit file taps.
+- **X / delete** in library/recordings asks before deleting the actual WAV from SD.
+  **cancel** is selected by default; explicitly choose **delete wav** to proceed.
+  loaded/busy sources are protected, and a changed target invalidates confirmation.
+- **remove** in project clears an eligible bank sound but keeps its WAV. shared or
+  busy sounds can refuse removal. deleting a WAV can break references in other
+  saved projects that are not open; keep backups. there is no deletion undo.
 
 supported input: PCM WAV 8/16/24/32-bit and 32-bit float, mono or stereo, up to
 20 seconds per load. the engine runs at 32 kHz. MP3, OGG, ADPCM and other WAV
 encodings are not supported. sample memory is shared and finite.
 
-PLAY's right-hand rail has **normal / stretch / tape / scratch / hold**, with
-**config** below. scratch/hold are workspaces for the current playback engine,
-not extra pitch algorithms. stretch tempo is manual, not automatic BPM sync;
-root tuning is user-prepared, not detected.
+### play editing
 
-- **trim / slices / loop** selects waveform tools without automatically enabling
-  looping or sequenced scrub.
-- waveform lanes, fine drag, snap, fades, zoom/pan, cut/seam and loop controls are
-  contextual. use their named sheets rather than searching for hidden sliders.
-- **config → voice** contains triggering, direction, loop and gain controls.
-- **config → listen** controls the private source/chain preview and repeat range.
-- **config → file** contains processing of copies, save selection and detach raw.
-  save/detach/crop require confirmation; the original source WAV is not overwritten.
-- **history** exposes undo and redo for sample edits. source/document changes can
-  cancel a held control; lift and begin a fresh gesture.
+PLAY has one inline editor: **trim / chop / loop** selects the source-time edit
+lane; **normal / stretch / tape** selects playback. scratch/hold and spectral
+stretching belong to [SCRT](#scrt) and [PAUL](#paul), not to PLAY modes. the upper
+waveform provides context for the lower edit line.
+
+- in trim/loop, drag a visible end to resize the interval, or drag inside it to
+  move the interval. a press alone does not jump an end to the touch position.
+  **loop** selects the edit lane; the separate **loop on/off** enables playback looping.
+- in chop, tap a free point on the line and lift to split directly. there is no add
+  mode or double-tap action. tap a part label to select it without changing the
+  musical slice assigned in the sequencer; repeated label taps do not delete or reset it.
+- drag a shared boundary horizontally to move the seam. the first source start
+  and final source end are fixed. close ends use upper/lower grab lanes; zoom in
+  when parts are too narrow to select comfortably.
+- to merge, hold an internal boundary still for **450 ms**, then move vertically
+  beyond the edit lane's **12 px** outer margin. the joined part is shown and
+  auditioned before lift. return inside to remove the merge preview; a valid lift
+  commits. the chronological left part keeps its ID, reverse, pitch and old rate;
+  the removed ID becomes invalid. this does not delete PCM, renumber parts or
+  rewrite sequencer slice/lock records. revisit steps using the removed ID.
+- **fine** and **- / scale / +** sit beneath the lane. fine reduces boundary travel
+  to 1/8; zoom centers on the selected interval/part, and tapping the scale resets
+  to **1x**, the full source. drag zoomed background to pan the view. offscreen
+  boundaries are not substitute grips at the view edges.
+- tap the active trim/chop/loop word again for its contextual actions: fades/reset
+  trim, auto/live cuts and part nudges, or loop seam/crossfade and snap. auto-cut
+  replacement and clearing need confirmation. cuts are shared by cards using that
+  bank sample; save a project copy before replacing a prepared set. in **live cuts**,
+  **arm source pass** starts a pass, **A / mark cursor** inserts at the actual source
+  position, and **stop / disarm** ends that pass.
+
+### play playback and audition
+
+pitch (or tape speed), gain, one shot/gate, loop and global reverse stay inline.
+when gate is selected, scrub its duration word; stretch's **rate** is beside fine
+and zoom. pitch/rate are set manually, not inferred from a file's key or BPM.
+
+- **normal** changes source playback pitch and duration together.
+- **stretch** separates pitch from temporal rate; raising pitch does not accelerate
+  the source-time scan.
+- **tape** couples playback speed and pitch.
+- chop's selected part has its own **-24…+24 st** pitch and reverse controls, separate
+  from global pitch/direction and from historical saved per-part rates. small
+  badges identify edited parts where space permits. selecting a part alone does
+  not write the musical slice value.
+
+an audio-edit drag starts audition after movement and updates the same audition
+as it moves; **lift or cancellation stops drag-owned audio**. **A** separately
+starts/stops audition of the selected interval/part (outside an armed live-cut pass).
+an already-running A audition can accompany a drag and survives a normal lift.
+panning or selecting alone does not start drag audition. source, document or navigation changes cancel the held
+control; lift and begin a fresh gesture. **rand** is a separate header action.
+
+### play files
+
+**files** is in the source header. it offers **save copy / source options / detach
+raw / crop copy**. copy options cover DC removal, normalization, fades and reversal;
+these operate on source-domain audio, not on the pitched/stretched chain output.
+save, detach and crop require confirmation and never overwrite the original WAV.
+detach/crop uses a new copy on this card; save copy keeps its current source. use
+[REC](#rec) or [bounce](#bounce) to capture the audible processed result.
 
 ## microphone and recording
 
@@ -466,7 +550,7 @@ binary. do not power off during storage operations.
   sleep/wake and sustained performance need real-device testing.
 - **save refused:** finish recording, leave modal editors, check SD free space
   and permissions, then retry without discarding the current patch.
-- **report a bug:** include the version, console model, CIA/3DSX, reproduction
+- **report a bug:** include the version/source revision, console model, CIA/3DSX, reproduction
   steps, and a small redistributable project if possible. never attach your
   entire private sample collection or console credentials.
 
@@ -477,7 +561,7 @@ calling a candidate hardware-tested. see [building](BUILDING.md).
 
 ## module reference
 
-28 modules, grouped by the same roles as the picker:
+30 modules, grouped by the same roles as the picker:
 [sources](#sources) · [tone](#tone) · [time](#time) · [tools](#tools).
 select a card and use **edit / X** to open its controls.
 
@@ -550,30 +634,114 @@ make phrases rather than identical repetitions.
 
 #### inst
 
-**built-in instruments.** sampled piano, violin, brass, flute and bass, plus
-one-shot drums. no external bank is needed. choose an instrument, then note or
-drum sound; length, attack, release, tone and level shape the voice. length has
-no effect on one-shot drums.
+**built-in instruments.** **bank** selects sampled piano, violin, brass, flute,
+bass or one-shot drums; no external bank is needed. choose an instrument, then note
+or drum sound. length, attack, release, tone and level shape the sample voice;
+length has no effect on one-shot drums.
+
+**model** selects struck modal **vibes**, synthesized rather than sampled. **sound**
+keeps note, decay, body and level with a position/hardness field; **env** contains
+damping, strength and amplitude-envelope controls. model traits latch at a strike;
+level can change live, but editing controls does not trigger a new note. press **A**
+to strike.
 
 **try:** `inst → chor → rev` for a small melodic part, or choose drums and use
 per-step note/sound changes for a rhythm from one card.
 
 #### play
 
-**sample player and editor.** load a wav, tune it, trim it, make slices and set
-its loop. normal, stretch and tape cover different playback needs; scratch and
-hold provide hands-on workspaces. config contains voice, listening and file
-actions. stretch tempo and root tuning are set by you, not automatically detected.
+**sample player and editor.** load a WAV and edit trim/chop/loop directly on the
+source-time line. normal/stretch/tape, global playback controls and selected-part
+pitch/reverse stay inline. tap/lift splits; hold an internal seam and move outward
+to preview a left-ID-preserving merge. drag edits audition until lift. **files**
+handles source copies; [SCRT](#scrt) and [PAUL](#paul) are separate sample sources.
 
 **try:** `play → filt → dly`; assign cuts in the editor, then choose them with
 sequencer slice mode. see [samples](#play-and-samples) for loading and editing.
 
+#### scrt
+
+**scratch / hold sample source.** scratch reads one moving head and is silent when
+stationary; hold uses two local overlapping readers. neither changes PLAY's engine.
+
+- choose **speed / position** for the starting axis pair; tap **x … > / y … >**
+  to assign each axis independently. position, speed and gain are available in
+  both algorithms; hold also offers window and pitch.
+- pressing the field starts the source head at the horizontal source point under
+  the stylus, not at an old edge. field parameters are absolute, with Y increasing
+  upward. ordinary gestures do not write parameter bases or step locks.
+- **latch on** keeps the point and sound after lifting; **latch off** releases it.
+  a normal lift retains the latest point, while cancellation does not commit it.
+  latch is independent from sequencer gates and stays on when transport stops;
+  switch it off explicitly. source/configuration changes, mute/bypass and recording
+  disarm it. loading a project never starts a saved latch.
+- for automated movement, select **position** in setup and use **mod / held L**
+  to assign a sigil. this works even with speed/pitch on the field. open the sound
+  with latch or sequencer steps; assigning a sigil alone does not trigger it.
+- with speed zero and unchanging position, scratch is silent. a held field point
+  with nonzero speed still moves the source head; it is not a frozen source frame.
+
+hold speed spans **-4…+4x**, independently of **-24…+24 st** reader pitch. its window
+is **16…6400 source frames**, default 3200. changing the window live is not promised
+to be transparent or click-free. effects belong in downstream modules, not an FX
+page inside SCRT.
+
+axis assignments are saved, but latch, gestures and the live head are not. older
+builds may reject projects with custom axes; keep a backup before changing builds.
+
+**try:** `scrt → filt → rec`; load a sample, choose hold, play the XY field, then
+record a short passage. explicitly turn latch off when finished.
+
+#### paul
+
+**spectral sample source.** stretches a loaded sample into a texture; pitch is
+independent from stretch. main keeps position, stretch, window and freeze.
+stretch spans **1…64x** (default 16x); windows are **2048 / 4096 / 8192 frames**
+(default 4096).
+tap the direction word and lift to cycle **forward / reverse / ping-pong**.
+changing direction keeps the current location; reverse does not mirror saved
+position. ping-pong reflects between the region edges; loop-off ends its current
+leg. freeze stops automatic source advance while fresh spectral phases keep
+sounding; position edits or modulation can still seek while frozen.
+
+setup keeps flow/gate, gain, pitch, gate duration, start/end and loop. **flow** scans
+the source; **gate** gives manual/sequencer hits a finite duration. very short gates
+can end before spectral warmup, especially with large windows. the main position
+strip uses full-source coordinates even with a narrowed region; setup position
+stays region-relative. direction is saved card configuration, not a step lock or
+modulation slot, and is disabled during protected input/recording/lock contexts.
+
+use **rec** downstream to record the result; there is no separate save-to-sample
+control. source analysis advances in hops, so visible cursor steps are not
+necessarily audio breakups. older PAUL builds may reject reverse/ping-pong projects;
+keep backups. sustained console performance and listening still need device checks.
+
+**try:** `paul → rev → rec`; load a sustained sound, start with flow and the default
+window, then freeze a region and record the evolving texture.
+
 #### gran
 
-**granular sample source.** a loaded wav becomes overlapping grains instead of
+**granular sample source.** a loaded WAV becomes overlapping grains instead of
 one continuous playback head. position chooses where to read; size and density
 change the texture, while spray and pitch spread (**p.dev**) loosen the cloud.
 this reads a loaded sample; use **swarm** to granulate incoming audio instead.
+
+- **grain / cloud** exposes position, size, spray, speed, gain and scan, plus
+  density, jitter, voices, attack/release and p.dev. **flow / gate / burst** selects
+  launch behavior; the pad restarts, holds or bursts according to that mode.
+- **setup** contains window, burst count, zoom and clock, plus **reading**:
+  **pitch sign / forward / reverse / mixed**. pitch sign preserves signed speed;
+  the other choices use its magnitude and set grain direction independently.
+- **reverse %**, editable in mixed only, spans **0…100** (default 50). it sets a
+  balanced share of newly spawned reverse grains, not a random chance. 0 is all
+  forward and 100 all reverse. direction changes apply to new grains; existing
+  heads/tails finish in their latched direction. scan direction is independent.
+- reading/reverse % is saved card configuration, not a parameter lock, sigil or
+  scene destination. older cards can retain the legacy engine; their **old >**
+  conversion is explicit. newer reading settings require a compatible build.
+
+coherent overlapping grains and release tails can overload the output; lower gain
+and listen at a safe level. these controls do not add automatic headroom or limiting.
 
 **try:** `gran → mouth → rev`; load a voice or sustained note and move position
 slowly with a sigil to discover textures inside it.
@@ -747,13 +915,20 @@ then move position and pitch to play the captured texture.
 
 #### fract
 
-**fragment repeater.** hold **grab** to repeat recent input and release to return
-live; **hold** latches the fragment. size chooses capture length, speed includes
-reverse, and damage progressively shortens the repeated loop. chance/length
-allow automatic interventions; chance starts at zero, so grab it to hear a change.
+**fragment repeater.** press the waveform to repeat recent input. pull its right
+boundary left to shrink a temporary reading window, then right to re-expand it;
+start near the right edge for full stylus travel. lift clears squeeze and returns
+live, or the underlying fragment when the separate **hold** is on. the gesture
+does not edit saved damage. size chooses the next capture; speed includes reverse,
+and the separate damage control still progressively shortens the underlying loop.
+chance/length allow automatic interventions; chance starts at zero.
 
-**try:** `play → fract → filt → dly`; grab part of a loop and pull left to
-increase damage. the sequencer keeps running while the fragment repeats.
+the squeeze minimum is **62.5 ms**, or the full loop if it is already shorter;
+short fragments are not expanded to reach that minimum. hold is independent of
+the manual grab, and captured audio/temporary squeeze is not saved in a project.
+
+**try:** `play → fract → filt → dly`; grab near the right waveform edge, squeeze
+and release. the sequencer keeps running.
 
 #### glitch
 
@@ -771,8 +946,9 @@ history first; keep a pattern you like while the source continues changing.
 
 **clocked note generator.** place it before the source it should play, then start
 transport. it targets the first eligible, non-bypassed source to its right in
-that chain: osc, fm, bird, play, inst, or a current note-mode motor. gran, noise
-and mic are not targets. incoming audio passes through; arp is not a sound source.
+that chain: osc, fm, bird, play, inst, paul, or a current note-mode motor. gran,
+scrt, noise and mic are not targets. incoming audio passes through; arp is not a
+sound source.
 
 rate, gate, order and octaves shape the phrase; **note 1–4** set relative offsets
 and can be switched off individually. it can also retrigger eligible downstream

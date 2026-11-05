@@ -78,12 +78,42 @@ void play_focus_drag(PlayUnit& unit, int tx, int ty);
 void play_focus_draw_header(const PlayUnit& unit);
 void play_focus_draw(const PlayUnit& unit);
 
+bool module_focus_open_mod(); // release-owned latched ordinary modulation pane
+void paul_focus_capture();
+bool paul_focus_touch_body(PaulUnit& unit,int tx,int ty);
+void paul_focus_drag(PaulUnit& unit,int tx,int ty);
+void paul_focus_draw(const PaulUnit& unit);
+bool paul_focus_draw_top();
+int paul_focus_selected();
+void paul_focus_select(int param);
+void paul_focus_release();
+void paul_focus_touch_release();
+void paul_focus_input(u32 down,u32 held,bool blocked);
+bool paul_focus_back();
+void paul_focus_value_text(char* out,size_t size,int param,q15 value);
+
+void scratch_focus_capture(); // one guarded source binding + actual Visual + paired screen Frame
+bool scratch_focus_touch_body(ScratchUnit& unit, int tx, int ty);
+void scratch_focus_drag(ScratchUnit& unit, int tx, int ty);
+void scratch_focus_draw(const ScratchUnit& unit);
+bool scratch_focus_draw_top();
+int scratch_focus_selected();
+void scratch_focus_select(int param);
+void scratch_focus_release(); // cancellation; no rearm until physical lift
+void scratch_focus_touch_release();
+void scratch_focus_input(u32 down, u32 held, bool blocked);
+bool scratch_focus_back();
+void scratch_focus_value_text(char* out, size_t size, int param, q15 value);
+
 void grain_focus_capture(); // bounded real PCM + own-envelope grain projection before GPU
 int grain_focus_selected();
 void grain_focus_select(int param);
 void grain_focus_release(); // cancellation only; releases own pad token safely
 void grain_focus_touch_release(); // physical lift may commit an owned config button
 void grain_focus_input(u32 down, u32 held, bool blocked);
+bool grain_focus_menu_modal();
+bool grain_focus_menu_input(u32& down, u32 held, u32 up, bool blocked); // owns B only while open; global L/nav/transport retained
+void grain_focus_menu_touch(u32 down, u32 held, int tx, int ty); // before facade/lens/rand, consumes modal contacts
 bool grain_focus_draw_top(); // ordinary clean view; lens/locks retain shared inspector
 bool grain_focus_touch_header(GrainUnit& unit, int tx, int ty);
 bool grain_focus_touch_body(GrainUnit& unit, int tx, int ty);
@@ -360,7 +390,8 @@ void fract_focus_capture();
 bool fract_focus_draw_top();
 int fract_focus_selected();
 void fract_focus_select(int param);
-void fract_focus_release();
+void fract_focus_release(); // cancel the owned runtime window, independent HOLD survives
+void fract_focus_touch_release(); // real lift: clear temporary squeeze, no saved-parameter edit
 void fract_focus_value_text(char* out, size_t size, int param, q15 value);
 
 bool stranular_focus_touch_body(StranularUnit& unit, int tx, int ty);

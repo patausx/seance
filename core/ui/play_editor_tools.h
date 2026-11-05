@@ -10,8 +10,9 @@ struct Cuts {
     uint32_t at[CUTS];
     uint16_t reverse = 0;
     uint16_t speed_q8[CUTS]; // 64..1024, 256 = 1x; follows stable id, not sort order
+    int8_t pitch_semitones[CUTS] = {}; // -24..24, independent of historical q8
     Cuts() { for (auto& p : at) p = UINT32_MAX; for (auto& s : speed_q8) s = 256; }
-    bool operator==(const Cuts& b) const { return reverse == b.reverse && !std::memcmp(at,b.at,sizeof at) && !std::memcmp(speed_q8,b.speed_q8,sizeof speed_q8); }
+    bool operator==(const Cuts& b) const { return reverse == b.reverse && !std::memcmp(at,b.at,sizeof at) && !std::memcmp(speed_q8,b.speed_q8,sizeof speed_q8) && !std::memcmp(pitch_semitones,b.pitch_semitones,sizeof pitch_semitones); }
     bool operator!=(const Cuts& b) const { return !(*this==b); }
     uint32_t end(int id,uint32_t frames) const {
         uint32_t out=frames;
@@ -30,8 +31,8 @@ struct Cuts {
         for(int i=0;i<CUTS;++i){if(at[i]==UINT32_MAX){if(free<0)free=i;continue;}
             any=true;if(at[i]>frame?at[i]-frame<2:frame-at[i]<2)return -1;}
         if(free<0)return -1;
-        if(!any&&frame){at[free]=0;speed_q8[free]=256;reverse&=uint16_t(~(1u<<free));return insert(frame,frames);}
-        at[free]=frame;speed_q8[free]=256;reverse&=uint16_t(~(1u<<free));return free;
+        if(!any&&frame){at[free]=0;speed_q8[free]=256;pitch_semitones[free]=0;reverse&=uint16_t(~(1u<<free));return insert(frame,frames);}
+        at[free]=frame;speed_q8[free]=256;pitch_semitones[free]=0;reverse&=uint16_t(~(1u<<free));return free;
     }
     bool move(int id,int64_t target,uint32_t frames){
         if(!valid(id,frames))return false;
@@ -46,7 +47,7 @@ struct Cuts {
         if(!valid(id,frames))return -1;
         int left=-1;for(int i=0;i<CUTS;++i)if(valid(i,frames)&&at[i]<at[id]&&(left<0||at[i]>at[left]))left=i;
         if(left<0)return -1;
-        at[id]=UINT32_MAX;speed_q8[id]=256;reverse&=uint16_t(~(1u<<id));return left;
+        at[id]=UINT32_MAX;speed_q8[id]=256;pitch_semitones[id]=0;reverse&=uint16_t(~(1u<<id));return left;
     }
     static Cuts equal(int n,uint32_t frames){
         Cuts c;if(n<1||n>CUTS||frames<uint32_t(n*2))return c;

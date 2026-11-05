@@ -1,5 +1,6 @@
 #include "ui_param_lens.h"
 #include "ui_module_rand.h"
+#include "sigil_surface.h"
 #include "strn_focus.h"
 #include "ui_module_focus_internal.h"
 #include "ui_state.h"
@@ -50,13 +51,19 @@ int visible_count(const Unit& u) {
     // The twelfth historical GRAN slot was padding, not an editable legacy SCAN.
     return u.kind==UnitKind::Grain && !static_cast<const GrainUnit&>(u).clean ? GrainUnit::P_SCAN : u.num_params;
 }
+bool lens_param_available(const Unit& u,int p) {
+    return u.kind!=UnitKind::Scratch || ScratchUnit::parameter_available(static_cast<const ScratchUnit&>(u).mode,p);
+}
 int next_param(const Unit& u,int delta) {
     // REC/STOP are commands, not the dormant legacy P_REC field. Only the two
     // parameters actually consumed by REC's DSP belong in this modulation panel.
     if(u.kind==UnitKind::Recorder)return selected==RecUnit::P_LEN?RecUnit::P_MON:RecUnit::P_LEN;
-    const int n=visible_count(u);return (selected+n+delta)%n;
+    const int n=visible_count(u);int p=selected;
+    for(int i=0;i<n;++i){p=(p+n+delta)%n;if(lens_param_available(u,p))return p;}
+    return selected;
 }
 bool recorder_busy(const Unit& u) {
+    if(u.kind==UnitKind::Paul)return g_eng->recording_active_or_pending();
     return u.kind==UnitKind::Recorder && (static_cast<const RecUnit&>(u).writer_open() ||
         g_eng->recorder_record_pending(g_edit_chain,g_edit_slot) ||
         g_eng->chain_record_pending_start(g_edit_chain) || g_eng->chain_record_pending_stop(g_edit_chain));
@@ -96,6 +103,9 @@ EditLaw edit_law(const Unit& u,int p) {
     }
     if(u.kind==UnitKind::Ring&&static_cast<const RingUnit&>(u).modern()&&
        (p==RingUnit::P_NOTE||p==RingUnit::P_FINE))law.fine_divisor=16;
+    if(u.kind==UnitKind::Paul){if(p==PaulUnit::P_PITCH)law.fine_divisor=16;
+        if(p==PaulUnit::P_GAIN){law.neutral=32767;law.label="unity";}}
+    if(u.kind==UnitKind::Scratch && p==ScratchUnit::P_GAIN){law.neutral=32767;law.label="unity";}
     if(u.kind==UnitKind::Shift && p==ShiftUnit::P_SHIFT)law.fine_divisor=32;
     if((u.kind==UnitKind::SamplePlayer && p==PlayUnit::P_SPEED) ||
        (u.kind==UnitKind::Grain && p==GrainUnit::P_PITCH) ||
@@ -185,10 +195,12 @@ bool open_selected(bool held) {
                u->kind == UnitKind::Reverb ? reverb_focus_selected() :
                u->kind == UnitKind::Ghost ? ghost_focus_selected() :
                module_inspector_supports(u->kind) ? module_inspector_selected(u->kind) : 0;
-    if(selected<0 || selected>=visible_count(*u)) selected=0;
+    if(selected<0 || selected>=visible_count(*u) || !lens_param_available(*u,selected)) selected=0;
     if(u->kind==UnitKind::Recorder && selected!=RecUnit::P_LEN && selected!=RecUnit::P_MON) selected=RecUnit::P_LEN;
     select_module(*u,selected);
     // Opening never edits a parameter or converts a legacy module.
+    paul_focus_release();
+    scratch_focus_release();
     play_focus_release(); osc_focus_release(); fm_focus_release(); vca_focus_release();
     stranular_focus_release(); reverb_focus_release(); ghost_focus_release();
     chorus_focus_release(); delay_focus_release(); filter_focus_release(); fold_focus_release();
@@ -247,13 +259,15 @@ void module_rand_rebase() {
     random_seen_engine=g_eng;
     random_seen_revision=g_eng?g_eng->module_random_revision():0;
 }
-void module_rand_draw() {
+void module_rand_draw(const sigil_surface::Painter& painter) {
     if(!random_frame.valid || random_frame.x<0)return;
     namespace m=menu_style;
     const bool active=random_frame.available && (random_frame.focused || random_frame.pressed || random_frame.source!=ModSource::None);
-    ui::text(random_frame.x,editor_style::kHeaderTextY,"rand",active?m::spot():m::ghost());
+    painter.text(random_frame.x,editor_style::kHeaderTextY,"rand",active?m::spot():m::ghost());
 }
+void module_rand_draw() {module_rand_draw(sigil_surface::Painter{});}
 
+bool module_focus_open_mod() {return open_selected(false);}
 bool param_lens_is_open() { return opened; }
 void param_lens_cancel() {
     opened = held_entry = quarantine = random_target = false;
@@ -361,7 +375,7 @@ void param_lens_capture() {
                     play_pitch_mode=u->kind==UnitKind::SamplePlayer?static_cast<const PlayUnit*>(u)->pitch_mode():PlayUnit::PitchMode::Legacy;
                     modern_reverb=u->kind!=UnitKind::Reverb || static_cast<const ReverbUnit*>(u)->modern();
                     quantize_play=u->kind==UnitKind::SamplePlayer && static_cast<const PlayUnit*>(u)->pitch_quantize;
-                    if (selected < 0 || selected >= count) selected = 0;
+                    if (selected < 0 || selected >= count || !lens_param_available(*u,selected)) selected = 0;
                     if(u->kind==UnitKind::Recorder && selected!=RecUnit::P_LEN && selected!=RecUnit::P_MON)selected=RecUnit::P_LEN;
                     drawn_law=edit_law(*u,selected);
                     select_module(*u,selected);
@@ -390,7 +404,7 @@ bool param_lens_touch_down(int x, int y) {
         if (context()) {
             platform::AudioOut::Guard guard(*g_audio);
             const Unit* u = unit();
-            if (u && (u->kind == UnitKind::SamplePlayer || u->kind == UnitKind::Comp)) return false;
+            if (u && (u->kind == UnitKind::SamplePlayer || u->kind == UnitKind::Comp || u->kind == UnitKind::Paul || u->kind == UnitKind::Scratch)) return false;
         }
         return open_selected(false);
     }

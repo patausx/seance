@@ -10,6 +10,8 @@
 #pragma once
 #include "unit.h"
 #include "inst_unit.h"
+#include "scratch_unit.h"
+#include "paul_unit.h"
 #include "play_mode.h"
 #include "play_window.h"
 #include "musical_note.h"
@@ -97,7 +99,13 @@ public:
     // Explicit existing-voice preview, never an independent bus. Caller owns
     // transport/recording/mute policy and must hold the audio guard.
     bool preview_frames(uint32_t start, uint32_t end, bool repeat, uint32_t expected_generation,
-                        bool reverse = false, uint16_t speed_q8 = 256, bool scrub = false);
+                        bool reverse = false, uint16_t speed_q8 = 256, bool scrub = false,
+                        int8_t part_pitch = 0);
+    // Nonallocating active-preview update. Keeps fractional progression and amp
+    // when still inside the selection; clamps escaped heads with existing ramp.
+    // Explicit independent semitone pitch; same model as actual musical playback.
+    bool update_preview_frames(uint32_t first, uint32_t end, bool reverse, uint16_t rate,
+                               int8_t part_pitch = 0);
     // Continuous private target, not a seek/retrigger. Does not edit any Param.
     // initialize places a new touch (silent in scratch, attack-ramped in hold), never drag updates.
     bool preview_scrub(q15 position, bool initialize = false);
@@ -130,6 +138,7 @@ public:
         uint16_t speed_q8[trackr::synth::Sample::MAX_CHOPS] = {
             256,256,256,256,256,256,256,256,256,256,256,256,256,256,256,256
         };
+        int8_t pitch_semitones[trackr::synth::Sample::MAX_CHOPS] = {};
         bool exact_native_endpoint = false;
     };
     void stage_edit_source(const EditSourceMetadata& source, bool hydrated_missing = false);
@@ -158,6 +167,7 @@ public:
         scrub_motion_ = 0; hold_phase_q16_ = 0;
         latched_slice_ = 0; preview_speed_q8_ = 256; rate_bound_ = false;
         loop_entered_ = false;
+        preview_pitch_semitones_ = 0;
         stretch_.reset();
         visual_source_frame_ = 0;
         gate_deadline_ = UINT64_MAX;
@@ -211,7 +221,8 @@ public:
     // Normal returns pitch; Stretch returns temporal speed. Legacy/invalid modes
     // return 0: those callers retain play_window's historical quantization rules.
     static int32_t projection_increment(PitchMode mode, q15 speed, q15 note,
-                                        bool reversed_slice, uint16_t cut_rate = 256);
+                                        bool reversed_slice, uint16_t cut_rate = 256,
+                                        int8_t part_pitch = 0);
     bool modern() const { return modern_; }
     // Explicit opt-in only; preserves all controls. Loader gives legacy hidden
     // controls canonical gate / one-step defaults before a later user opt-in.
@@ -234,7 +245,7 @@ private:
     void process_scrub(q15* buf, int frames, const trackr::synth::Sample& sample);
     void process_hold(q15* buf, int frames, const trackr::synth::Sample& sample);
     void process_musical(q15* buf, int frames, const trackr::synth::Sample& sample);
-    int32_t musical_increment(bool reverse, uint16_t cut_rate) const;
+    int32_t musical_increment(bool reverse, uint16_t cut_rate, int8_t part_pitch = 0) const;
     int64_t scrub_target() const;
     void begin_scrub();
     PlayEditState edit_;
@@ -249,6 +260,7 @@ private:
     uint8_t latched_slice_ = 0;
     uint16_t preview_speed_q8_ = 256;
     bool rate_bound_ = false; // opt-in stale-source guard, keeps old default-rate path unchanged
+    int8_t preview_pitch_semitones_ = 0; // caller supplied; never infer base SLCE
     uint32_t visual_source_frame_ = 0;
     bool modern_ = true, window_latched_ = false, preview_ = false;
     PitchMode pitch_mode_ = PitchMode::Legacy; // explicit opt-in; old direct users stay byte-identical
@@ -278,6 +290,7 @@ class GrainUnit : public Unit {
 public:
     enum class LaunchMode : uint8_t { Flow, Gate, Burst };
     enum class Window : uint8_t { Linear, Hann };
+    enum class Reading : uint8_t { SignedPitch=0, Forward=1, Reverse=2, Mixed=3 };
     GrainUnit();
     void process(q15* buf, int frames) override;
     void control_tick() override;
@@ -296,6 +309,12 @@ public:
     LaunchMode launch_mode = LaunchMode::Flow;
     Window window = Window::Linear;
     uint8_t burst_count = 4;
+    // Clean-only authored reading policy. SignedPitch keeps the historical RNG
+    // and signed PTCH law; percentage is stored/dormant outside Mixed.
+    Reading reading = Reading::SignedPitch;
+    uint8_t reverse_percent = 50;
+    void set_reading(Reading value);
+    void set_reverse_percent(uint8_t value);
     void set_launch_mode(LaunchMode value);
     void set_window(Window value);
     void set_burst_count(uint8_t value);
@@ -398,6 +417,9 @@ private:
     int      next_head_ = 0;
     uint32_t spawn_countdown_ = 0;
     uint32_t rng_ = 0xDEADBEEF;
+    // Balanced fraction, 0..99; successful Mixed spawns only. Trigger/pad and
+    // config edits preserve it; hard reset/source replacement/cold clone do not.
+    uint8_t mix_phase_ = 0;
     int32_t  inc_q16_ = 1 << 16;
     // Positive wrapped offset, relative to effective POS; never persisted/cloned.
     int64_t scan_offset_q16_ = 0;
@@ -1037,12 +1059,22 @@ class FractUnit : public Unit {
 public:
     enum { P_SIZE=0, P_LENGTH, P_CHANCE, P_DAMAGE, P_SPEED, P_MIX, P_SYNC, P_HOLD, P_COUNT };
     static constexpr uint32_t CAPACITY = 32768, MIN_LOOP = 64, MAX_CAPTURE = 32000;
+    static constexpr uint32_t MIN_GRAB_WINDOW = 2000; // 62.5ms, never enlarges a short loop
+    static constexpr uint32_t ENVELOPE_BINS = 48, ENVELOPE_BLOCK = 64;
+    static constexpr uint32_t ENVELOPE_CACHE_BYTES = 2 * (CAPACITY / ENVELOPE_BLOCK) * 2 * sizeof(q15);
     struct Visual {
-        q15 wave[48] = {}; // actual signed samples spanning the CURRENT loop
+        q15 wave[48] = {}; // actual signed samples spanning the CURRENT underlying loop
         uint32_t loop_frames = 0, capture_frames = 0;
         uint16_t phase = 0, repeats = 0, wet = 0, fill = 0; // phase/wet/fill: 0..32767
         bool active = false, manual = false, held = false;
+        q15 history_wave[48] = {}, reader_wave[48] = {};
+        uint32_t history_frames = 0, reader_frames = 0;
+        uint16_t reader_phase = 0;
+        bool window_active = false; // valid manual window, including its full-span endpoint
+        q15 loop_low[ENVELOPE_BINS] = {}, loop_high[ENVELOPE_BINS] = {};
+        q15 history_low[ENVELOPE_BINS] = {}, history_high[ENVELOPE_BINS] = {};
     };
+    static_assert(sizeof(Visual) <= 704, "bounded FRACT frozen PCM snapshot");
     FractUnit();
     ~FractUnit() override;
     bool ready() const override { return banks_ != nullptr; }
@@ -1050,7 +1082,11 @@ public:
     void control_tick() override;
     void reset() override;
     void set_manual_grab(bool down); // runtime-only; call under audio guard
-    Visual visual() const;          // <=48 PCM reads; under guard, never from draw
+    // Manual-only runtime reader; 0..32767 linearly maps min(2000,loop)..loop.
+    // Pending during capture warmup. Never touches Params, capture or DAMAGE clock.
+    void set_grab_window(q15 fraction); // under audio guard, no PCM traversal
+    Visual visual() const; // <=12240 PCM reads + 1000 complete-block summaries; under guard, never draw
+    uint32_t underlying_loop_frames() const { return loop_frames_; } // scalar-only drag projection
     static uint32_t size_frames(q15 size, bool sync, int32_t bpm_q16);
     static const char* size_label(q15 size); // nominal sync note division, seven bins
     static uint32_t length_frames(q15 length, int32_t bpm_q16);
@@ -1068,8 +1104,17 @@ private:
     FractUnit& operator=(const FractUnit&) = delete;
     bool capture();
     q15 read_loop(int64_t phase) const;
+    q15 read_window(int64_t phase, uint32_t span) const;
+    q15 window_sample(int64_t phase, uint32_t span) const;
     q15 repeat_sample();
-    void advance_loop();
+    void advance_loop(); // original shadow reader: only these wraps apply DAMAGE
+    void update_grab_window();
+    void advance_grab_window();
+    void write_history(int bank, q15 dry);
+    void envelope_range(int bank, uint32_t begin, uint32_t count, q15& low, q15& high) const;
+    struct EnvelopeBlock { q15 low, high; };
+    static_assert(ENVELOPE_CACHE_BYTES == 4096 && sizeof(EnvelopeBlock) == 4);
+    EnvelopeBlock envelope_[2][CAPACITY / ENVELOPE_BLOCK]; // validity follows the PCM fill/span, not stale cache bytes
     q15* banks_ = nullptr;
     uint32_t write_ = 0, fill_[2] = {}, capture_start_ = 0;
     uint32_t capture_frames_ = 0, loop_frames_ = 0, auto_remaining_ = 0;
@@ -1087,6 +1132,13 @@ private:
     bool manual_ = false, held_ = false, pending_grab_ = false;
     bool hold_high_ = false, hold_blocked_ = false, running_ = false, suspended_ = false;
     bool reverse_ = false;
+    // Separate temporary reader. Zero span means the untouched original DSP path.
+    // Once squeezed, full re-expansion preserves its normalized phase until lift;
+    // lift/stop hands back to position_ through an independent <=32-sample declick.
+    uint32_t grab_frames_ = 0;
+    int64_t grab_position_ = 0;
+    q15 grab_fraction_ = 32767, grab_last_wet_ = 0, grab_edge_from_ = 0;
+    uint16_t grab_edge_remaining_ = 0;
 };
 
 // Sixteen straight sixteenths: current dry input + slices of the previous full bar.

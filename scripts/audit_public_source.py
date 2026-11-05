@@ -54,6 +54,48 @@ def heading_ids(text: str) -> set[str]:
     return ids
 
 
+def redact_issue_locations(issues: list[dict]) -> None:
+    # Link diagnostics and filenames can contain percent-encoded private values.
+    for issue in issues:
+        for field in ("path", "target"):
+            value = issue.get(field, "")
+            if any(pattern.search(value) or pattern.search(unquote(value))
+                   for pattern in PRIVACY_PATTERNS.values()):
+                issue[field] = "<redacted>"
+
+
+def audit_markdown_links(files: dict[str, bytes]) -> dict:
+    """Check exact archive link closure, without granting source/binary admission."""
+    texts: dict[str, str] = {}
+    for name, data in files.items():
+        if not name.endswith(".md") or b"\0" in data:
+            continue
+        try:
+            texts[name] = data.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+    issues: list[dict] = []
+    links = 0
+    for name, text in sorted(texts.items()):
+        for match in LINK.finditer(markdown_body(text)):
+            destination = match.group(1).strip().split(' "', 1)[0]
+            url = urlsplit(destination.strip("<>"))
+            if url.scheme or url.netloc:
+                continue
+            links += 1
+            target = posixpath.normpath(posixpath.join(posixpath.dirname(name), unquote(url.path))) if url.path else name
+            directory_exists = any(entry.startswith(target.rstrip("/") + "/") for entry in files)
+            if target not in files and not directory_exists:
+                issues.append({"path": name, "kind": "missing relative link", "target": target})
+            elif url.fragment and target.endswith(".md") and target in texts:
+                if unquote(url.fragment) not in heading_ids(texts[target]):
+                    issues.append({"path": name, "kind": "missing Markdown anchor",
+                                   "target": target + "#" + url.fragment})
+    redact_issue_locations(issues)
+    return {"passed": not issues, "relative_links_checked": links, "issues": issues,
+            "scope": "relative Markdown links/anchors only; not a privacy, binary or license audit"}
+
+
 def audit_payload(files: dict[str, bytes]) -> dict:
     """Check one exact in-memory export; no mutation or filesystem traversal."""
     issues: list[dict] = []
@@ -87,24 +129,11 @@ def audit_payload(files: dict[str, bytes]) -> dict:
                 if pattern.search(value):
                     # Never echo a matched credential into logs or JSON.
                     issues.append({"path": name, "line": line, "kind": label})
-    links = 0
-    for name, text in sorted(texts.items()):
-        if not name.endswith(".md"):
-            continue
-        for match in LINK.finditer(markdown_body(text)):
-            destination = match.group(1).strip().split(' "', 1)[0]
-            url = urlsplit(destination.strip("<>"))
-            if url.scheme or url.netloc:
-                continue
-            links += 1
-            target = posixpath.normpath(posixpath.join(posixpath.dirname(name), unquote(url.path))) if url.path else name
-            directory_exists = any(entry.startswith(target.rstrip("/") + "/") for entry in files)
-            if target not in files and not directory_exists:
-                issues.append({"path": name, "kind": "missing relative link", "target": target})
-            elif url.fragment and target.endswith(".md") and target in texts:
-                if unquote(url.fragment) not in heading_ids(texts[target]):
-                    issues.append({"path": name, "kind": "missing Markdown anchor",
-                                   "target": target + "#" + url.fragment})
+    link_report = audit_markdown_links(files)
+    links = link_report["relative_links_checked"]
+    issues.extend(link_report["issues"])
+    # Source diagnostics remain private even when link checking is used alone.
+    redact_issue_locations(issues)
     return {"passed": not issues, "source_files": len(files),
             "source_bytes": sum(map(len, files.values())), "text_files": len(texts),
             "relative_links_checked": links, "issues": issues,

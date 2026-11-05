@@ -15,6 +15,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <utility>
+#include <algorithm>
 #include <new>
 #include <ctime>
 #include <cerrno>
@@ -135,7 +136,7 @@ ProjectNames g_project_names;
 char g_sample_files[MAX_SAMPLE_FILES][SAMPLE_NAME_LEN] = {};
 int  g_sample_file_count = 0;
 int  g_sample_file_page = 0;
-int  g_sample_browser_mode = 0; // library, project, favorites, recordings
+int  g_sample_browser_mode = 0; // library=0, project=1, recordings=3; retired 2 is not exposed
 
 const char* SAMPLE_DIR = "sdmc:/3ds/seance/samples";
 const char* RECORDING_DIR = "sdmc:/3ds/seance/recordings";
@@ -180,6 +181,28 @@ bool seq_record_lock(int slot, int param, q15 value) {
         g_seq_lock_flash = 90;
         return false;
     }
+    // SCRT/PAUL focused locks follow the UI's selected bank, not the worker's
+    // active bank. Keep unrelated older module routes unchanged here.
+    if (slot >= 0 && slot < UNITS_PER_CHAIN && g_audio) {
+        platform::AudioOut::Guard guard(*g_audio);
+        Unit* target = g_eng->chains[g_edit_chain].units[slot];
+        if (target && (target->kind == UnitKind::Paul || target->kind == UnitKind::Scratch)) {
+            if (param < 0 || param >= target->num_params ||
+                (target->kind == UnitKind::Paul && g_eng->recording_active_or_pending())) return false;
+            const int selected = sequencer_edit_bank();
+            const int bank = selected >= 0 && selected < NUM_PATTERNS ? selected : g_eng->active_pattern;
+            SeqStep& step = g_eng->sequence_pattern(bank).steps[g_seq_lock_chain][g_seq_lock_step];
+            const int count = std::min(int(step.lock_count), SEQ_LOCKS);
+            const q15 next = q15(std::clamp(int(value), target->params[param].bipolar ? -32767 : 0, 32767));
+            for (int i = 0; i < count; ++i) if (step.locks[i].slot == slot && step.locks[i].param == param) {
+                if (step.locks[i].value != next) {step.locks[i].value = next;mark_project_mutated();}
+                return true;
+            }
+            if (count >= SEQ_LOCKS) {g_seq_lock_flash = 90;return false;}
+            step.locks[count] = {uint8_t(slot), uint8_t(param), next};
+            step.lock_count = uint8_t(count + 1);mark_project_mutated();return true;
+        }
+    }
     const SeqStep& before = g_eng->pattern.steps[g_seq_lock_chain][g_seq_lock_step];
     bool changed = true;
     const int count = before.lock_count > SEQ_LOCKS ? SEQ_LOCKS : before.lock_count;
@@ -201,7 +224,11 @@ q15 seq_display_value(int slot, int param, q15 fallback) {
     // Pattern activation is audio-worker-owned. Copy the one armed step under a
     // short guard and release it before any renderer issues Citro2D commands.
     platform::AudioOut::Guard guard(*g_audio);
-    const SeqStep& step = g_eng->pattern.steps[g_seq_lock_chain][g_seq_lock_step];
+    if (g_seq_lock_chain < 0 || g_seq_lock_chain >= NUM_CHAINS || g_seq_lock_step < 0 || g_seq_lock_step >= SEQ_STEPS) return fallback;
+    const Unit* target = slot >= 0 && slot < UNITS_PER_CHAIN ? g_eng->chains[g_edit_chain].units[slot] : nullptr;
+    const int selected = target && (target->kind == UnitKind::Paul || target->kind == UnitKind::Scratch) ? sequencer_edit_bank() : -1;
+    const SeqStep& step = selected >= 0 && selected < NUM_PATTERNS ?
+        g_eng->sequence_pattern(selected).steps[g_seq_lock_chain][g_seq_lock_step] : g_eng->pattern.steps[g_seq_lock_chain][g_seq_lock_step];
     const int count = step.lock_count > SEQ_LOCKS ? SEQ_LOCKS : step.lock_count;
     for (int i = 0; i < count; ++i)
         if (step.locks[i].slot == slot && step.locks[i].param == param)
@@ -945,6 +972,8 @@ static void handle_touch(u32 down, u32 held) {
         case Drag::TiltMix:
         case Drag::TiltRange:
         case Drag::TiltModDepth:
+        case Drag::PaulParam:
+        case Drag::ScratchParam:
         case Drag::InstParam:
         case Drag::GlitchParam:
         case Drag::GlitchCell:
@@ -1345,7 +1374,16 @@ int main() {
         // Seq-origin cuts own destructive keys before a fresh held-L can open
         // the module lens (notably the existing L+X slice-lock removal chord).
         mic_focus_input(down, stage_modal_frame || nav_is_open());
+        const bool gran_word_skip_touch = grain_focus_menu_input(down, held, up,
+            stage_modal_frame || nav_is_open() || g_overlay == Overlay::ConfirmDiscard);
+        if (grain_focus_menu_modal()) {
+            touchPosition t{};
+            if (held & KEY_TOUCH) hidTouchRead(&t);
+            grain_focus_menu_touch(down, held, t.px, t.py);
+        }
         grain_focus_input(down, held, stage_modal_frame || nav_is_open());
+        paul_focus_input(down, held, stage_modal_frame || nav_is_open() || g_overlay == Overlay::ConfirmDiscard);
+        scratch_focus_input(down, held, stage_modal_frame || nav_is_open() || g_overlay == Overlay::ConfirmDiscard);
         reverb_focus_input(down, held, stage_modal_frame || nav_is_open());
         strain_focus_input(down, held, stage_modal_frame || nav_is_open());
         vca_focus_input(down, held, stage_modal_frame || nav_is_open());
@@ -1355,11 +1393,13 @@ int main() {
         inst_focus_input(down, stage_modal_frame || nav_is_open());
         const bool rec_skip_touch = recorder_focus_input(down, held,
             nav_is_open() || g_overlay == Overlay::ConfirmDiscard);
-        const u32 play_owned_keys = nav_is_open() ? 0 : play_editor_context_keys(down, held);
+        const bool play_word_skip_touch = play_editor_word_input(down, held, up,
+            stage_modal_frame || nav_is_open() || g_overlay == Overlay::ConfirmDiscard);
+        const u32 play_owned_keys = nav_is_open() || play_editor_word_modal() ? 0 : play_editor_context_keys(down, held);
         down &= ~play_owned_keys;
-        const bool param_skip_touch = rec_skip_touch || play_owned_keys != 0 || param_lens_input(down, held, up,
-            nav_is_open() || g_overlay == Overlay::ConfirmDiscard || recorder_focus_confirming());
-        const bool param_owned_frame = param_lens_is_open() || recorder_focus_confirming();
+        const bool param_skip_touch = (play_word_skip_touch || rec_skip_touch || play_owned_keys != 0 || param_lens_input(down, held, up,
+            grain_focus_menu_modal() || play_editor_word_modal() || nav_is_open() || g_overlay == Overlay::ConfirmDiscard || recorder_focus_confirming())) || gran_word_skip_touch;
+        const bool param_owned_frame = grain_focus_menu_modal() || play_editor_word_modal() || param_lens_is_open() || recorder_focus_confirming();
         const bool discard_modal_had_frame = g_overlay == Overlay::ConfirmDiscard;
         const bool nav_had_frame = nav_is_open();   // consumed input this frame,
                                                     // even if a pick just closed it

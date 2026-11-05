@@ -100,6 +100,7 @@ int g_b_bank=0, g_b_chain=0, g_b_play=0;
 uint8_t g_b_length[NUM_PATTERNS]={};
 uint8_t g_b_direction[NUM_PATTERNS]={};
 uint8_t g_b_length_edits=0, g_b_direction_edits=0;
+static_assert(NUM_PATTERNS <= 8, "held-bank edit masks cover every bank");
 constexpr u32 B_HOLD_FRAMES=15; // ~250 ms at the existing 60 Hz UI cadence.
 constexpr u32 B_OWNED_KEYS=KEY_B|KEY_A|KEY_X|KEY_Y|KEY_L|KEY_R|
     KEY_LEFT|KEY_RIGHT|KEY_UP|KEY_DOWN|KEY_TOUCH;
@@ -235,8 +236,8 @@ bool bank_hold_buttons(u32 down,u32 held,u32 up) {
     else if(key && g_ui_frame-g_b_repeat_start>=18 &&
             (g_ui_frame-g_b_repeat_start-18)%5==0)repeat=true;
     if(key && ((down&key)||repeat)) {
-        if(key==KEY_DUP)g_b_bank=(g_b_bank+3)%4;
-        else if(key==KEY_DDOWN)g_b_bank=(g_b_bank+1)%4;
+        if(key==KEY_DUP)g_b_bank=(g_b_bank+NUM_PATTERNS-1)%NUM_PATTERNS;
+        else if(key==KEY_DDOWN)g_b_bank=(g_b_bank+1)%NUM_PATTERNS;
         else {
             int length=g_b_length[g_b_bank]+(key==KEY_DLEFT?-1:1);
             length=length<1?1:length>SEQ_STEPS?SEQ_STEPS:length;
@@ -682,7 +683,7 @@ q15 nudged_pitch(q15 current, int direction) {
         if (to == from) return current;
         return sequence_note::value(kind, to, current);
     }
-    if (kind == UnitKind::Stranular) {
+    if (kind == UnitKind::Stranular || kind == UnitKind::Scratch || kind == UnitKind::Paul) {
         int semi = pitch_display_semitones(g_seq_chain, current) + direction;
         if (semi < -24)
             semi = -24;
@@ -736,12 +737,12 @@ void set_pitch_absolute(int tx) {
         return;
     }
     const bool bipolar = pitch_kind == UnitKind::SamplePlayer || pitch_kind == UnitKind::Grain ||
-                         pitch_kind == UnitKind::Stranular;
+                         pitch_kind == UnitKind::Stranular || pitch_kind == UnitKind::Scratch || pitch_kind == UnitKind::Paul;
     int value = bipolar ? -32767 + (tx - VALUE_X0) * 65534 / VALUE_TRAVEL : (tx - VALUE_X0) * 32767 / VALUE_TRAVEL;
     if (pitch_kind == UnitKind::Osc || pitch_kind == UnitKind::Fm) {
         const int semitone = ((tx - VALUE_X0) * 72 + VALUE_TRAVEL / 2) / VALUE_TRAVEL;
         value = semitone * 32767 / 72;
-    } else if (pitch_kind == UnitKind::Stranular) {
+    } else if (pitch_kind == UnitKind::Stranular || pitch_kind == UnitKind::Scratch || pitch_kind == UnitKind::Paul) {
         const int semitone = -24 + ((tx - VALUE_X0) * 48 + VALUE_TRAVEL / 2) / VALUE_TRAVEL;
         value = semitone * 32767 / 24;
     }
@@ -1261,7 +1262,8 @@ void draw_editor() {
                 const int pitch = g_score.sequence_pitch[g_seq_chain][g_seq_col];
                 const UnitKind kind = (UnitKind)g_score.sequence_pitch_kind[g_seq_chain];
                 const bool bipolar =
-                    kind == UnitKind::SamplePlayer || kind == UnitKind::Grain || kind == UnitKind::Stranular;
+                    kind == UnitKind::SamplePlayer || kind == UnitKind::Grain || kind == UnitKind::Stranular ||
+                    kind == UnitKind::Scratch || kind == UnitKind::Paul;
                 normalized = bipolar ? (pitch + 32767) / 2 : pitch;
                 if (sequence_note::absolute(kind, g_score.sequence_pitch_param[g_seq_chain])) {
                     const int low=sequence_note::minimum(kind),high=sequence_note::maximum(kind);
@@ -1411,17 +1413,22 @@ void draw_bank_hold() {
             ui::rect(x+2,y+2,CELL_W-4,BADGE_H-4,ink|0x09000000u);
         }
     }
-    ui::text(16,18,"bank",seq_ink(),2);
+    m::heading(16,18,"bank",seq_ink());
     ui::text(268,22,"hold b",seq_spot());
     ui::text(118,46,"up/down bank",seq_ghost());
-    for(int b=0;b<4;++b) {
-        const int center=48+b*74;
+    for(int b=0;b<NUM_PATTERNS;++b) {
+        const int center=48+(b%4)*74;
+        const int baseline=(b<4)?88:148;
+        const int caption_x=b<4?center-11:center+18;
+        const int caption_y=b<4?104:baseline-7;
         const char text[2]={(char)('1'+b),0};
         const auto* glyph=inspector_gothic::digit(text[0]);
-        inspector_gothic::draw_numeric(center-glyph->width,124,text,
-            b==g_b_bank?seq_spot():seq_ghost(),seq_spot(),2);
-        if(b==g_b_bank) { ui::rect(center-25,141,51,1,seq_spot());ui::text(center-18,148,"choose",seq_spot()); }
-        else if(b==g_b_play)ui::text(center-12,148,"play",seq_ghost());
+        // Approved native 1x numerals; only color marks the edit candidate.
+        inspector_gothic::draw_numeric(center-glyph->width/2,baseline,text,
+            b==g_b_bank?seq_spot():seq_ghost(),seq_spot(),1);
+        // Independent passive mark, including edit == play. Top-row native ink
+        // is centered; the lower row keeps it beside the digit, clear of length.
+        if(b==g_b_play)ui::text(caption_x,caption_y,"play",seq_ghost());
     }
     char text[40];
     std::snprintf(text,sizeof text,"chain %d / %s",g_b_chain+1,source_name(g_b_chain));

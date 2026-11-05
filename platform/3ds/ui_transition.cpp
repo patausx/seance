@@ -203,7 +203,7 @@ void keep_bank() {
     const int previous=g_eng->active_pattern;
     if(!g_eng->finish_pattern_transition()) {notice("bank launch owns playback");return;}
     if(previous!=g_eng->active_pattern)mark_project_mutated();
-    g_bank[0]=g_eng->active_pattern;g_bank[1]=(g_bank[0]+1)%4;g_origin_bank=g_bank[0];
+    g_bank[0]=g_eng->active_pattern;g_bank[1]=(g_bank[0]+1)%NUM_PATTERNS;g_origin_bank=g_bank[0];
     g_mode=Mode::Rhythm;g_position=0;g_rhythm_seen=false;
     notice("bank kept / sound and levels held");
 }
@@ -318,7 +318,7 @@ void open() {
     if(g_frame.rhythm.active) {
         g_bank[0]=g_frame.rhythm.source;g_bank[1]=g_frame.rhythm.destination;
     } else if(g_origin_bank!=g_frame.playing) {
-        g_bank[0]=g_frame.playing;g_bank[1]=(g_bank[0]+1)%4;
+        g_bank[0]=g_frame.playing;g_bank[1]=(g_bank[0]+1)%NUM_PATTERNS;
     }
     g_origin_bank=g_frame.playing;g_rhythm_seen=g_frame.rhythm.active;
     if(g_mode!=Mode::Rhythm && (!g_frame.scenes_ready || !g_frame.sound_linked ||
@@ -370,7 +370,7 @@ void touch_drag(int x,int y) {
         // ends re-anchor: no wrap and no invisible overscroll debt. No dpad.
         while(g_anchor_y-y>=18 || y-g_anchor_y>=18) {
             const int delta=g_anchor_y>y?1:-1;
-            const int next=clamp(g_candidate+delta,0,3);
+            const int next=clamp(g_candidate+delta,0,NUM_PATTERNS-1);
             if(next==g_candidate) {g_anchor_y=y;break;}
             g_candidate=next;g_anchor_y-=delta*24;
         }
@@ -445,7 +445,7 @@ void tick() {
         // still cancel stale FX, and a manual/external launch still releases.
         const bool keep_fx=g_frame.chain_running&&g_gesture==Gesture::Fx&&
             g_frame.fx.epoch==g_fx_epoch&&g_frame.fx.kind==g_fx_kind;
-        finish_return();if(!keep_fx)touch_release(false);g_bank[0]=g_frame.playing;g_bank[1]=(g_bank[0]+1)%4;
+        finish_return();if(!keep_fx)touch_release(false);g_bank[0]=g_frame.playing;g_bank[1]=(g_bank[0]+1)%NUM_PATTERNS;
         g_origin_bank=g_frame.playing;g_mode=Mode::Rhythm;g_position=0;
         notice("bank playback changed / rail reset");capture();
     }

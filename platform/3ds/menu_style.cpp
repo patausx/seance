@@ -367,6 +367,8 @@ const char* module_name(UnitKind kind) {
         case UnitKind::Ring:         return "ring";
         case UnitKind::Tilt:         return "tilt";
         case UnitKind::Strain:       return "strain";
+        case UnitKind::Scratch:      return "scrt";
+        case UnitKind::Paul:         return "paul";
         default:                    return "?";
     }
 }
@@ -402,6 +404,8 @@ const char* module_description(UnitKind kind) {
         case UnitKind::Ring:         return "ring modulation";
         case UnitKind::Tilt:         return "spectral tilt";
         case UnitKind::Strain:       return "moving distortion";
+        case UnitKind::Scratch:      return "scratch / hold";
+        case UnitKind::Paul:         return "spectral stretch";
         default:                    return "unknown module";
     }
 }

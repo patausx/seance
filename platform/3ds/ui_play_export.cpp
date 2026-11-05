@@ -37,6 +37,7 @@ struct Context {
     bool sample_reversed = false, exact_native_endpoint = false;
     uint32_t chops[Sample::MAX_CHOPS] = {};
     uint16_t slice_reverse = 0, slice_speed_q8[Sample::MAX_CHOPS] = {};
+    int8_t slice_pitch_semitones[Sample::MAX_CHOPS] = {};
     Provenance provenance;
     PlayEditState edit;
     PlayWindow fade_window;
@@ -68,6 +69,7 @@ bool valid(const Context& c) {
         s.exact_native_endpoint==c.exact_native_endpoint &&
         !std::memcmp(s.chops,c.chops,sizeof c.chops) && s.slice_reverse_mask==c.slice_reverse &&
         !std::memcmp(s.slice_speed_q8,c.slice_speed_q8,sizeof c.slice_speed_q8) &&
+        !std::memcmp(s.slice_pitch_semitones,c.slice_pitch_semitones,sizeof c.slice_pitch_semitones) &&
         p.origin==c.provenance.origin && p.missing==c.provenance.missing && !std::strcmp(p.path,c.provenance.path);
 }
 bool raw(Context& c,uint32_t first,uint32_t count,int16_t* output) {
@@ -159,6 +161,7 @@ const char* play_export_copy(PlayUnit& play,const PlayExportOptions& options) {
         c.exact_native_endpoint=s.exact_native_endpoint;
         std::memcpy(c.chops,s.chops,sizeof c.chops);c.slice_reverse=s.slice_reverse_mask;c.provenance=b.provenance(c.source);
         std::memcpy(c.slice_speed_q8,s.slice_speed_q8,sizeof c.slice_speed_q8);
+        std::memcpy(c.slice_pitch_semitones,s.slice_pitch_semitones,sizeof c.slice_pitch_semitones);
         c.edit=play.edit_state();c.modern=play.modern();c.quantize=play.pitch_quantize;c.bypass=play.bypass;
         for(int p=0;p<PlayUnit::P_COUNT;++p){c.bases[p]=play.params[p].base;c.routes[p]=play.params[p].src;c.depths[p]=play.params[p].mod_depth;}
         c.fade_window=play.projected_window(c.bases[PlayUnit::P_START],c.bases[PlayUnit::P_LEN],0);
@@ -209,21 +212,26 @@ const char* play_export_copy(PlayUnit& play,const PlayExportOptions& options) {
     if(c.options.detach) {
         std::memcpy(decoded.chops,c.chops,sizeof c.chops);decoded.slice_reverse_mask=c.slice_reverse;
         std::memcpy(decoded.slice_speed_q8,c.slice_speed_q8,sizeof c.slice_speed_q8);
+        std::memcpy(decoded.slice_pitch_semitones,c.slice_pitch_semitones,sizeof c.slice_pitch_semitones);
         decoded.loop_start=c.sample_loop_start;decoded.loop_end=c.sample_loop_end;decoded.reversed=c.sample_reversed;
     }
-    PlayEditState cropped;
-    if(c.options.crop) {
-        // Keep interval identities, not sorted ordinal numbers. An interval
-        // intersecting the new left edge keeps its ID and starts at zero.
+    // A new source retains independent stable-ID part metadata. Raw PCM copy
+    // never pretends to bake musical pitch, stretch or the chain DSP into a WAV.
+    if(!c.options.detach) {
         for(int id=0;id<Sample::MAX_CHOPS;++id) {
             const uint32_t a=c.chops[id];if(a==UINT32_MAX || a>=c.frames)continue;
             uint32_t b=c.frames;for(auto p:c.chops)if(p>a && p<b)b=p;
             const uint32_t left=std::max(a,c.first),right=std::min(b,c.end);
             if(left>=right || right-left<2)continue;
-            decoded.chops[id]=left-c.first;
+            // Crop/forward copy keeps the intersecting left edge at zero.
+            decoded.chops[id]=c.options.reverse?c.end-right:left-c.first;
             decoded.slice_speed_q8[id]=c.slice_speed_q8[id];
+            decoded.slice_pitch_semitones[id]=c.slice_pitch_semitones[id];
             decoded.slice_reverse_mask|=c.slice_reverse&uint16_t(1u<<id);
         }
+    }
+    PlayEditState cropped;
+    if(c.options.crop) {
         decoded.reversed=c.sample_reversed;
         const uint32_t la=std::max(c.sample_loop_start,c.first),lb=std::min(c.sample_loop_end,c.end);
         if(la<lb && lb-la>=2){decoded.loop_start=la-c.first;decoded.loop_end=lb-c.first;}

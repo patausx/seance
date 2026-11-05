@@ -29,7 +29,7 @@ void Unit::set_arp_pitch(int semitones) {
     if(arp_voice.semitones==semitones)return;
     arp_voice.semitones=int8_t(semitones); control_tick();
 }
-bool ArpUnit::supports(UnitKind k) { return k==UnitKind::Osc || k==UnitKind::Fm || k==UnitKind::Bird || k==UnitKind::SamplePlayer || k==UnitKind::Inst || k==UnitKind::Motor; }
+bool ArpUnit::supports(UnitKind k) { return k==UnitKind::Osc || k==UnitKind::Fm || k==UnitKind::Bird || k==UnitKind::SamplePlayer || k==UnitKind::Inst || k==UnitKind::Motor || k==UnitKind::Paul; }
 bool ArpUnit::accepts(const Unit* unit) {
     return unit && supports(unit->kind) &&
         (unit->kind!=UnitKind::Motor || static_cast<const MotorUnit*>(unit)->note_mode());

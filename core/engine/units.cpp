@@ -24,6 +24,8 @@
 #include "glitch_impl.inc"
 #include "inst_impl.inc"
 #include "reverb_impl.inc"
+#include "scratch_impl.inc"
+#include "paul_impl.inc"
 
 namespace seance {
 
@@ -106,9 +108,10 @@ int PlayUnit::actual_note() const {
 }
 
 static int32_t play_musical_increment(PlayUnit::PitchMode mode, q15 speed, int midi,
-                                      bool reverse, uint16_t cut_rate) {
+                                      bool reverse, uint16_t cut_rate, int8_t part_pitch) {
     if (mode != PlayUnit::PitchMode::Normal && mode != PlayUnit::PitchMode::Stretch) return 0;
-    int32_t magnitude = musical_note::ratio_q16(midi - musical_note::ROOT);
+    int32_t magnitude = (int32_t)((int64_t)musical_note::ratio_q16(midi - musical_note::ROOT) *
+        play_part_pitch::ratio_q16(part_pitch) / 65536);
     if (mode == PlayUnit::PitchMode::Stretch) {
         const int32_t value = speed;
         magnitude = (int32_t)((int64_t)(value < 0 ? -value : value) * 8 * Sample::cut_speed(cut_rate) / 256);
@@ -118,12 +121,12 @@ static int32_t play_musical_increment(PlayUnit::PitchMode mode, q15 speed, int m
 }
 
 int32_t PlayUnit::projection_increment(PitchMode mode, q15 speed, q15 note,
-                                      bool reversed_slice, uint16_t cut_rate) {
-    return play_musical_increment(mode, speed, musical_note::decode(note), reversed_slice, cut_rate);
+                                      bool reversed_slice, uint16_t cut_rate, int8_t part_pitch) {
+    return play_musical_increment(mode, speed, musical_note::decode(note), reversed_slice, cut_rate, part_pitch);
 }
 
-int32_t PlayUnit::musical_increment(bool reverse, uint16_t cut_rate) const {
-    return play_musical_increment(pitch_mode_, params[P_SPEED].effective, actual_note(), reverse, cut_rate);
+int32_t PlayUnit::musical_increment(bool reverse, uint16_t cut_rate, int8_t part_pitch) const {
+    return play_musical_increment(pitch_mode_, params[P_SPEED].effective, actual_note(), reverse, cut_rate, part_pitch);
 }
 
 PlayUnit::SourceBinding PlayUnit::source_binding() const {
@@ -201,7 +204,8 @@ PlayWindow PlayUnit::projected_window(q15 start, q15 length, q15 slice) const {
     if (pitch_mode_ != PitchMode::Legacy && params[P_SCRUB].effective <= 16383) {
         const bool reverse = window.slice && (sample.slice_reverse_mask & (1u << (window.slice - 1)));
         const uint16_t rate = window.slice ? Sample::cut_speed(sample.slice_speed_q8[window.slice - 1]) : 256;
-        window.increment = musical_increment(reverse, rate);
+        const int8_t pitch = window.slice ? sample.slice_pitch_semitones[window.slice - 1] : 0;
+        window.increment = musical_increment(reverse, rate, pitch);
     }
     return window;
 }
@@ -240,7 +244,10 @@ void PlayUnit::control_tick() {
         const uint16_t rate = preview_ ? preview_speed_q8_ : latched_slice_ && modern_
             ? Sample::cut_speed(s.slice_speed_q8[latched_slice_ - 1]) : 256;
         inc_q16_ = (int32_t)((int64_t)inc_q16_ * rate / 256);
-        rate_bound_ = rate_bound_ || (modern_ && latched_slice_ && rate != 256);
+        const int8_t pitch = preview_ ? preview_pitch_semitones_ : latched_slice_ && modern_
+            ? s.slice_pitch_semitones[latched_slice_ - 1] : 0;
+        inc_q16_ = (int32_t)((int64_t)inc_q16_ * play_part_pitch::ratio_q16(pitch) / 65536);
+        rate_bound_ = rate_bound_ || (modern_ && latched_slice_ && (rate != 256 || pitch != 0));
         const uint32_t nf = playable_frames(s);
         window.normalized_start = nf > 1 ? (uint16_t)((uint64_t)win_start_ * 32767u / (nf - 1)) : 0;
         window.normalized_end = nf > 1 && win_end_ ? (uint16_t)((uint64_t)(win_end_ - 1) * 32767u / (nf - 1)) : 0;
@@ -264,8 +271,12 @@ void PlayUnit::control_tick() {
             : slice && (s.slice_reverse_mask & (1u << (slice - 1)));
         const uint16_t rate = preview_ ? preview_speed_q8_
             : slice ? Sample::cut_speed(s.slice_speed_q8[slice - 1]) : 256;
-        inc_q16_ = musical_increment(reverse, rate);
-        const int32_t pitch = musical_note::ratio_q16(actual_note() - musical_note::ROOT);
+        const int8_t part_pitch = preview_ ? preview_pitch_semitones_
+            : slice ? s.slice_pitch_semitones[slice - 1] : 0;
+        inc_q16_ = musical_increment(reverse, rate, part_pitch);
+        // Stretch advances source time using old q8; ONLY reading heads pitch.
+        const int32_t pitch = (int32_t)((int64_t)musical_note::ratio_q16(actual_note() - musical_note::ROOT) *
+            play_part_pitch::ratio_q16(part_pitch) / 65536);
         note_inc_q16_ = inc_q16_ < 0 ? -pitch : pitch;
     }
     if (playable_frames(s) < 2) {
@@ -286,6 +297,7 @@ void PlayUnit::preview(q15 start, q15 length, q15 slice) {
     const PlayWindow window = projected_window(start, length, slice);
     latch_edit_window(window);
     preview_repeat_ = false;
+    preview_pitch_semitones_ = modern_ && window.slice ? sample.slice_pitch_semitones[window.slice - 1] : 0;
     preview_scrub_forced_ = scrub_override_ = false;
     latched_slice_ = window.slice;
     preview_speed_q8_ = modern_ && window.slice ? Sample::cut_speed(sample.slice_speed_q8[window.slice - 1]) : 256;
@@ -308,12 +320,13 @@ void PlayUnit::preview(q15 start, q15 length, q15 slice) {
 }
 
 bool PlayUnit::preview_frames(uint32_t start, uint32_t end, bool repeat, uint32_t expected_generation,
-                              bool reverse, uint16_t speed_q8, bool scrub) {
+                              bool reverse, uint16_t speed_q8, bool scrub, int8_t part_pitch) {
     const SourceBinding source = source_binding();
     if (source.slot < 0 || source.generation != expected_generation ||
         start >= end || end > source.frames || end - start < 2 ||
         (source.channels != 1 && source.channels != 2) || !edit_source_matches() ||
-        speed_q8 < Sample::CUT_SPEED_MIN || speed_q8 > Sample::CUT_SPEED_MAX) return false;
+        speed_q8 < Sample::CUT_SPEED_MIN || speed_q8 > Sample::CUT_SPEED_MAX ||
+        !play_part_pitch::valid(part_pitch)) return false;
     const Sample& sample = SampleBank::instance().slot(sample_slot);
     PlayWindow window = play_window(sample, params[P_SPEED].effective, 0, Q15_ONE, 0, pitch_quantize, modern_);
     window.start = start; window.end = end; window.valid = true; window.edited = true;
@@ -328,7 +341,7 @@ bool PlayUnit::preview_frames(uint32_t start, uint32_t end, bool repeat, uint32_
     // Caller supplies selected-cut direction explicitly. Inferring a base SLCE
     // here would double-flip private preview voices and lose chain ownership.
     latched_reverse_ = reverse;
-    latched_slice_ = 0; preview_speed_q8_ = speed_q8;
+    latched_slice_ = 0; preview_speed_q8_ = speed_q8; preview_pitch_semitones_ = part_pitch;
     preview_scrub_forced_ = scrub; scrub_override_ = false;
     if (latched_reverse_) window.increment = -window.increment;
     latch_edit_window(window);
@@ -337,7 +350,7 @@ bool PlayUnit::preview_frames(uint32_t start, uint32_t end, bool repeat, uint32_
     gate_deadline_ = UINT64_MAX; release_remaining_ = 0;
     win_start_ = start; win_end_ = end; inc_q16_ = window.increment;
     if (pitch_mode_ != PitchMode::Legacy && !scrub && params[P_SCRUB].effective <= 16383)
-        inc_q16_ = musical_increment(reverse, speed_q8);
+        inc_q16_ = musical_increment(reverse, speed_q8, part_pitch);
     playing_ = true; frac_ = 0; amp_q15_ = 0;
     pos_ = inc_q16_ >= 0 ? start : end - 1;
     visual_source_frame_ = (uint32_t)pos_;
@@ -345,6 +358,43 @@ bool PlayUnit::preview_frames(uint32_t start, uint32_t end, bool repeat, uint32_
     visual_position_ = inc_q16_ >= 0 ? visual_start_ : visual_end_;
     visual_state_ = VisualPlaying | (inc_q16_ < 0 ? VisualReverse : 0) | (repeat ? VisualLoop : 0);
     if (scrub_) begin_scrub();
+    return true;
+}
+
+bool PlayUnit::update_preview_frames(uint32_t first, uint32_t end, bool reverse, uint16_t rate, int8_t part_pitch) {
+    if (!preview_ || !playing_ || release_remaining_ || !source_matches(voice_source_) ||
+        first >= end || end > voice_source_.frames || end - first < 2 ||
+        rate < Sample::CUT_SPEED_MIN || rate > Sample::CUT_SPEED_MAX ||
+        !play_part_pitch::valid(part_pitch)) return false;
+    const bool bounds_changed = first != win_start_ || end != win_end_;
+    const bool direction_changed = reverse != latched_reverse_;
+    win_start_ = voice_edit_.start = voice_edit_.loop_start = first;
+    win_end_ = voice_edit_.end = voice_edit_.loop_end = end;
+    if (bounds_changed) {
+        const uint32_t span = end - first;
+        voice_edit_.fade_in = edit_.enabled ? std::min(edit_.fade_in, span) : 0;
+        voice_edit_.fade_out = edit_.enabled ? std::min(edit_.fade_out, span) : 0;
+        voice_edit_.crossfade = preview_seam_ ? std::min(edit_.crossfade, (span - 1) / 2) : 0;
+    }
+    const int64_t begin = int64_t(first) * 65536, last = int64_t(end - 1) * 65536;
+    const int64_t phase = pos_ * 65536 + frac_;
+    // A rate-only/no-op update leaves pending loop overshoot untouched: the
+    // reader consumes it next sample, retaining fractional loop progression.
+    const int64_t clamped = bounds_changed || direction_changed ? std::max(begin, std::min(last, phase)) : phase;
+    bool reposition = phase != clamped;
+    // Existing stretch heads retain their phase/tick if both can still read the
+    // new window; otherwise discard stale overlap with the existing attack ramp.
+    if (stretch_.ready && (bounds_changed || direction_changed)) {
+        if (direction_changed || stretch_.phase[0] < begin || stretch_.phase[0] > last ||
+            stretch_.phase[1] < begin || stretch_.phase[1] > last) reposition = true;
+    }
+    pos_ = clamped >> 16; frac_ = (trackr::fx::uq16)(clamped & 0xffff);
+    if (reposition) { amp_q15_ = 0; stretch_.reset(); }
+    latched_reverse_ = reverse; preview_speed_q8_ = rate; preview_pitch_semitones_ = part_pitch;
+    control_tick();
+    visual_source_frame_ = (uint32_t)std::max<int64_t>(first, std::min<int64_t>(end - 1, pos_));
+    visual_position_ = (uint16_t)((uint64_t)visual_source_frame_ * 32767u / (voice_source_.frames - 1));
+    visual_state_ = VisualPlaying | (inc_q16_ < 0 ? VisualReverse : 0) | (preview_repeat_ ? VisualLoop : 0);
     return true;
 }
 
@@ -372,7 +422,8 @@ void PlayUnit::trigger() {
         win_start_ = w.start; win_end_ = w.end; inc_q16_ = w.increment;
         latched_reverse_ = w.slice && (s.slice_reverse_mask & (1u << (w.slice - 1)));
         latched_slice_ = w.slice;
-        rate_bound_ = w.slice && Sample::cut_speed(s.slice_speed_q8[w.slice - 1]) != 256;
+        rate_bound_ = w.slice && (Sample::cut_speed(s.slice_speed_q8[w.slice - 1]) != 256 ||
+            s.slice_pitch_semitones[w.slice - 1] != 0);
         latched_loop_ = params[P_LOOP].effective > Q15_ONE / 2;
         latched_gate_ = play_mode::is_gate(params[P_MODE].effective);
         latched_gate_quarters_ = play_mode::gate_quarters(params[P_GATE].effective);
@@ -899,6 +950,10 @@ void GrainUnit::clear_launch_requests() {
 }
 
 void GrainUnit::synchronize_performance() {
+    // Normalize public runtime inputs at control/process/trigger boundaries,
+    // never in capture/save. Valid legacy config stays dormant, not upgraded.
+    set_reading(reading);
+    set_reverse_percent(reverse_percent);
     if (!clean || (uint8_t)launch_mode > (uint8_t)LaunchMode::Burst)
         launch_mode = LaunchMode::Flow;
     if (!clean || (uint8_t)window > (uint8_t)Window::Hann) window = Window::Linear;
@@ -924,6 +979,13 @@ void GrainUnit::bind_performance_source() {
     scan_source_frames_ = sample.playable_frames();
     scan_source_data_ = sample.data.data();
     scan_source_channels_ = sample.channels;
+}
+
+void GrainUnit::set_reading(Reading value) {
+    reading = (uint8_t)value <= (uint8_t)Reading::Mixed ? value : Reading::SignedPitch;
+}
+void GrainUnit::set_reverse_percent(uint8_t value) {
+    reverse_percent = value > 100 ? 100 : value;
 }
 
 void GrainUnit::set_launch_mode(LaunchMode value) {
@@ -996,6 +1058,7 @@ void GrainUnit::trigger() {
 }
 
 void GrainUnit::reset() {
+    mix_phase_ = 0;
     clear_launch_requests(); // process-wide token issuance is not reset or cloned
     for (auto& head : heads_) head = Head{};
     for (auto& tail : tails_) tail = Tail{};
@@ -1083,6 +1146,20 @@ void GrainUnit::spawn_grain(uint32_t nf, int limit) {
         const int32_t offset = rand_signed(spread);
         increment = pdev_increment(increment, (q15)offset);
         pitch_offset = (int8_t)((int64_t)offset * 24 / 32767);
+    }
+
+    // Absolute direction follows the original signed PTCH/PDEV magnitude and
+    // RNG draws, before the existing clean direction-aware bounds. No RNG draw
+    // for Mixed; nf<256 above is the only refused spawn and cannot advance phase.
+    if (clean && reading != Reading::SignedPitch) {
+        bool reverse = reading == Reading::Reverse;
+        if (reading == Reading::Mixed) {
+            const unsigned phase = unsigned(mix_phase_) + reverse_percent;
+            reverse = phase >= 100;
+            mix_phase_ = uint8_t(reverse ? phase - 100 : phase);
+        }
+        const int32_t absolute = int32_t(increment < 0 ? -int64_t(increment) : int64_t(increment));
+        increment = reverse ? -absolute : absolute;
     }
 
     // A grain consumes length * |increment| frames of source material. Clamp the
@@ -3089,6 +3166,7 @@ void RecUnit::trigger() {
     s.logical_frames = 0;
     s.slice_reverse_mask = 0;
     s.reset_cut_speeds();
+    s.reset_cut_pitches();
     for (int i = 0; i < Sample::MAX_CHOPS; ++i) s.chops[i] = 0xFFFFFFFFu;
     wr_frames_ = 0;
     invalidate_visual_wave();
@@ -3156,6 +3234,7 @@ void RecUnit::stop() {
     s.logical_frames = wr_frames_;
     s.slice_reverse_mask = 0;
     s.reset_cut_speeds();
+    s.reset_cut_pitches();
     if (wr_frames_ > 0) s.chops[0] = 0;
 }
 
@@ -3177,6 +3256,7 @@ void RecUnit::clear_take() {
     s.logical_frames = 0;
     s.slice_reverse_mask = 0;
     s.reset_cut_speeds();
+    s.reset_cut_pitches();
     for (int i = 0; i < Sample::MAX_CHOPS; ++i) s.chops[i] = 0xFFFFFFFFu;
 }
 
@@ -3202,6 +3282,7 @@ void RecUnit::adopt_take(uint32_t frames) {
     s.logical_frames = wr_frames_;
     s.slice_reverse_mask = 0;
     s.reset_cut_speeds();
+    s.reset_cut_pitches();
     if (wr_frames_ > 0) s.chops[0] = 0;
 }
 
@@ -4118,6 +4199,8 @@ Unit* make_unit(UnitKind kind) {
         case UnitKind::Arp:          unit = new(std::nothrow) ArpUnit(); break;
         case UnitKind::Glitch:       unit = new(std::nothrow) GlitchUnit(); break;
         case UnitKind::Inst:         unit = new(std::nothrow) InstUnit(); break;
+        case UnitKind::Scratch:      unit = new(std::nothrow) ScratchUnit(); break;
+        case UnitKind::Paul:         unit = new(std::nothrow) PaulUnit(); break;
         default:                     return nullptr;
     }
     if (unit && !unit->ready()) { delete unit; unit = nullptr; }
@@ -4160,6 +4243,21 @@ Unit* clone_unit(const Unit* source) {
     }
 
     switch (source->kind) {
+        case UnitKind::Paul: {
+            const auto* from=static_cast<const PaulUnit*>(source);
+            auto* to=static_cast<PaulUnit*>(clone);
+            to->sample_slot=from->sample_slot;to->set_mode(from->mode);
+            to->set_direction(from->direction);to->reset(); // config only; fresh DSP/loop leg
+            break;
+        }
+        case UnitKind::Scratch: {
+            const auto* from=static_cast<const ScratchUnit*>(source);
+            auto* to=static_cast<ScratchUnit*>(clone);
+            to->sample_slot=from->sample_slot;to->set_mode(from->mode);to->set_map(from->map);
+            to->axis_x=from->axis_x;to->axis_y=from->axis_y;
+            to->reset(); // config only; no gates, latch, heads, context pointers or XY owner
+            break;
+        }
         case UnitKind::SamplePlayer: {
             const auto* from = static_cast<const PlayUnit*>(source);
             auto* to = static_cast<PlayUnit*>(clone);
@@ -4184,7 +4282,15 @@ Unit* clone_unit(const Unit* source) {
             const auto* from = static_cast<const GrainUnit*>(source);
             auto* to = static_cast<GrainUnit*>(clone);
             to->sample_slot = from->sample_slot;
+            // Clone authored scalars only, rejecting raw corrupted/legacy
+            // authorship like capture; constructor keeps runtime phase/RNG fresh.
+            if (uint8_t(from->reading) > uint8_t(GrainUnit::Reading::Mixed) || from->reverse_percent > 100 ||
+                (!from->clean && (from->reading != GrainUnit::Reading::SignedPitch || from->reverse_percent != 50))) {
+                delete clone; return nullptr;
+            }
             to->clean = from->clean;
+            to->reading = from->reading;
+            to->reverse_percent = from->reverse_percent;
             to->set_launch_mode(from->launch_mode);
             to->set_window(from->window);
             to->set_burst_count(from->burst_count);
@@ -4489,6 +4595,8 @@ void FractUnit::reset() {
     manual_ = held_ = pending_grab_ = hold_high_ = hold_blocked_ = false;
     running_ = suspended_ = false; reverse_ = false;
     repeats_ = edge_remaining_ = 0; wet_ = 0; last_wet_ = edge_from_ = 0;
+    grab_frames_ = 0; grab_position_ = 0; grab_fraction_ = 32767;
+    grab_last_wet_ = grab_edge_from_ = 0; grab_edge_remaining_ = 0;
     clock_phase_ = last_grid_ = 0; clock_remainder_ = clock_increment_ = clock_fraction_step_ = 0;
     clock_divisor_ = 1; rng_ = 0x46524143u;
     control_tick(); speed_ = speed_target_; reverse_ = speed_ < 0;
@@ -4528,9 +4636,43 @@ void FractUnit::set_manual_grab(bool down) {
     const bool released = manual_ && !down;
     manual_ = down;
     if (released && !held_) { auto_remaining_ = 0; pending_grab_ = false; }
+    if (!down) { grab_fraction_ = 32767; update_grab_window(); }
+}
+void FractUnit::set_grab_window(q15 fraction) {
+    if (!manual_ || suspended_ || bypass) {
+        grab_fraction_ = 32767; update_grab_window(); return;
+    }
+    grab_fraction_ = q15(positive(fraction));
+    update_grab_window();
+}
+void FractUnit::update_grab_window() {
+    uint32_t next = 0;
+    if (manual_ && !suspended_ && !bypass && frozen_bank_ >= 0 && loop_frames_ &&
+        (grab_fraction_ < 32767 || grab_frames_)) {
+        const uint32_t minimum = std::min(MIN_GRAB_WINDOW, loop_frames_);
+        next = minimum + uint32_t(uint64_t(loop_frames_ - minimum) * uint16_t(grab_fraction_) / 32767u);
+    }
+    if (next == grab_frames_) return;
+    if (next) {
+        const uint32_t old = grab_frames_ ? grab_frames_ : loop_frames_;
+        const int64_t phase = grab_frames_ ? grab_position_ : position_;
+        // Q16 normalized phase, bounded even at +/-4x and the 64-frame floor.
+        grab_position_ = std::min(int64_t(next) * 65536 - 1, phase * next / old);
+    }
+    grab_frames_ = next;
+    grab_edge_from_ = grab_last_wet_;
+    grab_edge_remaining_ = wet_ ? 32 : 0;
+}
+void FractUnit::advance_grab_window() {
+    grab_position_ += speed_;
+    const int64_t limit = int64_t(grab_frames_) * 65536;
+    if (grab_position_ < 0) grab_position_ += limit;
+    else if (grab_position_ >= limit) grab_position_ -= limit;
+    // No repeat counter, DAMAGE, RNG or bank write belongs to this reader.
 }
 void FractUnit::stop_transport() {
     manual_ = held_ = pending_grab_ = false; auto_remaining_ = 0;
+    grab_fraction_ = 32767; update_grab_window();
     hold_blocked_ = params[P_HOLD].effective > 16383 || params[P_HOLD].control_source() > 16383;
     running_ = false;
 }
@@ -4540,6 +4682,7 @@ void FractUnit::set_enabled(bool enabled) {
     stop_transport(); suspended_ = true;
     fill_[0] = fill_[1] = 0; write_ = 0; live_bank_ = 0; frozen_bank_ = -1;
     capture_frames_ = loop_frames_ = 0; wet_ = 0; edge_remaining_ = repeats_ = 0;
+    grab_frames_ = 0; grab_edge_remaining_ = 0; grab_last_wet_ = 0;
 }
 void FractUnit::set_transport_clock(bool running, uint64_t phase, uint32_t increment,
                                      uint32_t remainder, uint32_t divisor) {
@@ -4559,33 +4702,40 @@ bool FractUnit::capture() {
     capture_start_ = (write_ + CAPACITY - capture_frames_) & (CAPACITY - 1);
     position_ = speed_ < 0 ? int64_t(loop_frames_ - 1) * 65536 : 0;
     repeats_ = 0; edge_from_ = last_wet_; edge_remaining_ = wet_ ? 32 : 0;
+    grab_frames_ = 0;
+    update_grab_window(); // a ratio requested during warmup applies to this real capture
     // O(1): not a single PCM frame is copied or traversed at capture.
     return true;
 }
-q15 FractUnit::read_loop(int64_t phase) const {
+q15 FractUnit::read_loop(int64_t phase) const { return read_window(phase, loop_frames_); }
+q15 FractUnit::read_window(int64_t phase, uint32_t span) const {
     const uint32_t index = uint32_t(phase >> 16), fraction = uint32_t(phase) & 65535;
-    const uint32_t next = index + 1 < loop_frames_ ? index + 1 : index;
+    const uint32_t next = index + 1 < span ? index + 1 : index;
     const q15* bank = banks_ + frozen_bank_ * CAPACITY;
     const int32_t a = bank[(capture_start_ + index) & (CAPACITY - 1)];
     const int32_t b = bank[(capture_start_ + next) & (CAPACITY - 1)];
     return q15(a + ((int64_t(b-a)*fraction) >> 16));
 }
-q15 FractUnit::repeat_sample() {
-    int32_t sample = read_loop(position_);
-    const uint32_t fade = fract_seam(loop_frames_);
+q15 FractUnit::window_sample(int64_t phase, uint32_t span) const {
+    int32_t sample = read_window(phase, span);
+    const uint32_t fade = fract_seam(span);
     const int64_t overlap = int64_t(fade) * 65536;
-    const int64_t tail = int64_t(loop_frames_ - fade) * 65536;
+    const int64_t tail = int64_t(span - fade) * 65536;
     const unsigned alpha_shift = fade == 32 ? 6 : fade == 16 ? 5 : 4;
     // Fade toward the NEXT boundary sample without borrowing or skipping any
     // phase. Full nominal loop timing is preserved, including at the 2ms floor.
     int64_t boundary = 0; int32_t alpha = 0;
-    if (!reverse_ && position_ >= tail) {
-        alpha = int32_t((position_ - tail) >> alpha_shift);
-    } else if (reverse_ && position_ < overlap) {
-        boundary = int64_t(loop_frames_ - 1) * 65536;
-        alpha = int32_t((overlap - position_) >> alpha_shift);
+    if (!reverse_ && phase >= tail) {
+        alpha = int32_t((phase - tail) >> alpha_shift);
+    } else if (reverse_ && phase < overlap) {
+        boundary = int64_t(span - 1) * 65536;
+        alpha = int32_t((overlap - phase) >> alpha_shift);
     }
-    if (alpha) sample += int32_t((int64_t(int32_t(read_loop(boundary))-sample)*alpha) >> 15);
+    if (alpha) sample += int32_t((int64_t(int32_t(read_window(boundary, span))-sample)*alpha) >> 15);
+    return q15(sample);
+}
+q15 FractUnit::repeat_sample() {
+    int32_t sample = window_sample(position_, loop_frames_);
     if (edge_remaining_) {
         sample = (sample*(32-edge_remaining_) + int32_t(edge_from_)*edge_remaining_) / 32;
         --edge_remaining_;
@@ -4606,6 +4756,34 @@ void FractUnit::advance_loop() {
     else position_ -= limit;
     if (old_length != loop_frames_) { edge_from_ = last_wet_; edge_remaining_ = 32; }
 }
+void FractUnit::write_history(int bank, q15 dry) {
+    banks_[bank * CAPACITY + write_] = dry;
+    auto& block = envelope_[bank][write_ / ENVELOPE_BLOCK];
+    // A resumed bank can start mid-block. Its old prefix/suffix is not valid
+    // history; restart this partial summary, and again at each block boundary.
+    if (!(write_ & (ENVELOPE_BLOCK - 1)) || !fill_[bank]) block.low = block.high = dry;
+    else { block.low = std::min(block.low, dry); block.high = std::max(block.high, dry); }
+    fill_[bank] = std::min(MAX_CAPTURE, fill_[bank] + 1);
+}
+void FractUnit::envelope_range(int bank, uint32_t begin, uint32_t count, q15& low, q15& high) const {
+    // Caller guarantees this entire range lies in contiguous valid PCM. A whole
+    // block inside it is complete; the currently written block's old suffix
+    // cannot be included. Only partial edges read PCM (at most 63 + 63 frames).
+    if (!count) { low = high = 0; return; }
+    low = 32767; high = -32768;
+    while (count) {
+        const uint32_t at = begin & (CAPACITY - 1);
+        if (!(at & (ENVELOPE_BLOCK - 1)) && count >= ENVELOPE_BLOCK) {
+            const auto& block = envelope_[bank][at / ENVELOPE_BLOCK];
+            low = std::min(low, block.low); high = std::max(high, block.high);
+            begin += ENVELOPE_BLOCK; count -= ENVELOPE_BLOCK;
+        } else {
+            const q15 value = banks_[bank * CAPACITY + at];
+            low = std::min(low, value); high = std::max(high, value);
+            ++begin; --count;
+        }
+    }
+}
 void FractUnit::process(q15* buf, int frames) {
     if (!buf || frames <= 0) return;
     if (bypass || suspended_ || !banks_) { if (bypass) set_enabled(false); return; }
@@ -4625,29 +4803,43 @@ void FractUnit::process(q15* buf, int frames) {
         if (pending_grab_ && (manual_ || held_) && capture()) pending_grab_ = false;
         const bool active = frozen_bank_ >= 0 && (manual_ || held_ || auto_remaining_);
         // No output is ever fed back to either input history bank.
-        banks_[live_bank_*CAPACITY + write_] = dry;
-        fill_[live_bank_] = std::min(MAX_CAPTURE, fill_[live_bank_] + 1);
-        if (frozen_bank_ < 0) {
-            banks_[(1-live_bank_)*CAPACITY + write_] = dry;
-            fill_[1-live_bank_] = std::min(MAX_CAPTURE, fill_[1-live_bank_] + 1);
-        }
+        write_history(live_bank_, dry);
+        if (frozen_bank_ < 0) write_history(1-live_bank_, dry);
         write_ = (write_ + 1) & (CAPACITY - 1);
         if (frozen_bank_ >= 0) {
             // Slew magnitude, then declick direction changes without passing
             // through a stuck zero-speed head.
             const bool reverse = speed_target_ < 0;
             const int32_t magnitude = fract_ramp(std::abs(speed_), std::abs(speed_target_), 1024);
-            if (reverse != reverse_) { edge_from_ = last_wet_; edge_remaining_ = 32; }
+            if (reverse != reverse_) {
+                edge_from_ = last_wet_; edge_remaining_ = 32;
+                if (grab_frames_ || grab_edge_remaining_) {
+                    grab_edge_from_ = grab_last_wet_; grab_edge_remaining_ = 32;
+                }
+            }
             reverse_ = reverse; speed_ = reverse ? -magnitude : magnitude;
-            last_wet_ = repeat_sample();
+            last_wet_ = repeat_sample(); // original shadow PCM/declick stays independent
+            int32_t audible = last_wet_;
+            if (grab_frames_) {
+                audible = window_sample(grab_position_, grab_frames_);
+                advance_grab_window();
+            }
+            if (grab_edge_remaining_) {
+                audible = (audible*(32-grab_edge_remaining_) + int32_t(grab_edge_from_)*grab_edge_remaining_) / 32;
+                --grab_edge_remaining_;
+            }
+            grab_last_wet_ = q15(audible);
             const int32_t target = active ? mix_ + (mix_ == 32767) : 0;
             wet_ = fract_ramp(wet_, target, 256); // full-scale 4ms enter/release
             // Convex mix endpoints are exact, including dry identity at wet=0.
-            buf[n] = q15(int32_t(dry) + ((int64_t(int32_t(last_wet_)-dry)*wet_) >> 15));
+            buf[n] = q15(int32_t(dry) + ((int64_t(audible-dry)*wet_) >> 15));
+            const uint32_t old_loop = loop_frames_;
             advance_loop();
+            if (grab_frames_ && old_loop != loop_frames_) update_grab_window();
             if (!active && !wet_) {
                 fill_[frozen_bank_] = 0; frozen_bank_ = -1;
                 loop_frames_ = capture_frames_ = 0;
+                grab_frames_ = 0; grab_edge_remaining_ = 0;
             }
         } else { wet_ = 0; speed_ = speed_target_; reverse_ = speed_ < 0; }
         if (auto_remaining_) --auto_remaining_;
@@ -4670,6 +4862,30 @@ FractUnit::Visual FractUnit::visual() const {
     out.fill = uint16_t(uint64_t(std::min(size_, fill_[live_bank_])) * 32767u / size_);
     out.active = frozen_bank_ >= 0 && (manual_ || held_ || auto_remaining_ || wet_);
     out.manual = manual_; out.held = held_;
+    const bool frozen = loop_frames_ && frozen_bank_ >= 0;
+    out.history_frames = frozen ? capture_frames_ : std::min(size_, fill_[live_bank_]);
+    out.reader_frames = frozen ? (grab_frames_ ? grab_frames_ : loop_frames_) : 0;
+    out.reader_phase = out.reader_frames ? uint16_t(uint64_t(grab_frames_ ? grab_position_ : position_) * 32767u /
+        (uint64_t(out.reader_frames) * 65536)) : 0;
+    out.window_active = frozen && manual_ && !suspended_ && !bypass;
+    const uint32_t history_start = frozen ? capture_start_ : (write_ + CAPACITY - out.history_frames) & (CAPACITY - 1);
+    const int history_bank = frozen ? frozen_bank_ : live_bank_;
+    for (uint32_t i = 0; i < 48; ++i) {
+        if (out.history_frames) out.history_wave[i] = banks_[history_bank * CAPACITY +
+            ((history_start + i * (out.history_frames - 1) / 47) & (CAPACITY - 1))];
+        if (out.reader_frames) out.reader_wave[i] = banks_[frozen_bank_ * CAPACITY +
+            ((capture_start_ + i * (out.reader_frames - 1) / 47) & (CAPACITY - 1))];
+        if (out.history_frames) {
+            const uint32_t first = i * out.history_frames / ENVELOPE_BINS;
+            const uint32_t end = (i + 1) * out.history_frames / ENVELOPE_BINS;
+            envelope_range(history_bank, history_start + first, end - first, out.history_low[i], out.history_high[i]);
+        }
+        if (frozen) {
+            const uint32_t first = i * loop_frames_ / ENVELOPE_BINS;
+            const uint32_t end = (i + 1) * loop_frames_ / ENVELOPE_BINS;
+            envelope_range(frozen_bank_, capture_start_ + first, end - first, out.loop_low[i], out.loop_high[i]);
+        }
+    }
     return out;
 }
 } // namespace seance

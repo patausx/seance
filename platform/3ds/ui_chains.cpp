@@ -11,10 +11,13 @@
 #include "picker_motion.h"
 #include "editor_transition.h"
 #include "editor_style.h"
+#include "module_heading.h"
 #include "sigil_surface.h"
 #include "ring_reference.h"
 #include "play_readout.h"
 #include "inst_readout.h"
+#include "scratch_readout.h"
+#include "paul_readout.h"
 #include "../../core/engine/units.h"
 #include "../../core/ui/draw.h"
 #include <algorithm>
@@ -249,6 +252,8 @@ int primary(const Unit& unit,int which){
     switch(k){
     case UnitKind::SamplePlayer:return which?PlayUnit::P_GAIN:
         static_cast<const PlayUnit&>(unit).pitch_mode()==PlayUnit::PitchMode::Legacy?PlayUnit::P_SPEED:PlayUnit::P_NOTE;
+    case UnitKind::Paul:return which?PaulUnit::P_WINDOW:PaulUnit::P_STRETCH;
+    case UnitKind::Scratch:{const auto& s=static_cast<const ScratchUnit&>(unit);int x,y;s.axis_params(x,y);return which?y:x;}
     case UnitKind::Osc:return which?OscUnit::P_GAIN:OscUnit::P_PITCH;
     case UnitKind::Noise:return which?NoiseUnit::P_GAIN:NoiseUnit::P_TONE;
     case UnitKind::Fm:return which?FmUnit::P_INDEX:FmUnit::P_PITCH;
@@ -311,7 +316,9 @@ void value_text(char* out,size_t n,const ParamInspector& p,q15 value,const Tile&
     if(k==UnitKind::SamplePlayer){
         play_readout::value_text(out,n,p.param,value,tile.play_modern,tile.play_quantize,tile.play_pitch_mode);return;
     }
-    if(k==UnitKind::Inst)inst_readout::value_text(out,n,p.param,value);
+    if(k==UnitKind::Paul)paul_readout::value_text(out,n,p.param,value);
+    else if(k==UnitKind::Scratch)scratch_readout::value_text(out,n,p.param,value);
+    else if(k==UnitKind::Inst)inst_readout::value_text(out,n,p.param,value);
     else if(k==UnitKind::Arp&&p.param==ArpUnit::P_RATE)std::snprintf(out,n,"%s",ArpUnit::rate_name(ArpUnit::rate_index(value)));
     else if(k==UnitKind::Arp&&p.param==ArpUnit::P_GATE)std::snprintf(out,n,"%d%%",ArpUnit::gate_percent(value));
     else if(k==UnitKind::Ring&&p.param==RingUnit::P_FREQ)std::snprintf(out,n,"%.0fhz",ring_reference::hz(value));
@@ -332,6 +339,20 @@ template<class P> void param_rail(const P& p,const ParamInspector& v,int left,in
     module_fader::horizontal(p,left,right,y,base,effective,
         {live&&v.mod_enabled&&v.source!=ModSource::None,false,false},v.bipolar?(left+right)/2:-1);
 }
+// New card titles reuse the registered private masks at the existing card
+// anchor. Older menu masks stay byte-identical; the painter keeps native/cache
+// clipping and disclosure opacity, so no shared atlas/layout change is needed.
+template<class P> void card_heading(const P& p,int x,int y,UnitKind kind,uint32_t color){
+    if(kind!=UnitKind::Scratch&&kind!=UnitKind::Paul){p.heading(x,y,m::module_name(kind),color);return;}
+    const auto* at=module_heading::label(kind);
+    if(!at)return;
+    const int stride=(at->width+7)/8;
+    const auto* bitmap=module_heading_data::bitmap+at->offset;
+    for(int row=0;row<at->height;++row){int run=-1;
+        for(int col=0;col<=at->width;++col){const bool on=col<at->width&&(bitmap[row*stride+col/8]&(0x80u>>(col&7)));
+            if(on&&run<0)run=col;
+            if(!on&&run>=0){p.rect(x+run,y+row,col-run,1,color);run=-1;}}}
+}
 template<class P> void tile(P p,int slot,bool top){
     const auto b=frame.layout.box[slot];if(!b.w)return;
     const int x=b.x+(top?40:0),right=x+b.w-3,y0=top?40:0,y1=top?239:197;
@@ -346,7 +367,7 @@ template<class P> void tile(P p,int slot,bool top){
     p.line(x+2,top?y0:y1,right,top?y0:y1,color);
     if(top){
         const char* name=m::module_name(t.kind);
-        if(chosen&&b.w>=78)p.heading(x+14,47,name,m::spot());
+        if(chosen&&b.w>=78)card_heading(p,x+14,47,t.kind,m::spot());
         else {char short_name[5];std::snprintf(short_name,sizeof short_name,"%.4s",name);
             p.text(x+(b.w-ui::text_w(short_name))/2,55,short_name,t.bypass?m::ghost():m::ink());}
         if(chosen&&b.w>=132){
@@ -450,7 +471,7 @@ template<class Cache> void capture_background(Cache& cache,bool top){
 void sharp_anchor(bool top){
     if(top){if(frame.selected<UNITS_PER_CHAIN){const auto b=frame.layout.box[frame.selected];
         sigil_surface::TopPainter p;p.clip_left=40+b.x+2;p.clip_right=40+b.x+b.w-2;
-        p.heading(40+b.x+14,47,m::module_name(frame.tiles[frame.selected].kind),m::spot());}}
+        card_heading(p,40+b.x+14,47,frame.tiles[frame.selected].kind,m::spot());}}
     else if(frame.add)add_label(sigil_surface::Painter{});
     else ui::text(frame.anchor_x,22,"more",m::spot());
 }

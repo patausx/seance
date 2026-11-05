@@ -150,6 +150,8 @@ enum class UnitKind : uint8_t {
     Arp,            // event arpeggiator, targets next pitched source (26)
     Glitch,         // previous-bar rhythmic live-input shuffle (27)
     Inst,           // built-in multisampled instrument source (append-only: 28)
+    Scratch = 29,   // separate scratch/hold sample source; persisted append-only
+    Paul = 30,      // independent spectral time stretch, append-only
     Count
 };
 

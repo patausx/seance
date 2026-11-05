@@ -23,7 +23,7 @@ font dependency on 3ds. checked-in bitmap header is sufficient to build.
 - fixed baselines, original ink shape; no horizontal/fractional bitmap scaling;
 - explicit sharp, plus and minus UI strokes: original # is empty, plus absent;
 - only the large selected pitch on the top sequencer uses this face;
-- bottom step labels remain ordinary project 6x8; splash is untouched.
+- bottom step labels remain the ordinary project 6x8 face.
 
 keep this notice and `OFL.txt` alongside packaged binaries and derived font data.
 
@@ -35,17 +35,18 @@ names are not used as its primary name. Modifications copyright 2026 seance
 contributors: three cropped labels (`new patch`, `library`, `settings`) at
 28 ppem, threshold128, row-packed 1bpp; 692 bytes plus metrics. Generated with
 `python3 tools/generate_start_menu_labels.py` (`--check` verifies), shipped as
-`platform/3ds/start_menu_labels_data.h`. Existing Seance Note and splash data are
-unchanged. Keep this combined notice and `OFL.txt` alongside binaries.
+`platform/3ds/start_menu_labels_data.h`. Keep this combined notice and `OFL.txt`
+alongside binaries.
 
 ### shared menu headings
 
 `python3 tools/generate_menu_labels.py` (`--check` verifies) separately bakes
-`platform/3ds/menu_labels_data.h`: 24 complete cropped labels at the same original
-28 ppem / threshold128 raster, 2488 row-packed 1bpp bytes plus metrics. Labels are
-`patch table`, `go to`, `add module`, `empty` and all twenty plain module names.
+`platform/3ds/menu_labels_data.h`: cropped page/module labels, letters, digits and
+selected large UI glyphs. Ordinary labels use the original 28 ppem / threshold128
+raster; the generator declares the larger glyph sizes explicitly. The header
+retains each label's dimensions and offset in the row-packed 1bpp bitmap.
 This is an extension of **seance menu**, under the same OFL/copyright above, not
-an alteration of the original OTF, startup labels/generator, seance note or splash.
+an alteration of the original OTF, startup labels/generator or seance note.
 The shared helper coalesces identical rows and ink runs; ordinary list entries
 remain the native 6x8 face. Keep this combined notice with the derived data and
 packaged binaries.

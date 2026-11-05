@@ -26,6 +26,8 @@ int random_anchor(UnitKind kind) {
     // are exact. GRAN has no free 24px header cell in fine mode: use L > rand.
     switch(kind) {
         case UnitKind::Empty: case UnitKind::Count: case UnitKind::Grain: return -1;
+        // Source/setup fill their headers; both keep the shared L > rand panel.
+        case UnitKind::Scratch: case UnitKind::Paul: return -1;
         case UnitKind::Filter: case UnitKind::Reverb: case UnitKind::Chorus: return 212;
         case UnitKind::SamplePlayer: return 228; // full PLAY: after source arrow, before mode
         case UnitKind::Delay: return 150;

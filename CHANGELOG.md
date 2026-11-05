@@ -1,38 +1,42 @@
-# release overview
+# changelog
 
-## 0.1.0-alpha.1 — source alpha
+## current source update — 0.1.0-alpha.1
 
-a development version, not a stable release or a hardware compatibility claim.
+source changes within the existing alpha version, not a new tagged or binary release.
 
-### instrument
+- 30 modules: SCRT adds independent scratch/hold with assignable XY axes and latch;
+  PAUL adds spectral stretching with freeze and forward/reverse/ping-pong reading.
+- PLAY keeps trim/chop/loop, normal/stretch/tape and global/part controls inline.
+  tap/lift splits; hold/outward seam gestures preview a left-ID-preserving merge.
+  parts have independent -24…+24 st pitch; audio-edit drags audition until lift.
+- the sample browser has library/project/recordings, scrolling full filenames and
+  cancel-default WAV deletion distinct from removing a sound from the project.
+- GRAN setup adds pitch-sign/forward/reverse/mixed reading and reverse percentage
+  for new grains, independently of scan direction.
+- sequencer primary pitch holds until the next accepted written note; ordinary
+  parameter locks remain step-scoped. existing sparse-note projects can sound
+  different under this rule, without rewriting their stored values.
+- FRACT's waveform grab squeezes/re-expands a temporary reading window, separately
+  from saved damage and hold. sigils' upper view separates actual output, saved
+  routes and base/live destination values.
+- public source keeps application code, editable resources, required generators
+  and packaging helpers; local studies, tests, captures and receipts stay out.
 
-- four six-module audio chains and 28 sound modules;
+## source alpha overview
+
+- four serial audio chains with six module slots each;
 - eight drawn/generated sigils, modulation routing and envelope following;
-- built-in CC0 acoustic instruments, sampling, microphone/REC and WAV export;
-- 64-step, four-track sequencing with locks, slices, conditions and timing;
-- A/B step-value buttons, Y listen, group values with L+up/down;
-- per-module manual/sigil-edge randomization and one-step undo;
-- PLAY's normal/stretch/tape/scratch/hold workspaces and sample-copy tools;
-- master or single-chain bounce, live performance and parameter-scene morph;
-- four-track sequencing with eight banks and order cards, up to 16 positions;
-- a performance mixer, manual bank launch/transition and temporary held-L return;
-- smooth stylus scrolling in the module picker and an early New 3DS CPU speedup;
-- 128-slot project library, recent-project startup menu and palette editor.
+- built-in instruments, WAV sampling, microphone/REC and export;
+- four sequencer tracks, up to 64 steps, eight banks, locks, slices and timing;
+- live mixer, A/B parameter scenes, manual bank transitions and 16-card order;
+- master/single-chain bounce and a 128-slot project library with explicit saving.
 
-### source layout
+## known limits
 
-- application code, checked-in resources and editable originals;
-- optional host checks isolated in `tests/`;
-- current resource generators in `tools/`, release packaging in `scripts/`;
-- no design-study renders, promotional captures or local release receipts.
+Old 3DS is untested. dense patches can exceed the audio budget, and PAUL editor
+responsiveness still needs sustained console checks. no new hardware/listening
+acceptance is claimed by this source update. back up projects and their referenced
+WAVs before updating; DSP firmware is not distributed.
 
-### known limits and publication gates
-
-this is an alpha. device sound/performance, Old/New 3DS acceptance and long-session
-storage/sleep behavior require console testing. user saves and recordings should
-be backed up. DSP firmware is not distributed. dense patches can exceed the
-console's practical budget.
-
-this overview describes available features, not a passed-test receipt. see
-[building](BUILDING.md) for checks and [third-party notices](THIRD_PARTY_NOTICES.md)
-for dependency and resource terms.
+see the [guide](GUIDE.md) for controls, [building](BUILDING.md) for build requirements
+and [third-party notices](THIRD_PARTY_NOTICES.md) for dependency/resource terms.

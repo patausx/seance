@@ -45,10 +45,12 @@ inline void remove(SeqStep& s, int slot, int param) {
     --s.lock_count; s.locks[s.lock_count]={};
 }
 // Caller works on a draft row; false never touches the live pattern.
-inline bool put(SeqStep& s, int slot, int param, q15 value, q15 base) {
+inline bool put(SeqStep& s, int slot, int param, q15 value, q15 base, bool explicit_base=false) {
     const int i=find(s,slot,param);
     if (i>=0) { s.locks[i].value=value; return true; }
-    if (value==base) return true; // no-op must not allocate a lock
+    // A written pitch equal to base returns from the preceding held note.
+    // Ordinary parameter no-ops still consume no lock capacity.
+    if (value==base && !explicit_base) return true;
     if (s.lock_count>=SEQ_LOCKS) return false;
     s.locks[s.lock_count++]={(uint8_t)slot,(uint8_t)param,value}; return true;
 }

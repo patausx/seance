@@ -72,6 +72,7 @@ void Engine::update_arps(){
                 continue;
             }
             Unit* source=chains[c].units[target];
+            if(auto* p=bind_paul(c,target))p->synchronize();
             const bool note=arp->advance(phase,target);
             source->arp_voice.gate=arp->visual_.gate;
             source->set_arp_pitch(arp->visual_.active ? arp->visual_.semitone : 0);
@@ -80,6 +81,12 @@ void Engine::update_arps(){
                 if(source->kind==UnitKind::SamplePlayer && ArpUnit::play_legato(arp->params[ArpUnit::P_PLAY_MODE].target))
                     strike=!arp->voice_started_; // finite one-shot remains finished until a fresh run/reset
                 if(strike){source->trigger();source->control_tick();}
+                // PAUL's native manual duration must not close an ARP-owned voice
+                // a second time. ARP gates once in the shared source gain layer.
+                if(source->kind==UnitKind::Paul) {
+                    auto* p=static_cast<PaulUnit*>(source);p->manual_remaining_=0;p->sequence_gate_=true;
+                    p->gate_deadline_=UINT64_MAX;
+                }
                 arp->voice_started_=true;
                 // Only downstream gate processors (e.g. VCA), never REC/commands.
                 for(int t=target+1;t<UNITS_PER_CHAIN;++t){

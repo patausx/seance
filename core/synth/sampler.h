@@ -52,6 +52,9 @@ struct Sample {
         return value < CUT_SPEED_MIN || value > CUT_SPEED_MAX ? CUT_SPEED_ONE : value;
     }
     void reset_cut_speeds() { for (auto& speed : slice_speed_q8) speed = CUT_SPEED_ONE; }
+    // Independent musical pitch, in signed semitones, stable cut-id; never q8 tempo.
+    int8_t slice_pitch_semitones[MAX_CHOPS] = {};
+    void reset_cut_pitches() { for (auto& pitch : slice_pitch_semitones) pitch = 0; }
     // Explicit exact-editor/export decode policy; source-wide and persisted in
     // optional SNC7 SEXT. False retains historical native endpoint behavior.
     bool exact_native_endpoint = false;
