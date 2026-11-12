@@ -11,6 +11,8 @@ void editor_touch_release();
 void editor_cancel_input();
 void editor_draw();
 void editor_ui_tick();
+// Existing main audio guard held; acknowledges only the actual addressed request.
+void pent_focus_chain_trigger_requested(int chain);
 // Freeze passive button feedback before GPU submission; hidden/modal views cancel it.
 void editor_capture_button_motion(bool visible);
 }

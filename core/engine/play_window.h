@@ -4,6 +4,7 @@
 #pragma once
 #include "../synth/sampler.h"
 #include "play_edit.h"
+#include "musical_scale.h"
 #include "../ui/play_part_pitch.h"
 
 namespace seance {
@@ -32,8 +33,9 @@ struct PlayWindow {
 };
 
 namespace play_window_detail {
-inline int32_t quantize_speed(int32_t v) {
-    if (v == 0) return 0;
+inline int32_t quantize_speed(int32_t v, MusicalScale scale = {}) {
+    const bool in_scale = musical_scale::active(scale);
+    if (v == 0 && !in_scale) return 0;
     const bool neg = v < 0;
     uint32_t mag = (uint32_t)(neg ? -v : v);
     uint32_t inc = mag * 8u;
@@ -45,8 +47,11 @@ inline int32_t quantize_speed(int32_t v) {
         92682, 98199, 104032, 110218, 116773, 123715
     };
     uint32_t best = 1024;
-    uint32_t best_diff = inc > best ? inc - best : best - inc;
+    uint32_t best_diff = in_scale ? UINT32_MAX : (inc > best ? inc - best : best - inc);
     for (int semi = -72; semi <= 24; ++semi) {
+        // Compatibility varispeed is relative to a user-prepared c4 source.
+        // Only the existing qnt switch opts in; direction/part/ARP stay separate.
+        if (in_scale && !musical_scale::contains(scale, 60 + semi)) continue;
         int oct = semi / 12;
         int rem = semi % 12;
         if (rem < 0) { rem += 12; --oct; }
@@ -72,13 +77,13 @@ inline PlayWindow play_window(uint32_t frames, const uint32_t* chops,
                               uint16_t reverse_mask, trackr::fx::q15 speed,
                               trackr::fx::q15 start, trackr::fx::q15 length,
                               trackr::fx::q15 slice_value, bool pitch_quantize,
-                              bool modern = false) {
+                              bool modern = false, MusicalScale scale = {}) {
     PlayWindow out;
     int32_t v = speed;
     bool rev = v < 0;
     if (rev) v = -v;
     out.increment = pitch_quantize
-        ? play_window_detail::quantize_speed(rev ? -v : v) : v * 8;
+        ? play_window_detail::quantize_speed(rev ? -v : v, scale) : v * 8;
     if (out.increment < 0 ? -out.increment < 1024 : out.increment < 1024)
         out.increment = rev ? -1024 : 1024;
     // Preserve legacy ordering: unquantized -1..-127 ends up +1024. Do not turn
@@ -128,9 +133,9 @@ inline PlayWindow play_window(uint32_t frames, const uint32_t* chops,
 inline PlayWindow play_window(const trackr::synth::Sample& sample,
                               trackr::fx::q15 speed, trackr::fx::q15 start,
                               trackr::fx::q15 length, trackr::fx::q15 slice,
-                              bool pitch_quantize, bool modern = false) {
+                              bool pitch_quantize, bool modern = false, MusicalScale scale = {}) {
     auto out = play_window(sample.playable_frames(), sample.chops, sample.slice_reverse_mask,
-                       speed, start, length, slice, pitch_quantize, modern);
+                       speed, start, length, slice, pitch_quantize, modern, scale);
     if (modern && out.slice) out.increment = (int32_t)((int64_t)out.increment *
         trackr::synth::Sample::cut_speed(sample.slice_speed_q8[out.slice - 1]) / 256);
     if (modern && out.slice) out.increment = (int32_t)((int64_t)out.increment *
@@ -145,15 +150,15 @@ inline PlayWindow play_edit_window(uint32_t frames, const uint32_t* chops,
                                    uint16_t reverse_mask, trackr::fx::q15 speed,
                                    trackr::fx::q15 start, trackr::fx::q15 length,
                                    trackr::fx::q15 slice, bool pitch_quantize,
-                                   bool modern, const PlayEditState& edit) {
+                                   bool modern, const PlayEditState& edit, MusicalScale scale = {}) {
     if (!edit.enabled) return play_window(frames, chops, reverse_mask, speed,
-        start, length, slice, pitch_quantize, modern);
+        start, length, slice, pitch_quantize, modern, scale);
     PlayWindow out;
     out.edited = true;
     if (!modern || !play_edit_valid(edit) || frames != edit.source_frames) return out;
     // Resolve slice identity/reverse against the entire source, then intersect
     // exact trim. Never substitute an absent or excluded slice with the WAV.
-    out = play_window(frames, chops, reverse_mask, speed, 0, 32767, slice, pitch_quantize, true);
+    out = play_window(frames, chops, reverse_mask, speed, 0, 32767, slice, pitch_quantize, true, scale);
     out.edited = true;
     if (!out.valid) return out;
     uint32_t a, b;
@@ -187,9 +192,9 @@ inline PlayWindow play_edit_window(const trackr::synth::Sample& sample,
                                    trackr::fx::q15 speed, trackr::fx::q15 start,
                                    trackr::fx::q15 length, trackr::fx::q15 slice,
                                    bool pitch_quantize, bool modern,
-                                   const PlayEditState& edit) {
+                                   const PlayEditState& edit, MusicalScale scale = {}) {
     auto out = play_edit_window(sample.playable_frames(), sample.chops,
-        sample.slice_reverse_mask, speed, start, length, slice, pitch_quantize, modern, edit);
+        sample.slice_reverse_mask, speed, start, length, slice, pitch_quantize, modern, edit, scale);
     if (modern && out.slice) out.increment = (int32_t)((int64_t)out.increment *
         trackr::synth::Sample::cut_speed(sample.slice_speed_q8[out.slice - 1]) / 256);
     if (modern && out.slice) out.increment = (int32_t)((int64_t)out.increment *

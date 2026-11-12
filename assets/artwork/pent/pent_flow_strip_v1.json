@@ -1,0 +1,47 @@
+{
+  "atlas_rect": [
+    0,
+    192,
+    256,
+    16
+  ],
+  "gpu_allocation_bytes": 0,
+  "gpu_total_bytes": 524288,
+  "header_sha256": "57a8c4c747d0e87aa50ad6988d8505b7f869a9b61b8605f93b540798747f4b2e",
+  "palette_rgb": [
+    [
+      187,
+      28,
+      49
+    ],
+    [
+      213,
+      40,
+      58
+    ],
+    [
+      237,
+      67,
+      85
+    ],
+    [
+      248,
+      144,
+      150
+    ]
+  ],
+  "period": [
+    128,
+    16
+  ],
+  "png_sha256": "9234c0fa8c7b6b9c5510cdf624e6e40bcc72afd433e82fea281ccae57c777a86",
+  "rgba_bytes": 16384,
+  "rgba_sha256": "cd31ca2e9679e6d0eec40fa777527cf7c315b31589b248e06efffcf88a0d5bd2",
+  "runtime": "scroll UV only, full five edges and shared vertex UVs; no recurring uploads",
+  "scope": "local PENT implementation strip; not user/device approval",
+  "seam": "all x127/x0 RGBA rows equal; two exact periods; center film nonempty everywhere",
+  "texture_strip": [
+    256,
+    16
+  ]
+}

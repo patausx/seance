@@ -32,7 +32,7 @@ uint32_t Engine::begin_scratch_gesture_impl(int chain,int slot,bool absolute,q15
     // Absolute initialization snaps BOTH axes before the voice is armed; other
     // parameters also snap on a fresh voice. Modulation follows control sources.
     for(int p=0;p<unit->num_params;++p)if(!unit->voice_ || (absolute && (p==ax || p==ay))) {
-        unit->params[p].slew_ready=false;unit->resolve_param(p,modulation_value(unit->params[p].src));
+        unit->params[p].slew_ready=false;unit->resolve_param(p,parameter_modulation_value(unit,p));
     }
     unit->touch_begin(scratch_token_);
     if(unit->touch_token_!=scratch_token_) {
@@ -62,8 +62,8 @@ bool Engine::set_scratch_gesture(uint32_t token,q15 x,q15 y) {
     auto& g=scratch_gesture_;Param& px=g.unit->params[int(g.x)];Param& py=g.unit->params[int(g.y)];
     // One guard-owned publication, shared modulation resolves AFTER both axes.
     px.temp=std::max<q15>(px.bipolar?-32767:0,x);py.temp=std::max<q15>(py.bipolar?-32767:0,y);
-    g.unit->resolve_param(g.x,modulation_value(px.src));
-    g.unit->resolve_param(g.y,modulation_value(py.src));g.unit->control_tick();
+    g.unit->resolve_param(g.x,parameter_modulation_value(g.unit,g.x));
+    g.unit->resolve_param(g.y,parameter_modulation_value(g.unit,g.y));g.unit->control_tick();
     return true;
 }
 void Engine::end_scratch_gesture(uint32_t token) {
@@ -106,7 +106,7 @@ bool Engine::set_scratch_latch(int chain,int slot,bool enabled) {
     const q15 vx=u->params[x].control_source(),vy=u->params[y].control_source();
     u->engine_=this;u->chain_=int8_t(chain);u->slot_=int8_t(slot);u->synchronize();
     if(!u->voice_) {
-        for(int p=0;p<u->num_params;++p){u->params[p].slew_ready=false;u->resolve_param(p,modulation_value(u->params[p].src));}
+        for(int p=0;p<u->num_params;++p){u->params[p].slew_ready=false;u->resolve_param(p,parameter_modulation_value(u,p));}
         if(!u->begin_voice())return false;
     }
     u->latch_x_=vx;u->latch_y_=vy;u->latch_=true;

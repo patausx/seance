@@ -47,7 +47,8 @@ inline void letter(int x, int baseline, const Glyph& g, uint32_t color) {
 }
 // Prefer 28ppem; long parameter names use a separately baked 22ppem face.
 // Unusual future labels truncate with a real ellipsis, never escape the column.
-inline int draw(int x, int baseline, const char* text, int max_width, uint32_t color) {
+template<class Letter>
+inline int draw_with(int x, int baseline, const char* text, int max_width, uint32_t color,Letter emit) {
     const bool small = width(text) > max_width;
     const bool clipped = width(text, small) > max_width;
     const int dots = clipped ? width("...", small) : 0;
@@ -55,12 +56,13 @@ inline int draw(int x, int baseline, const char* text, int max_width, uint32_t c
     for(; *text; ++text) {
         const int step = advance(*text, small);
         if(x + step + dots > limit) break;
-        if(*text != ' ') letter(x, baseline, glyph(*text, small), color);
+        if(*text != ' ') emit(x, baseline, glyph(*text, small), color);
         x += step;
     }
     if(clipped) for(int i = 0; i < 3 && x + advance('.', small) <= limit; ++i) {
-        letter(x, baseline, glyph('.', small), color); x += advance('.', small);
+        emit(x, baseline, glyph('.', small), color); x += advance('.', small);
     }
     return x;
 }
+inline int draw(int x,int baseline,const char* text,int max_width,uint32_t color){return draw_with(x,baseline,text,max_width,color,letter);}
 } // namespace seance::platform::ui3ds::sigilbay_type

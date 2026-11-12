@@ -1,3 +1,9 @@
+// SNCL21 admits RULE33 actual/retained scene kinds, RULEv1 per actual card.
+// RULE faults are refused in a full read-only preflight before ANY factory.
+// No-RULE save version and all former chunks retain their exact bytes.
+// SNCK20 admits PENT32 actual/retained scene kinds. PENTv1 contains only
+// {chain,slot,width}; required for every real card, never empty for scene-only.
+// CORE.extra/UNIT.flags stay zero; all twelve unipolar bases use CORE/USIG.
 // SNCI version18 is required only for clean authored GRAN reading nondefaults.
 // GRNX v1: u8 version1/count1..24, then {chain,slot,reading,reverse_percent}.
 // UNIT bit4 exactly matches sparse records. Runtime mixed phase is never stored.
@@ -14,7 +20,8 @@
 // SNCG version16 marks seven-family INST/modal; pre16 INST is rejected, not migrated.
 // SNCE version14 marks reciprocal TILT; Clear6 and both Legacy5 laws keep old flags.
 // SNCF version15 marks extended VCA; old readers must reject new launch/timing modes.
-// patch_io.cpp - transactional SNC7/8/9/A/B/C/D chunks + SNC1-SNC6 migration.
+// Relic31 is reserved but retired: actual/scene/typed data refuses transactionally.
+// patch_io.cpp - transactional SNC7..20 chunks + SNC1-SNC6 migration.
 // SNCD version13 marks extended FOLD; older readers reject instead of losing sound.
 // SNCC version12 marks extended RING; older readers reject instead of losing sound.
 // SNCB version11 marks extended STRAIN; older readers reject it transactionally.
@@ -36,11 +43,15 @@
 // Optional MRND v1: u8 version/count, then count {u8 chain,slot,source}.
 // Only assigned A-H routes; max24, unique occupied slots. No RNG/edge/undo state.
 // Absent means None; malformed/duplicate chunks or entries reject transactionally.
+// Optional SCAL v1: {u8 version=1,tonic0..11,mode0..9}, exactly3 bytes.
+// Omit only tonic0/Chromatic; absent restores that default. No format bump,
+// UNIT runtime scale or stored-note rewrites. Invalid/duplicate refuses preflight.
 #include "patch_io.h"
 #include "engine.h"
 #include "units.h"
 #include "tilt_edit.h"
 #include "../synth/wav_loader.h"
+#include "../io/file_publication.h"
 #include <cstdio>
 #include <cstring>
 #include <utility>
@@ -62,6 +73,9 @@ static constexpr char MAGIC15[4] = { 'S', 'N', 'C', 'F' };
 static constexpr char MAGIC16[4] = { 'S', 'N', 'C', 'G' };
 static constexpr char MAGIC17[4] = { 'S', 'N', 'C', 'H' };
 static constexpr char MAGIC18[4] = { 'S', 'N', 'C', 'I' };
+static constexpr char MAGIC20[4] = { 'S', 'N', 'C', 'K' };
+static constexpr char MAGIC21[4] = { 'S', 'N', 'C', 'L' };
+static constexpr char MAGIC22[4] = { 'S', 'N', 'C', 'M' };
 static constexpr int LEGACY_PARAM_COUNT = 6;
 static constexpr int LEGACY_SIGIL_COUNT = 4;
 static constexpr uint32_t UNIVERSAL_SIGIL_BYTES = 5 + 8 * 274 + NUM_CHAINS * UNITS_PER_CHAIN * 2;
@@ -81,7 +95,7 @@ static uint8_t unit_extra(const Unit* u);
 static uint8_t unit_flags(const Unit* u);
 
 struct PatchDocument::Impl {
-    struct ParamData { int16_t base = 0; uint8_t src = 0; int16_t depth = 0; bool enabled = true; };
+    struct ParamData { int16_t base = 0; uint8_t src = 0; int16_t depth = 0; bool enabled = true; uint32_t relic_source=0;uint8_t relic_port=0; };
     struct UnitData {
         uint8_t kind = (uint8_t)UnitKind::Empty;
         uint8_t bypass = 0;
@@ -94,6 +108,9 @@ struct PatchDocument::Impl {
         uint8_t scratch_mode = 1, scratch_map = 2;
         int8_t scratch_axis_x = -1, scratch_axis_y = -1;
         uint8_t paul_mode = 0, paul_direction = 0;
+        uint8_t pent_width = 0;
+        RuleUnit::Config rule_config;
+        RotUnit::Config rot_config;
         bool gran_perform = false;
         uint8_t gran_mode = 0, gran_window = 0, gran_count = 4;
         uint8_t gran_reading = 0, gran_reverse_percent = 50;
@@ -127,6 +144,7 @@ struct PatchDocument::Impl {
     ChainData chains[NUM_CHAINS];
     SigilData sigils[NUM_SIGILS];
     uint16_t bpm = 120;
+    MusicalScale scale{};
     ClockMod clock_mods[2];
     uint8_t env_chain = 0;
     uint8_t env_response = (uint8_t)EnvResponse::Fast;
@@ -166,7 +184,7 @@ static bool authored_play_params(const Engine& eng, int chain, int slot, const P
     if (!play.modern()) return false;
     for (int p = first; p < end; ++p) {
         const auto& v = play.params[p];
-        if (v.base != default_base || v.src != ModSource::None || v.mod_depth) return true;
+        if (v.base != default_base || v.src != ModSource::None || v.mod_depth || v.relic_source) return true;
         for (const auto& scene : eng.scenes[chain])
             if (scene.kind[slot] == UnitKind::SamplePlayer && scene.base[slot][p]) return true;
     }
@@ -190,7 +208,7 @@ static bool authored_reverb_utilities(const Engine& eng, int chain, int slot, co
     if (!rev.modern()) return false;
     for (int p = ReverbUnit::P_PREDELAY; p < ReverbUnit::P_COUNT; ++p) {
         const auto& value = rev.params[p];
-        if (value.base || value.src != ModSource::None || value.mod_depth || !value.mod_enabled) return true;
+        if (value.base || value.src != ModSource::None || value.mod_depth || !value.mod_enabled || value.relic_source) return true;
         for (const auto& scene : eng.scenes[chain])
             if (scene.kind[slot] == UnitKind::Reverb && scene.base[slot][p]) return true;
     }
@@ -225,10 +243,42 @@ static bool scratch_axes_valid(uint8_t mode, uint8_t map, int x, int y) {
         ScratchUnit::axis_parameter_available(ScratchUnit::Mode(mode), resolved_y) && resolved_x != resolved_y;
 }
 
+static bool rot_bases_valid(const Engine& eng) {
+    for(const auto& chain:eng.chains)for(const Unit* u:chain.units)if(u && u->kind==UnitKind::Rot) {
+        const auto& r=*static_cast<const RotUnit*>(u);
+        if(!RotUnit::valid_config(r.config()) || r.sample_slot<0 || r.sample_slot>=64)return false;
+        for(int p=0;p<12;++p)if(r.params[p].base<(p==RotUnit::P_PITCH?-32767:0))return false;
+    }
+    for(const auto& chain:eng.scenes)for(const auto& sc:chain)for(int s=0;s<UNITS_PER_CHAIN;++s)if(sc.kind[s]==UnitKind::Rot)
+        for(int p=0;p<12;++p)if(sc.base[s][p]<(p==RotUnit::P_PITCH?-32767:0))return false;
+    return true;
+}
+static bool rule_bases_valid(const Engine& eng) {
+    for(const auto& chain:eng.chains)for(const Unit* u:chain.units)if(u && u->kind==UnitKind::Rule) {
+        const auto& r=*static_cast<const RuleUnit*>(u);
+        if(!RuleUnit::valid_config(r.config()) || r.sample_slot<0 || r.sample_slot>=64)return false;
+        for(int p=0;p<12;++p)if(r.params[p].base<(p==RuleUnit::P_ROOT?-32767:0))return false;
+    }
+    for(const auto& chain:eng.scenes)for(const auto& sc:chain)for(int s=0;s<UNITS_PER_CHAIN;++s)if(sc.kind[s]==UnitKind::Rule)
+        for(int p=0;p<12;++p)if(sc.base[s][p]<(p==RuleUnit::P_ROOT?-32767:0))return false;
+    return true;
+}
+static bool pent_bases_valid(const Engine& eng) {
+    for (const auto& chain : eng.chains) for (const Unit* unit : chain.units)
+        if (unit && unit->kind == UnitKind::Pent)
+            for (const auto& param : unit->params) if (param.base < 0) return false;
+    for (const auto& chain : eng.scenes) for (const auto& scene : chain)
+        for (int slot = 0; slot < UNITS_PER_CHAIN; ++slot) if (scene.kind[slot] == UnitKind::Pent)
+            for (q15 base : scene.base[slot]) if (base < 0) return false;
+    return true;
+}
+
 bool capture(const Engine& eng, PatchDocument& out, const WorkspaceLayout* workspace) {
     using Impl = PatchDocument::Impl;
-    if (!out.impl_ || eng.recording_active_or_pending()) return false;
+    if (!out.impl_ || eng.recording_active_or_pending() || !eng.relic_storage_valid() || !pent_bases_valid(eng) || !rule_bases_valid(eng) || !rot_bases_valid(eng)) return false;
     Impl& document = *out.impl_;
+    if (!musical_scale::valid(eng.project_scale())) return false;
+    document.scale = eng.project_scale();
     if (workspace && !workspace_layout_valid(*workspace)) return false;
     if (workspace) document.workspace = *workspace;
     else workspace_layout_defaults(document.workspace);
@@ -305,6 +355,12 @@ bool capture(const Engine& eng, PatchDocument& out, const WorkspaceLayout* works
                         target.scratch_axis_x, target.scratch_axis_y) ||
                     scratch->sample_slot < 0 || scratch->sample_slot >= SampleManifest::SLOT_COUNT) return false;
             }
+            if(unit && unit->kind==UnitKind::Rule)target.rule_config=static_cast<const RuleUnit*>(unit)->config();
+            if(unit && unit->kind==UnitKind::Rot)target.rot_config=static_cast<const RotUnit*>(unit)->config();
+            if (unit && unit->kind == UnitKind::Pent) {
+                target.pent_width = uint8_t(static_cast<const PentUnit*>(unit)->width);
+                if (target.pent_width > 1 || target.extra || target.flags) return false;
+            }
             if (unit && unit->kind == UnitKind::Paul) {
                 const auto* paul = static_cast<const PaulUnit*>(unit);
                 target.paul_mode = uint8_t(paul->mode);
@@ -322,6 +378,8 @@ bool capture(const Engine& eng, PatchDocument& out, const WorkspaceLayout* works
                 target.params[param].src = (uint8_t)unit->params[param].src;
                 target.params[param].depth = unit->params[param].mod_depth;
                 target.params[param].enabled = unit->params[param].mod_enabled;
+                target.params[param].relic_source=unit->params[param].relic_source;
+                target.params[param].relic_port=unit->params[param].relic_port;
             }
             if (unit && unit->kind == UnitKind::Stranular) {
                 const auto* stranular = static_cast<const StranularUnit*>(unit);
@@ -460,6 +518,8 @@ static uint8_t unit_extra(const Unit* u) {
         case UnitKind::Grain: return (uint8_t)static_cast<const GrainUnit*>(u)->sample_slot;
         case UnitKind::Scratch: return (uint8_t)static_cast<const ScratchUnit*>(u)->sample_slot;
         case UnitKind::Paul: return (uint8_t)static_cast<const PaulUnit*>(u)->sample_slot;
+        case UnitKind::Rule: return (uint8_t)static_cast<const RuleUnit*>(u)->sample_slot;
+        case UnitKind::Rot: return (uint8_t)static_cast<const RotUnit*>(u)->sample_slot;
         case UnitKind::Recorder: return (uint8_t)static_cast<const RecUnit*>(u)->sample_slot;
         case UnitKind::Osc: {
             const auto* osc = static_cast<const OscUnit*>(u);
@@ -477,6 +537,8 @@ static void apply_extra(Unit* u, uint8_t x) {
         case UnitKind::Grain: static_cast<GrainUnit*>(u)->sample_slot = x % trackr::synth::SAMPLE_BANK_SIZE; break;
         case UnitKind::Scratch: static_cast<ScratchUnit*>(u)->sample_slot = x; break;
         case UnitKind::Paul: static_cast<PaulUnit*>(u)->sample_slot = x; break;
+        case UnitKind::Rule: static_cast<RuleUnit*>(u)->sample_slot = x; break;
+        case UnitKind::Rot: static_cast<RotUnit*>(u)->sample_slot = x; break;
         case UnitKind::Recorder: static_cast<RecUnit*>(u)->sample_slot = x % trackr::synth::SAMPLE_BANK_SIZE; break;
         case UnitKind::Osc: if (x < (uint8_t)OscUnit::Wave::Count) static_cast<OscUnit*>(u)->wave = (OscUnit::Wave)x; break;
         case UnitKind::Filter: if (x <= (uint8_t)trackr::dsp::FilterType::Off) static_cast<FilterUnit*>(u)->type = (trackr::dsp::FilterType)x; break;
@@ -568,6 +630,7 @@ static void apply_unit_flags(Unit* u, uint8_t flags) {
 }
 // Loading is deliberately legacy-first, even for SNC1-3 without UNIT flags.
 static Unit* make_loaded_unit(UnitKind kind) {
+    if (!unit_kind_available(kind)) return nullptr;
     // Never allocate a modern 256kb ring just to load an old 64kb delay.
     if (kind == UnitKind::Delay) {
         Unit* unit = new(std::nothrow) DelayUnit(false);
@@ -1082,7 +1145,8 @@ static void canonicalize_reverb(Engine& target, int chain, int slot, bool author
 struct ChunkWriter {
     FILE* f; long size_pos; long payload_pos; bool ok;
     ChunkWriter(FILE* file, const char id[4]) : f(file), size_pos(0), payload_pos(0), ok(true) {
-        ok = wbytes(f, id, 4); size_pos = ftell(f); ok = ok && wu32(f, 0); payload_pos = ftell(f);
+        ok = wbytes(f, id, 4); size_pos = ftell(f); ok = ok && size_pos >= 0 && wu32(f, 0);
+        payload_pos = ftell(f); ok = ok && payload_pos >= 0;
     }
     bool finish() {
         long end = ftell(f); if (!ok || end < payload_pos || (uint64_t)(end - payload_pos) > 0xffffffffu) return false;
@@ -1133,10 +1197,9 @@ static bool write_microtiming_data(FILE* f, const Pattern& pattern) {
     return true;
 }
 
-bool save(const PatchDocument& captured, const char* path) {
-    if (!path || !captured.impl_) return false;
-    const PatchDocument::Impl& document = *captured.impl_;
-    uint8_t gran_reading_count = 0;
+static bool document_admitted(const PatchDocument::Impl& document, uint8_t& gran_reading_count) {
+    if (!musical_scale::valid(document.scale)) return false;
+    gran_reading_count = 0;
     for (const auto& chain : document.chains) for (const auto& unit : chain.units) {
         if (unit.kind != uint8_t(UnitKind::Grain)) continue;
         const bool authored = unit.gran_reading || unit.gran_reverse_percent != 50;
@@ -1144,11 +1207,19 @@ bool save(const PatchDocument& captured, const char* path) {
             (authored && !(unit.flags & 8u)) || bool(unit.flags & 16u) != authored) return false;
         gran_reading_count += authored;
     }
-    char tmp[256]; size_t n = std::strlen(path); if (n + 4 >= sizeof tmp) return false;
-    std::memcpy(tmp, path, n); std::memcpy(tmp + n, ".tmp", 5);
-    FILE* f = fopen(tmp, "wb"); if (!f) return false;
-    bool has_paul=false, has_scratch=false, has_inst=false, extended_motor=false, extended_noise=false, extended_bit=false, extended_strain=false, extended_ring=false, extended_fold=false, extended_tilt=false, extended_vca=false;
+    return true;
+}
+
+bool write_document(const PatchDocument& captured, FILE* f) {
+    if (!f || !captured.impl_ || std::ftell(f) != 0) return false;
+    const PatchDocument::Impl& document = *captured.impl_;
+    uint8_t gran_reading_count = 0;
+    if (!document_admitted(document,gran_reading_count)) return false;
+    bool has_rot=false, has_rule=false, has_pent=false, has_paul=false, has_scratch=false, has_inst=false, extended_motor=false, extended_noise=false, extended_bit=false, extended_strain=false, extended_ring=false, extended_fold=false, extended_tilt=false, extended_vca=false;
     for(const auto& chain:document.chains)for(const auto& unit:chain.units) {
+        has_rule |= unit.kind==uint8_t(UnitKind::Rule);
+        has_rot |= unit.kind==uint8_t(UnitKind::Rot);
+        has_pent |= unit.kind==uint8_t(UnitKind::Pent);
         has_paul |= unit.kind==uint8_t(UnitKind::Paul);
         has_scratch |= unit.kind==uint8_t(UnitKind::Scratch);
         has_inst |= unit.kind==uint8_t(UnitKind::Inst);
@@ -1163,9 +1234,14 @@ bool save(const PatchDocument& captured, const char* path) {
     }
     // A scene-only PAUL kind must not be written into a pre17 container either.
     for (const auto& chain : document.scenes) for (const auto& scene : chain)
-        for (UnitKind kind : scene.kind) has_paul |= kind == UnitKind::Paul;
-    const uint8_t version=gran_reading_count ? 18 : has_paul ? 17 : (has_scratch || has_inst) ? 16 : extended_vca ? 15 : extended_tilt ? 14 : extended_fold ? 13 : extended_ring ? 12 : extended_strain ? 11 : extended_bit ? 10 : extended_noise ? 9 : extended_motor ? 8 : VERSION7;
-    bool ok = wbytes(f, gran_reading_count ? MAGIC18 : has_paul ? MAGIC17 : (has_scratch || has_inst) ? MAGIC16 : extended_vca ? MAGIC15 : extended_tilt ? MAGIC14 : extended_fold ? MAGIC13 : extended_ring ? MAGIC12 : extended_strain ? MAGIC11 : extended_bit ? MAGIC10 : extended_noise ? MAGIC9 : extended_motor ? MAGIC8 : MAGIC7, 4) && w8(f, version);
+        for (UnitKind kind : scene.kind) {
+            has_rule |= kind == UnitKind::Rule;
+            has_rot |= kind == UnitKind::Rot;
+            has_paul |= kind == UnitKind::Paul;
+            has_pent |= kind == UnitKind::Pent; // invalid scene retains authored kind too
+        }
+    const uint8_t version=has_rot ? 22 : has_rule ? 21 : has_pent ? 20 : gran_reading_count ? 18 : has_paul ? 17 : (has_scratch || has_inst) ? 16 : extended_vca ? 15 : extended_tilt ? 14 : extended_fold ? 13 : extended_ring ? 12 : extended_strain ? 11 : extended_bit ? 10 : extended_noise ? 9 : extended_motor ? 8 : VERSION7;
+    bool ok = wbytes(f, has_rot ? MAGIC22 : has_rule ? MAGIC21 : has_pent ? MAGIC20 : gran_reading_count ? MAGIC18 : has_paul ? MAGIC17 : (has_scratch || has_inst) ? MAGIC16 : extended_vca ? MAGIC15 : extended_tilt ? MAGIC14 : extended_fold ? MAGIC13 : extended_ring ? MAGIC12 : extended_strain ? MAGIC11 : extended_bit ? MAGIC10 : extended_noise ? MAGIC9 : extended_motor ? MAGIC8 : MAGIC7, 4) && w8(f, version);
 
     if (ok) {
         ChunkWriter c(f, "CORE");
@@ -1221,6 +1297,51 @@ bool save(const PatchDocument& captured, const char* path) {
         ChunkWriter c(f, "UNIT");
         for (int ch = 0; ch < NUM_CHAINS; ++ch) for (int s = 0; s < UNITS_PER_CHAIN; ++s) c.ok = c.ok && w8(f, document.chains[ch].units[s].flags);
         ok = c.finish();
+    }
+    if(ok && has_rot) {
+        uint8_t count=0,law=0;for(const auto& c:document.chains)for(const auto& u:c.units)if(u.kind==uint8_t(UnitKind::Rot)){++count;law|=u.rot_config.law;}
+        // ROTSv1 (9-byte entries, bytes as before the law field) while every entry is law 0;
+        // any other law writes ROTSv2: every entry gains a trailing u8 law (10 bytes).
+        const bool wide=law!=0;
+        if(count) {
+            ChunkWriter c(f,"ROTS");c.ok=w8(f,wide?2:1)&&w8(f,count);
+            for(int ch=0;ch<NUM_CHAINS;++ch)for(int s=0;s<UNITS_PER_CHAIN;++s) {
+                const auto& u=document.chains[ch].units[s];if(u.kind!=uint8_t(UnitKind::Rot))continue;
+                const auto& cfg=u.rot_config;
+                c.ok=c.ok && RotUnit::valid_config(cfg) && u.extra<64 && !u.flags && w8(f,ch)&&w8(f,s)&&
+                    wu32(f,cfg.seed)&&wu16(f,cfg.passes)&&w8(f,uint8_t(cfg.mode))&&(!wide || w8(f,cfg.law));
+            }
+            ok=c.finish();
+        }
+    }
+    if(ok && has_rule) {
+        uint8_t count=0;for(const auto& c:document.chains)for(const auto& u:c.units)count+=u.kind==uint8_t(UnitKind::Rule);
+        if(count) {
+            ChunkWriter c(f,"RULE");c.ok=w8(f,1)&&w8(f,count);
+            for(int ch=0;ch<NUM_CHAINS;++ch)for(int s=0;s<UNITS_PER_CHAIN;++s) {
+                const auto& u=document.chains[ch].units[s];if(u.kind!=uint8_t(UnitKind::Rule))continue;
+                const auto& cfg=u.rule_config;
+                c.ok=c.ok && RuleUnit::valid_config(cfg) && u.extra<64 && !u.flags && w8(f,ch)&&w8(f,s)&&
+                    wu32(f,cfg.seed)&&wu16(f,cfg.seed_row)&&w8(f,cfg.phrase)&&w8(f,cfg.source_root);
+            }
+            ok=c.finish();
+        }
+    }
+    if (ok && has_pent) {
+        uint8_t count = 0;
+        for (const auto& chain : document.chains) for (const auto& unit : chain.units)
+            count += unit.kind == uint8_t(UnitKind::Pent);
+        if (count) {
+            ChunkWriter c(f, "PENT");
+            c.ok = w8(f, 1) && w8(f, count);
+            for (int ch = 0; ch < NUM_CHAINS && c.ok; ++ch) for (int s = 0; s < UNITS_PER_CHAIN && c.ok; ++s) {
+                const auto& unit = document.chains[ch].units[s];
+                if (unit.kind != uint8_t(UnitKind::Pent)) continue;
+                c.ok = unit.pent_width <= 1 && !unit.extra && !unit.flags &&
+                    w8(f, ch) && w8(f, s) && w8(f, unit.pent_width);
+            }
+            ok = c.finish();
+        }
     }
     if (ok && has_paul) {
         uint8_t count = 0;
@@ -1607,9 +1728,37 @@ bool save(const PatchDocument& captured, const char* path) {
         ok = c.finish();
     }
 
-    ok = ok && !ferror(f) && fflush(f) == 0; if (fclose(f) != 0) ok = false;
-    if (!ok) { remove(tmp); return false; }
-    if (rename(tmp, path) != 0) { remove(tmp); return false; }
+    // Append without moving/changing any former chunk, including default saves.
+    if (ok && !musical_scale::equal(document.scale, MusicalScale{})) {
+        ChunkWriter c(f, "SCAL");
+        c.ok = c.ok && w8(f, 1) && w8(f, document.scale.tonic) && w8(f, uint8_t(document.scale.mode));
+        ok = c.finish();
+    }
+    return ok && !std::ferror(f);
+}
+
+bool save(const PatchDocument& captured, const char* path) {
+    return save(captured, path, nullptr);
+}
+
+bool save(const PatchDocument& captured, const char* path, SaveFailure* failure) {
+    SaveFailure ignored = SaveFailure::None;
+    SaveFailure& why = failure ? *failure : ignored;
+    why = SaveFailure::None;
+    uint8_t gran_reading_count = 0;
+    if (!path || !captured.impl_ || !document_admitted(*captured.impl_,gran_reading_count)) {
+        why = SaveFailure::Invalid; return false;
+    }
+    char previous[256];
+    const int n = std::snprintf(previous, sizeof previous, "%s.bak", path);
+    if (n < 0 || size_t(n) >= sizeof previous) { why = SaveFailure::Invalid; return false; }
+    fileio::OwnedFile temporary;
+    if (!fileio::create_temporary(temporary, path)) { why = SaveFailure::Create; return false; }
+    const bool ok = write_document(captured, temporary.stream());
+    const bool closed = temporary.close(ok);
+    if (!ok || !closed) { why = SaveFailure::Write; return false; }
+    // Never rename onto an existing name: the previous version becomes .bak.
+    if (!temporary.publish_replacing(path, previous)) { why = SaveFailure::Publish; return false; }
     return true;
 }
 
@@ -1630,13 +1779,17 @@ static bool read_core(FILE* f, Engine& target, int param_count,
         for (int s = 0; s < UNITS_PER_CHAIN && ok; ++s) {
             uint8_t kind, bypass, extra; ok = r8(f, kind) && r8(f, bypass) && r8(f, extra);
             // Validate before construction, not behind the required-chunks gate.
+            if(ok && kind==uint8_t(UnitKind::Rule) && (format<21 || extra>=64))return false;
+            if(ok && kind==uint8_t(UnitKind::Rot) && (format<22 || extra>=64))return false;
+            if (ok && kind == uint8_t(UnitKind::Pent) && (format < 20 || extra)) return false;
             if (ok && kind == uint8_t(UnitKind::Paul) && format < 17) return false;
+            if(ok && kind==uint8_t(UnitKind::Relic))return false;
             if (ok) raw_extra[c][s] = extra;
             Unit* u = ok && kind < (uint8_t)UnitKind::Count ? make_loaded_unit((UnitKind)kind) : nullptr;
             if (ok && kind != (uint8_t)UnitKind::Empty && !u) ok = false;
             if (u) { u->bypass = bypass != 0; apply_extra(u, extra); }
-            for (int p = 0; p < param_count && ok; ++p) { int16_t base, depth; uint8_t src; ok = r16(f, base) && r8(f, src) && r16(f, depth) && src < (uint8_t)ModSource::Count; if (ok) apply_param(u, p, base, src, depth); }
-            if (!ok) { delete u; break; } delete target.replace_unit(c, s, u);
+            for (int p = 0; p < param_count && ok; ++p) { int16_t base, depth; uint8_t src; ok = r16(f, base) && r8(f, src) && r16(f, depth) && src < (uint8_t)ModSource::Count && (kind != uint8_t(UnitKind::Pent) || base >= 0); if (ok) apply_param(u, p, base, src, depth); }
+            if (!ok || !target.can_install_unit(u,target.chains[c].units[s])) { delete u;ok=false;break; } delete target.replace_unit(c, s, u);
         }
     }
     return ok;
@@ -1864,10 +2017,31 @@ static PlayUnit::EditSourceMetadata play_source_metadata(const SampleManifest& m
     return source;
 }
 
+static bool read_scale(FILE* f, uint32_t len, MusicalScale& parsed) {
+    uint8_t version = 0, tonic = 0, mode = 0;
+    if (len != 3 || !r8(f, version) || !r8(f, tonic) || !r8(f, mode) || version != 1) return false;
+    const MusicalScale scale{tonic, ScaleMode(mode)};
+    if (!musical_scale::valid(scale)) return false;
+    parsed = scale;
+    return true;
+}
+
 static bool load_v7(FILE* f, Engine& target, SampleManifest& manifest,
                     WorkspaceLayout& workspace, uint8_t format=7) {
+    bool seen_scale = false;
+    MusicalScale parsed_scale{};
     bool seen_envr = false, seen_clock = false, seen_play_edit = false, seen_sext = false;
     bool seen_ppos = false, seen_pspd = false, seen_spit = false, seen_phld = false, seen_pnot = false;
+    bool seen_relc=false,seen_rlmo=false;
+    bool seen_rot=false;
+    struct RotConfig {bool present=false;RotUnit::Config config;};
+    RotConfig parsed_rot[NUM_CHAINS][UNITS_PER_CHAIN];
+    bool seen_rule=false;
+    struct RuleConfig {bool present=false;RuleUnit::Config config;};
+    RuleConfig parsed_rule[NUM_CHAINS][UNITS_PER_CHAIN];
+    bool seen_pent = false;
+    struct PentConfig { bool present = false; uint8_t width = 0; };
+    PentConfig parsed_pent[NUM_CHAINS][UNITS_PER_CHAIN];
     bool seen_paul = false;
     struct PaulConfig { bool present = false; uint8_t mode = 0, direction = 0; };
     PaulConfig parsed_paul[NUM_CHAINS][UNITS_PER_CHAIN];
@@ -1911,11 +2085,73 @@ static bool load_v7(FILE* f, Engine& target, SampleManifest& manifest,
     uint8_t parsed_unit_flags[NUM_CHAINS][UNITS_PER_CHAIN] = {};
     uint8_t parsed_core_extra[NUM_CHAINS][UNITS_PER_CHAIN] = {};
     if (!parsed_timing) return false;
+    long file_end=0;
+    const long at=ftell(f);
+    if(at<0 || fseek(f,0,SEEK_END)!=0)return false;
+    file_end=ftell(f);
+    if(file_end<at || fseek(f,at,SEEK_SET)!=0)return false;
     while (true) {
-        char id[4]; size_t got = fread(id, 1, 4, f); if (got == 0 && feof(f)) break; if (got != 4) return false;
+        char id[4]; size_t got = fread(id, 1, 4, f);
+        if (got == 0 && feof(f) && !ferror(f)) {
+            if (ftell(f) != file_end) return false; // premature EOF is not a complete container
+            // SEEK_SET may skip beyond a file truncated after the initial size
+            // capture (and stdio may still hold its last header in a buffer).
+            // Recheck physical EOF, not merely the logical seek position.
+            if (fseek(f, 0, SEEK_END) != 0 || ftell(f) != file_end) return false;
+            break;
+        }
+        if (got != 4) return false;
         uint32_t len; if (!ru32(f, len) || len > MAX_CHUNK_SIZE) return false;
         long start = ftell(f); if (start < 0) return false; bool ok = true;
-        if (!std::memcmp(id,"PAUL",4)) {
+        // Every SNC7..19 chunk container must contain its complete payload.
+        // The subtraction also proves start+len fits long before seeking.
+        if(start>file_end || uint64_t(len)>uint64_t(file_end-start))return false;
+        if(!std::memcmp(id,"RELC",4) || !std::memcmp(id,"RLMO",4)) {
+            // Recognize old wire chunks; never skip typed/orphan data as unknown.
+            bool& seen=!std::memcmp(id,"RELC",4)?seen_relc:seen_rlmo;
+            if(format<19 || seen || len!=4)return false;
+            seen=true;
+            uint8_t version=0,flags=0;uint16_t count=0;
+            ok=r8(f,version)&&r8(f,flags)&&ru16(f,count)&&version==1&&!flags&&!count;
+        }
+        else if(!std::memcmp(id,"ROTS",4)) {
+            if(format<22 || seen_rot || len<2)return false;
+            seen_rot=true;
+            uint8_t version=0,count=0;ok=r8(f,version)&&r8(f,count)&&(version==1||version==2)&&count>0&&count<=24&&len==2u+(version==2?10u:9u)*count;
+            for(int i=0;i<count && ok;++i) {
+                uint8_t ch=0,s=0,mode=0,law=0;RotUnit::Config cfg;
+                ok=r8(f,ch)&&r8(f,s)&&ru32(f,cfg.seed)&&ru16(f,cfg.passes)&&r8(f,mode)&&(version==1||r8(f,law))&&ch<4&&s<6;
+                cfg.mode=RotUnit::Mode(mode);cfg.law=law;
+                if(!ok || !RotUnit::valid_config(cfg) || parsed_rot[ch][s].present)return false;
+                parsed_rot[ch][s]={true,cfg};
+            }
+        }
+        else if(!std::memcmp(id,"RULE",4)) {
+            if(format<21 || seen_rule || len<2)return false;
+            seen_rule=true;
+            uint8_t version=0,count=0;ok=r8(f,version)&&r8(f,count)&&version==1&&count>0&&count<=24&&len==2u+10u*count;
+            for(int i=0;i<count && ok;++i) {
+                uint8_t ch=0,s=0;RuleUnit::Config cfg;
+                ok=r8(f,ch)&&r8(f,s)&&ru32(f,cfg.seed)&&ru16(f,cfg.seed_row)&&r8(f,cfg.phrase)&&r8(f,cfg.source_root)&&ch<4&&s<6&&RuleUnit::valid_config(cfg);
+                if(!ok || parsed_rule[ch][s].present)return false;
+                parsed_rule[ch][s]={true,cfg};
+            }
+        }
+        else if (!std::memcmp(id,"PENT",4)) {
+            if (format < 20 || seen_pent || len < 2) return false;
+            seen_pent = true;
+            uint8_t version = 0, count = 0;
+            ok = r8(f, version) && r8(f, count) && version == 1 && count > 0 &&
+                count <= NUM_CHAINS * UNITS_PER_CHAIN && len == 2u + 3u * count;
+            for (int i = 0; i < count && ok; ++i) {
+                uint8_t ch = 0, slot = 0, width = 0;
+                ok = r8(f, ch) && r8(f, slot) && r8(f, width) &&
+                    ch < NUM_CHAINS && slot < UNITS_PER_CHAIN && width <= 1;
+                if (!ok || parsed_pent[ch][slot].present) return false;
+                parsed_pent[ch][slot] = {true, width};
+            }
+        }
+        else if (!std::memcmp(id,"PAUL",4)) {
             if (format < 17 || seen_paul || len < 2) return false;
             seen_paul = true;
             uint8_t version=0, count=0;
@@ -2156,6 +2392,11 @@ static bool load_v7(FILE* f, Engine& target, SampleManifest& manifest,
                 }
             }
         }
+        else if (!std::memcmp(id,"SCAL",4)) {
+            if (seen_scale) return false;
+            seen_scale = true;
+            ok = read_scale(f, len, parsed_scale);
+        }
         else if (!std::memcmp(id,"ENVR",4)) {
             if (seen_envr || len != 3) return false;
             seen_envr = true;
@@ -2223,16 +2464,16 @@ static bool load_v7(FILE* f, Engine& target, SampleManifest& manifest,
                 if(ok) { parsed_unit_flags[c][s]=x; apply_unit_flags(target.chains[c].units[s],x); }
             }
         }
-        else if (!std::memcmp(id,"SAMP",4) && !seen_samp) { seen_samp=true; manifest.has_sample_manifest=true; for(int slot=0;slot<SampleManifest::SLOT_COUNT&&ok;++slot){uint8_t origin,missing;uint16_t n;ok=r8(f,origin)&&r8(f,missing)&&ru16(f,n);if(!ok||n>=sizeof(manifest.slots[slot].path)){ok=false;break;}auto&e=manifest.slots[slot];if(n&&fread(e.path,1,n,f)!=n){ok=false;break;}e.path[n]=0;e.origin=origin<=(uint8_t)trackr::synth::SampleOrigin::Recording?origin:(uint8_t)trackr::synth::SampleOrigin::Runtime;e.missing=missing!=0;} }
-        else if (!std::memcmp(id,"CHOP",4) && !seen_chop) { seen_chop=true; ok=read_sample_chops(f,manifest); }
-        else if (!std::memcmp(id,"SREV",4) && !seen_srev) { seen_srev=true; ok=read_sample_slice_reverse(f,manifest); }
-        else if (!std::memcmp(id,"TRNS",4) && !seen_trns) { seen_trns=true;uint8_t play,beats,q,swing=50,pq=(uint8_t)LaunchQuantize::Bar;ok=r8(f,play)&&r8(f,beats)&&r8(f,q);if(ok&&len>=4)ok=r8(f,swing);if(ok&&len>=5)ok=r8(f,pq);if(ok){target.transport_playing=play!=0;target.beats_per_bar=beats>=2&&beats<=8?beats:4;target.launch_quantize=q<=(uint8_t)LaunchQuantize::Bar?(LaunchQuantize)q:LaunchQuantize::Immediate;target.pattern_launch_quantize=pq<=(uint8_t)LaunchQuantize::Bar?(LaunchQuantize)pq:LaunchQuantize::Bar;target.set_swing(swing);} }
-        else if (!std::memcmp(id,"STRN",4) && !seen_strn) { seen_strn=true;ok=read_strn_modes(f,target); }
-        else if (!std::memcmp(id,"PTRN",4) && !seen_ptrn) { seen_ptrn=true;if(!seen_pbnk)ok=read_pattern(f,target); }
-        else if (!std::memcmp(id,"PBNK",4) && !seen_pbnk) { seen_pbnk=true;ok=read_pattern_banks(f,target); }
-        else if (!std::memcmp(id,"SDIR",4) && !seen_sdir) { seen_sdir=true;ok=read_sequence_directions(f,parsed_directions); }
-        else if (!std::memcmp(id,"MTIM",4) && !seen_mtim) { seen_mtim=true;ok=read_microtiming(f,parsed_timing.get()); }
-        else if (!std::memcmp(id,"PCHN",4) && !seen_pchn) { seen_pchn=true;ok=read_pattern_chain(f,target); }
+        else if (!std::memcmp(id,"SAMP",4) ) { if(seen_samp)return false; seen_samp=true; manifest.has_sample_manifest=true; for(int slot=0;slot<SampleManifest::SLOT_COUNT&&ok;++slot){uint8_t origin,missing;uint16_t n;ok=r8(f,origin)&&r8(f,missing)&&ru16(f,n);if(!ok||n>=sizeof(manifest.slots[slot].path)){ok=false;break;}auto&e=manifest.slots[slot];if(n&&fread(e.path,1,n,f)!=n){ok=false;break;}e.path[n]=0;e.origin=origin<=(uint8_t)trackr::synth::SampleOrigin::Recording?origin:(uint8_t)trackr::synth::SampleOrigin::Runtime;e.missing=missing!=0;} }
+        else if (!std::memcmp(id,"CHOP",4) ) { if(seen_chop)return false; seen_chop=true; ok=read_sample_chops(f,manifest); }
+        else if (!std::memcmp(id,"SREV",4) ) { if(seen_srev)return false; seen_srev=true; ok=read_sample_slice_reverse(f,manifest); }
+        else if (!std::memcmp(id,"TRNS",4) ) { if(seen_trns)return false; seen_trns=true;uint8_t play,beats,q,swing=50,pq=(uint8_t)LaunchQuantize::Bar;ok=r8(f,play)&&r8(f,beats)&&r8(f,q);if(ok&&len>=4)ok=r8(f,swing);if(ok&&len>=5)ok=r8(f,pq);if(ok){target.transport_playing=play!=0;target.beats_per_bar=beats>=2&&beats<=8?beats:4;target.launch_quantize=q<=(uint8_t)LaunchQuantize::Bar?(LaunchQuantize)q:LaunchQuantize::Immediate;target.pattern_launch_quantize=pq<=(uint8_t)LaunchQuantize::Bar?(LaunchQuantize)pq:LaunchQuantize::Bar;target.set_swing(swing);} }
+        else if (!std::memcmp(id,"STRN",4) ) { if(seen_strn)return false; seen_strn=true;ok=read_strn_modes(f,target); }
+        else if (!std::memcmp(id,"PTRN",4) ) { if(seen_ptrn)return false; seen_ptrn=true;if(!seen_pbnk)ok=read_pattern(f,target); }
+        else if (!std::memcmp(id,"PBNK",4) ) { if(seen_pbnk)return false; seen_pbnk=true;ok=read_pattern_banks(f,target); }
+        else if (!std::memcmp(id,"SDIR",4) ) { if(seen_sdir)return false; seen_sdir=true;ok=read_sequence_directions(f,parsed_directions); }
+        else if (!std::memcmp(id,"MTIM",4) ) { if(seen_mtim)return false; seen_mtim=true;ok=read_microtiming(f,parsed_timing.get()); }
+        else if (!std::memcmp(id,"PCHN",4) ) { if(seen_pchn)return false; seen_pchn=true;ok=read_pattern_chain(f,target); }
         else if (!std::memcmp(id,"SCNE",4)) {
             if (seen_scne || len != NUM_CHAINS * (2u + 2u * (5u + UNITS_PER_CHAIN * (1u + MAX_PARAMS * 2u)))) return false;
             seen_scne = true;
@@ -2244,18 +2485,25 @@ static bool load_v7(FILE* f, Engine& target, SampleManifest& manifest,
                     scene.valid = valid != 0;
                     for (int s=0; s<UNITS_PER_CHAIN && ok; ++s) {
                         uint8_t kind=0; ok = r8(f,kind);
+                        if(ok && kind==uint8_t(UnitKind::Rule) && format<21)return false;
+                        if(ok && kind==uint8_t(UnitKind::Rot) && format<22)return false;
+                        if (ok && kind == uint8_t(UnitKind::Pent) && format < 20) return false;
                         if (ok && kind == uint8_t(UnitKind::Paul) && format < 17) return false;
+                        if(ok && kind==uint8_t(UnitKind::Relic))return false;
+                        if(ok && format>=19 && kind>=uint8_t(UnitKind::Count))return false;
                         scene.kind[s] = kind < uint8_t(UnitKind::Count) ? UnitKind(kind) : UnitKind::Empty;
                         for (int p=0; p<MAX_PARAMS && ok; ++p) ok = r16(f,scene.base[s][p]);
                     }
                 }
             }
         }
-        else if (!std::memcmp(id,"MPAD",4) && !seen_mpad) { seen_mpad=true;for(int p=0;p<8&&ok;++p){MacroPad&pad=target.macro_pads[p];ok=fread(pad.name,1,sizeof pad.name,f)==sizeof pad.name&&r8(f,pad.route_count);pad.name[sizeof pad.name-1]=0;if(pad.route_count>MacroPad::MAX_ROUTES)pad.route_count=MacroPad::MAX_ROUTES;for(int r=0;r<MacroPad::MAX_ROUTES&&ok;++r){MacroPadRoute&x=pad.routes[r];int16_t lo=0,hi=0;ok=r8(f,x.chain)&&r8(f,x.slot)&&r8(f,x.param)&&r16(f,lo)&&r16(f,hi);if(ok){x.minimum=lo;x.maximum=hi;}}} }
-        else if (!std::memcmp(id,"WSPC",4) && !seen_wspc) {
+        else if (!std::memcmp(id,"MPAD",4) ) { if(seen_mpad)return false; seen_mpad=true;for(int p=0;p<8&&ok;++p){MacroPad&pad=target.macro_pads[p];ok=fread(pad.name,1,sizeof pad.name,f)==sizeof pad.name&&r8(f,pad.route_count);pad.name[sizeof pad.name-1]=0;if(pad.route_count>MacroPad::MAX_ROUTES)pad.route_count=MacroPad::MAX_ROUTES;for(int r=0;r<MacroPad::MAX_ROUTES&&ok;++r){MacroPadRoute&x=pad.routes[r];int16_t lo=0,hi=0;ok=r8(f,x.chain)&&r8(f,x.slot)&&r8(f,x.param)&&r16(f,lo)&&r16(f,hi);if(ok){x.minimum=lo;x.maximum=hi;}}} }
+        else if (!std::memcmp(id,"WSPC",4) ) {
+            if(seen_wspc)return false;
             seen_wspc=true; ok=read_workspace(f,workspace,len);
         }
-        else if (!std::memcmp(id,"PBND",4) && !seen_pbnd) {
+        else if (!std::memcmp(id,"PBND",4) ) {
+            if(seen_pbnd)return false;
             seen_pbnd=true; uint8_t version=0,count=0; ok=r8(f,version)&&r8(f,count)&&version==1&&count==NUM_PERFORMANCE_BINDINGS;
             PerformanceBinding parsed[NUM_PERFORMANCE_BINDINGS];
             for(int i=0;i<NUM_PERFORMANCE_BINDINGS&&ok;++i){uint8_t action,target_value,mode;ok=r8(f,action)&&r8(f,target_value)&&r8(f,mode);if(ok){
@@ -2325,12 +2573,33 @@ static bool load_v7(FILE* f, Engine& target, SampleManifest& manifest,
         if (edit.enabled && (!unit || unit->kind != UnitKind::SamplePlayer ||
             !(parsed_unit_flags[c][s] & 2u) || parsed_core_extra[c][s] != parsed_play_source[c][s])) return false;
         if ((parsed_position[c][s] || parsed_hold[c][s] || parsed_note[c][s]) && (!unit || unit->kind != UnitKind::SamplePlayer || !(parsed_unit_flags[c][s] & 2u))) return false;
+        const auto& rot_config=parsed_rot[c][s];
+        if(rot_config.present && (!unit || unit->kind!=UnitKind::Rot))return false;
+        const auto& rule_config=parsed_rule[c][s];
+        if(rule_config.present && (!unit || unit->kind!=UnitKind::Rule))return false;
+        const auto& pent_config = parsed_pent[c][s];
+        if (pent_config.present && (!unit || unit->kind != UnitKind::Pent)) return false;
         const auto& paul_config = parsed_paul[c][s];
         if (paul_config.present && (!unit || unit->kind != UnitKind::Paul)) return false;
         const auto& scratch_config = parsed_scratch[c][s];
         if (scratch_config.present && (!unit || unit->kind != UnitKind::Scratch)) return false;
         if (!unit) continue;
         const uint8_t flags = parsed_unit_flags[c][s];
+        if(unit->kind==UnitKind::Rot) {
+            if(format<22 || !rot_config.present || flags || parsed_core_extra[c][s]>=64)return false;
+            if(!static_cast<RotUnit*>(unit)->set_config(rot_config.config))return false;
+            continue;
+        }
+        if(unit->kind==UnitKind::Rule) {
+            if(format<21 || !rule_config.present || flags || parsed_core_extra[c][s]>=64)return false;
+            if(!static_cast<RuleUnit*>(unit)->set_config(rule_config.config))return false;
+            continue;
+        }
+        if (unit->kind == UnitKind::Pent) {
+            if (format < 20 || !pent_config.present || flags || parsed_core_extra[c][s]) return false;
+            if (!static_cast<PentUnit*>(unit)->set_width(PentUnit::Width(pent_config.width))) return false;
+            continue;
+        }
         if (unit->kind == UnitKind::Paul) {
             if (format < 17 || !paul_config.present || flags ||
                 parsed_core_extra[c][s] >= SampleManifest::SLOT_COUNT) return false;
@@ -2553,6 +2822,14 @@ static bool load_v7(FILE* f, Engine& target, SampleManifest& manifest,
         // edges again. No live source sampling or reroll occurs while loading.
         unit->random_source=parsed_random[ch][slot];
     }
+    if(format==19) {
+        if(!required || !seen_relc || !seen_rlmo || !seen_usig)return false;
+        if(!target.relic_storage_valid())return false;
+    }
+    if (format >= 20 && (!seen_usig || !pent_bases_valid(target) || !rule_bases_valid(target) || !rot_bases_valid(target))) return false;
+    // Setter reports valid+changed, not admission: a valid explicit default is
+    // allowed too. Fresh staging also gives every optional-less legacy its default.
+    if (required) target.set_project_scale(parsed_scale);
     return required;
 }
 
@@ -2561,7 +2838,7 @@ static bool load_legacy(FILE* f, Engine& target, SampleManifest& manifest, int v
     for (int c=0;c<NUM_CHAINS&&ok;++c) {
         int16_t vol,pan=0;uint8_t mute;ok=r16(f,vol);if(ok&&ver>=2)ok=r16(f,pan);if(ok)ok=r8(f,mute);if(!ok)break;
         target.chains[c].volume=vol;target.chains[c].pan=clamp_pan(pan);target.chains[c].mute=mute!=0;
-        for(int s=0;s<UNITS_PER_CHAIN&&ok;++s){uint8_t kind,bypass,extra;ok=r8(f,kind)&&r8(f,bypass)&&r8(f,extra);if(ok&&kind==uint8_t(UnitKind::Paul))return false;Unit*u=ok&&kind<(uint8_t)UnitKind::Count?make_loaded_unit((UnitKind)kind):nullptr;if(ok&&kind!=(uint8_t)UnitKind::Empty&&!u)ok=false;if(u){u->bypass=bypass!=0;apply_extra(u,extra);}for(int p=0;p<LEGACY_PARAM_COUNT&&ok;++p){int16_t base,depth;uint8_t src;ok=r16(f,base)&&r8(f,src)&&r16(f,depth);if(ok)apply_param(u,p,base,src,depth);}if(!ok){delete u;break;}delete target.replace_unit(c,s,u);}
+        for(int s=0;s<UNITS_PER_CHAIN&&ok;++s){uint8_t kind,bypass,extra;ok=r8(f,kind)&&r8(f,bypass)&&r8(f,extra);if(ok&&(kind==uint8_t(UnitKind::Paul)||kind==uint8_t(UnitKind::Relic)||kind==uint8_t(UnitKind::Pent)||kind==uint8_t(UnitKind::Rule)||kind==uint8_t(UnitKind::Rot)))return false;Unit*u=ok&&kind<(uint8_t)UnitKind::Count?make_loaded_unit((UnitKind)kind):nullptr;if(ok&&kind!=(uint8_t)UnitKind::Empty&&!u)ok=false;if(u){u->bypass=bypass!=0;apply_extra(u,extra);}for(int p=0;p<LEGACY_PARAM_COUNT&&ok;++p){int16_t base,depth;uint8_t src;ok=r16(f,base)&&r8(f,src)&&r16(f,depth);if(ok)apply_param(u,p,base,src,depth);}if(!ok){delete u;break;}delete target.replace_unit(c,s,u);}
     }
     ok=ok&&read_sigils(f,target);
     for(int i=0;i<LEGACY_SIGIL_COUNT&&ok;++i){uint8_t src;int16_t depth;ok=r8(f,src)&&r16(f,depth);if(ok)target.set_sigil_mod(i,src<(uint8_t)ModSource::Count?(ModSource)src:ModSource::None,depth);}
@@ -2610,20 +2887,207 @@ static bool load_legacy(FILE* f, Engine& target, SampleManifest& manifest, int v
     return ok;
 }
 
+// RULE config admission is a read-only full-container pass before ANY factory.
+// Even reordered/missing/duplicate/future RULE records cannot allocate a staging
+// engine or touch the bank. Other historical chunk policy remains in the parser.
+static bool rule_preflight(FILE* f,uint8_t version) {
+    if(version<7)return true; // legacy kind admission belongs to retirement scan
+    const long begin=ftell(f);if(begin<0 || fseek(f,0,SEEK_END))return false;
+    const long end=ftell(f);if(end<begin)return false;
+    uint32_t actual=0,configured=0;uint8_t flags[24]={};bool seen_rule=false,seen_core=false,seen_unit=false;
+    for(long pos=begin;pos<end;) {
+        if(end-pos<8 || fseek(f,pos,SEEK_SET))return false;
+        char id[4];uint32_t len=0;if(fread(id,1,4,f)!=4 || !ru32(f,len) || len>MAX_CHUNK_SIZE || uint64_t(len)>uint64_t(end-pos-8))return false;
+        const long payload=pos+8;
+        if(!std::memcmp(id,"CORE",4)) {
+            constexpr uint32_t size=NUM_CHAINS*(5+UNITS_PER_CHAIN*(3+12*5));
+            if(seen_core || len!=size)return false;
+            seen_core=true;
+            for(int c=0;c<4;++c) {
+                int16_t vol=0,pan=0;uint8_t mute=0;if(!r16(f,vol)||!r16(f,pan)||!r8(f,mute))return false;
+                for(int s=0;s<6;++s) {
+                    uint8_t kind=0,bypass=0,extra=0;if(!r8(f,kind)||!r8(f,bypass)||!r8(f,extra))return false;
+                    const bool rule=kind==uint8_t(UnitKind::Rule);
+                    if(rule){if(version<21 || extra>=64)return false;actual|=1u<<(c*6+s);}
+                    for(int p=0;p<12;++p){int16_t base=0,depth=0;uint8_t src=0;if(!r16(f,base)||!r8(f,src)||!r16(f,depth))return false;
+                        if(rule && (src>=uint8_t(ModSource::Count) || base<(p==RuleUnit::P_ROOT?-32767:0)))return false;}
+                }
+            }
+        } else if(!std::memcmp(id,"UNIT",4)) {
+            if(seen_unit || len!=24)return false;
+            seen_unit=true;
+            for(auto& v:flags)if(!r8(f,v))return false;
+        } else if(!std::memcmp(id,"RULE",4)) {
+            if(version<21 || seen_rule || len<2)return false;
+            seen_rule=true;
+            uint8_t v=0,count=0;if(!r8(f,v)||!r8(f,count)||v!=1||!count||count>24||len!=2u+10u*count)return false;
+            for(int i=0;i<count;++i) {
+                uint8_t c=0,s=0;RuleUnit::Config cfg;
+                if(!r8(f,c)||!r8(f,s)||!ru32(f,cfg.seed)||!ru16(f,cfg.seed_row)||!r8(f,cfg.phrase)||!r8(f,cfg.source_root)||c>=4||s>=6||!RuleUnit::valid_config(cfg))return false;
+                const uint32_t bit=1u<<(c*6+s);if(configured&bit)return false;configured|=bit;
+            }
+        } else if(!std::memcmp(id,"SCNE",4)) {
+            constexpr uint32_t size=4*(2+2*(5+6*25));if(len!=size)return false;
+            for(int c=0;c<4;++c){int16_t morph=0;if(!r16(f,morph))return false;
+                for(int n=0;n<2;++n){uint8_t valid=0;int16_t volume=0,pan=0;if(!r8(f,valid)||!r16(f,volume)||!r16(f,pan))return false;
+                    for(int s=0;s<6;++s){uint8_t kind=0;if(!r8(f,kind))return false;
+                        if(kind==uint8_t(UnitKind::Rule) && version<21)return false;
+                        for(int p=0;p<12;++p){int16_t base=0;if(!r16(f,base))return false;if(kind==uint8_t(UnitKind::Rule) && base<(p==RuleUnit::P_ROOT?-32767:0))return false;}
+                    }
+                }
+            }
+        }
+        pos=payload+long(len);
+    }
+    if(actual!=configured || (actual && (!seen_core || !seen_unit)))return false;
+    for(int i=0;i<24;++i)if((actual&(1u<<i)) && flags[i])return false;
+    return fseek(f,begin,SEEK_SET)==0;
+}
+
+// ROT read-only admission across the complete physical container, before factories.
+// Format22 checks duplicate IDs recognized by load_v7 and exclusive USIG/PBAY.
+// This does NOT validate every historical payload semantic before staging.
+static bool rot_preflight(FILE* f,uint8_t version) {
+    if(version<7)return true;
+    const long begin=ftell(f);if(begin<0 || fseek(f,0,SEEK_END))return false;
+    const long end=ftell(f);if(end<begin)return false;
+    uint32_t actual=0,configured=0;uint8_t flags[24]={};bool seen_rot=false,seen_core=false,seen_unit=false,seen_scene=false;
+    uint32_t required=0;
+    // Complete recognized-ID set from load_v7; first8 remain required in22.
+    static constexpr const char* ids[]={"CORE","SIGL","ROUT","UNIT","SAMP","TRNS","STRN","USIG","ROTS","RULE","PENT","SCNE","MRND","CLCK","PAUL","SCRT","GRNX","ENVR","WSPC","PBNK","PTRN","SDIR","MTIM","PCHN","CHOP","SREV","PSPD","SPIT","SEXT","RELC","RLMO","ARPM","GLCH","GRNP","MPAD","PBAY","PBND","PEDT","PHLD","PNOT","PPOS","SCAL"};
+    constexpr size_t id_count=sizeof ids/sizeof ids[0];
+    static_assert(id_count<=64,"ROT recognized duplicate mask capacity");
+    uint64_t seen_ids=0;
+    bool seen_usig=false,seen_pbay=false,seen_scale=false;
+    for(long pos=begin;pos<end;) {
+        if(end-pos<8 || fseek(f,pos,SEEK_SET))return false;
+        char id[4];uint32_t len=0;if(fread(id,1,4,f)!=4 || !ru32(f,len) || len>MAX_CHUNK_SIZE || uint64_t(len)>uint64_t(end-pos-8))return false;
+        const long payload=pos+8;
+        if(version==22) {
+            for(size_t n=0;n<id_count;++n)if(!std::memcmp(id,ids[n],4)) {
+                const uint64_t bit=uint64_t(1)<<n;
+                if(seen_ids&bit)return false;
+                seen_ids|=bit;if(n<8)required|=uint32_t(bit);
+                break;
+            }
+            if(!std::memcmp(id,"USIG",4)){if(seen_pbay)return false;seen_usig=true;}
+            if(!std::memcmp(id,"PBAY",4)){if(seen_usig)return false;seen_pbay=true;}
+        }
+        // SCAL is strict across every admitted SNC7+ container, not only22.
+        // Sharing the literal parser prevents preflight/staging policy drift.
+        if(!std::memcmp(id,"SCAL",4)) {
+            MusicalScale scale{};
+            if(seen_scale || !read_scale(f,len,scale))return false;
+            seen_scale=true;
+        } else if(!std::memcmp(id,"CORE",4)) {
+            constexpr uint32_t size=NUM_CHAINS*(5+UNITS_PER_CHAIN*(3+12*5));
+            if(seen_core || len!=size){return false;}seen_core=true;
+            for(int c=0;c<4;++c) {
+                int16_t vol=0,pan=0;uint8_t mute=0;if(!r16(f,vol)||!r16(f,pan)||!r8(f,mute))return false;
+                for(int s=0;s<6;++s) {
+                    uint8_t kind=0,bypass=0,extra=0;if(!r8(f,kind)||!r8(f,bypass)||!r8(f,extra))return false;
+                    const bool rot=kind==uint8_t(UnitKind::Rot);
+                    if(rot){if(version<22 || extra>=64 || bypass>1 || mute>1)return false;actual|=1u<<(c*6+s);}
+                    for(int p=0;p<12;++p){int16_t base=0,depth=0;uint8_t src=0;if(!r16(f,base)||!r8(f,src)||!r16(f,depth))return false;
+                        if(rot && (src>=uint8_t(ModSource::Count) || base<(p==RotUnit::P_PITCH?-32767:0)))return false;}
+                }
+            }
+        } else if(!std::memcmp(id,"UNIT",4)) {
+            if(seen_unit || len!=24){return false;}seen_unit=true;for(auto& v:flags)if(!r8(f,v))return false;
+        } else if(!std::memcmp(id,"ROTS",4)) {
+            if(version<22 || seen_rot || len<2){return false;}seen_rot=true;
+            uint8_t v=0,count=0;if(!r8(f,v)||!r8(f,count)||(v!=1&&v!=2)||!count||count>24||len!=2u+(v==2?10u:9u)*count)return false;
+            for(int i=0;i<count;++i) {
+                uint8_t c=0,s=0,mode=0,law=0;RotUnit::Config cfg;
+                if(!r8(f,c)||!r8(f,s)||!ru32(f,cfg.seed)||!ru16(f,cfg.passes)||!r8(f,mode)||(v==2&&!r8(f,law))||c>=4||s>=6)return false;
+                cfg.mode=RotUnit::Mode(mode);cfg.law=law;if(!RotUnit::valid_config(cfg))return false;
+                const uint32_t bit=1u<<(c*6+s);if(configured&bit)return false;configured|=bit;
+            }
+        } else if(!std::memcmp(id,"SCNE",4)) {
+            constexpr uint32_t size=4*(2+2*(5+6*25));if(seen_scene || len!=size)return false;seen_scene=true;
+            for(int c=0;c<4;++c){int16_t morph=0;if(!r16(f,morph))return false;
+                for(int n=0;n<2;++n){uint8_t valid=0;int16_t volume=0,pan=0;if(!r8(f,valid)||!r16(f,volume)||!r16(f,pan))return false;
+                    for(int s=0;s<6;++s){uint8_t kind=0;if(!r8(f,kind))return false;
+                        if(kind==uint8_t(UnitKind::Rot) && (version<22 || valid>1))return false;
+                        for(int p=0;p<12;++p){int16_t base=0;if(!r16(f,base))return false;if(kind==uint8_t(UnitKind::Rot) && base<(p==RotUnit::P_PITCH?-32767:0))return false;}
+                    }
+                }
+            }
+        }
+        pos=payload+long(len);
+    }
+    if(actual!=configured || (actual && (!seen_core || !seen_unit)) || (version==22 && required!=255))return false;
+    for(int i=0;i<24;++i)if((actual&(1u<<i)) && flags[i])return false;
+    return fseek(f,begin,SEEK_SET)==0;
+}
+
+// Read-only admission BEFORE constructing a staging Engine or any factory.
+// Scan the entire physical container so scene-only/reordered retired data cannot
+// pay for factories preceding its chunk. Ordinary parser bounds still apply.
+static bool retirement_preflight(FILE* f,uint8_t version) {
+    const long begin=ftell(f);
+    if(begin<0 || fseek(f,0,SEEK_END)!=0)return false;
+    const long end=ftell(f);
+    if(end<begin || fseek(f,begin,SEEK_SET)!=0)return false;
+    auto kind_at=[&](long at) {
+        if(at<begin || at>=end || fseek(f,at,SEEK_SET)!=0)return false;
+        uint8_t kind=0;
+        return r8(f,kind) && kind!=uint8_t(UnitKind::Relic) &&
+            kind<uint8_t(UnitKind::Count) && !(version<22 && kind==uint8_t(UnitKind::Rot)) && !(version<21 && kind==uint8_t(UnitKind::Rule)) &&
+            !(version < 20 && kind == uint8_t(UnitKind::Pent));
+    };
+    if(version<7) {
+        const long chain_size=(version>=2?5:3)+UNITS_PER_CHAIN*(3+LEGACY_PARAM_COUNT*5);
+        for(int c=0;c<NUM_CHAINS;++c)for(int s=0;s<UNITS_PER_CHAIN;++s)
+            if(!kind_at(begin+c*chain_size+(version>=2?5:3)+s*(3+LEGACY_PARAM_COUNT*5)))return false;
+    } else {
+        for(long pos=begin;pos<end;) {
+            if(end-pos<8 || fseek(f,pos,SEEK_SET)!=0)return false;
+            char id[4];uint32_t len=0;
+            if(fread(id,1,4,f)!=4 || !ru32(f,len) || len>MAX_CHUNK_SIZE || uint64_t(len)>uint64_t(end-pos-8))return false;
+            const long payload=pos+8;
+            if(!std::memcmp(id,"CORE",4)) {
+                constexpr long chain_size=5+UNITS_PER_CHAIN*(3+PARAM_BANK_SIZE*5);
+                if(len!=NUM_CHAINS*chain_size)return false;
+                for(int c=0;c<NUM_CHAINS;++c)for(int s=0;s<UNITS_PER_CHAIN;++s)
+                    if(!kind_at(payload+c*chain_size+5+s*(3+PARAM_BANK_SIZE*5)))return false;
+            } else if(!std::memcmp(id,"SCNE",4)) {
+                constexpr long scene_size=5+UNITS_PER_CHAIN*(1+MAX_PARAMS*2);
+                constexpr long chain_size=2+2*scene_size;
+                if(len!=NUM_CHAINS*chain_size)return false;
+                for(int c=0;c<NUM_CHAINS;++c)for(int n=0;n<2;++n)for(int s=0;s<UNITS_PER_CHAIN;++s)
+                    if(!kind_at(payload+c*chain_size+2+n*scene_size+5+s*(1+MAX_PARAMS*2)))return false;
+            } else if(!std::memcmp(id,"PENT",4) && version < 20) {
+                return false;
+            } else if(!std::memcmp(id,"RELC",4) || !std::memcmp(id,"RLMO",4)) {
+                uint8_t v=0,flags=0;uint16_t count=0;
+                if(version<19 || len!=4 || !r8(f,v) || !r8(f,flags) || !ru16(f,count) || v!=1 || flags || count)return false;
+            }
+            pos=payload+long(len);
+        }
+    }
+    return fseek(f,begin,SEEK_SET)==0;
+}
+
 bool load(Engine& eng, const char* path, SampleManifest* out_manifest,
           WorkspaceLayout* out_workspace) {
     if (eng.recording_active_or_pending()) return false;
     FILE* f=fopen(path,"rb");if(!f)return false;
+    char magic[4];uint8_t ver=0;
+    bool ok=fread(magic,1,4,f)==4&&magic[0]=='S'&&magic[1]=='N'&&magic[2]=='C'&&r8(f,ver);
+    // Validate the exact magic/version envelope before any staging allocation.
+    const char suffix = ver < 10 ? char('0' + ver) : char('A' + ver - 10);
+    if(!ok || ver<1 || ver>22 || magic[3]!=suffix || !rot_preflight(f,ver) || !rule_preflight(f,ver) || !retirement_preflight(f,ver)){fclose(f);return false;}
     Engine* parsed=new(std::nothrow) Engine();
     SampleManifest* manifest=new(std::nothrow) SampleManifest();
     WorkspaceLayout* workspace=new(std::nothrow) WorkspaceLayout();
     if(!parsed||!manifest||!workspace){delete parsed;delete manifest;delete workspace;fclose(f);return false;}
     workspace_layout_defaults(*workspace);
-    char magic[4];uint8_t ver;bool ok=fread(magic,1,4,f)==4&&magic[0]=='S'&&magic[1]=='N'&&magic[2]=='C'&&r8(f,ver);
-    if(ok&&((magic[3]>='7'&&magic[3]<='9'&&ver==(uint8_t)(magic[3]-'0')) || (magic[3]=='A'&&ver==10) || (magic[3]=='B'&&ver==11) || (magic[3]=='C'&&ver==12) || (magic[3]=='I'&&ver==18) || (magic[3]=='H'&&ver==17) || (magic[3]=='G'&&ver==16) || (magic[3]=='F'&&ver==15) || (magic[3]=='E'&&ver==14) || (magic[3]=='D'&&ver==13)))ok=load_v7(f,*parsed,*manifest,*workspace,ver);
+    if(ok&&((magic[3]>='7'&&magic[3]<='9'&&ver==(uint8_t)(magic[3]-'0')) || (magic[3]=='A'&&ver==10) || (magic[3]=='B'&&ver==11) || (magic[3]=='C'&&ver==12) || (magic[3]=='M'&&ver==22) || (magic[3]=='L'&&ver==21) || (magic[3]=='K'&&ver==20) || (magic[3]=='J'&&ver==19) || (magic[3]=='I'&&ver==18) || (magic[3]=='H'&&ver==17) || (magic[3]=='G'&&ver==16) || (magic[3]=='F'&&ver==15) || (magic[3]=='E'&&ver==14) || (magic[3]=='D'&&ver==13)))ok=load_v7(f,*parsed,*manifest,*workspace,ver);
     else if(ok&&magic[3]>='1'&&magic[3]<='6'&&ver==(uint8_t)(magic[3]-'0'))ok=load_legacy(f,*parsed,*manifest,ver);
     else ok=false;
-    fclose(f);
+    if (ferror(f)) ok=false;
+    if (fclose(f)!=0) ok=false;
     // The instrument q15 source map now has seven bins instead of six. No
     // heuristic migration: user explicitly chose the new source contract.
     if(ok && ver<16)for(const auto& chain:parsed->chains)for(const Unit* unit:chain.units)
@@ -2674,7 +3138,7 @@ int decode_samples(SampleManifest& manifest, int target_sr, int max_frames, Rest
     return restored;
 }
 
-bool commit_restored_samples(const SampleManifest& manifest, RestoredSamples& decoded, Engine* hydrated) {
+bool commit_restored_samples(const SampleManifest& manifest, RestoredSamples& decoded, Engine* hydrated, Engine* live_before_swap) {
     auto& bank = trackr::synth::SampleBank::instance();
     if (!bank.can_replace_all(decoded.decoded, decoded.ready, SampleManifest::SLOT_COUNT)) return false;
     // Normalize absent slots to empty before the no-fail swap. After this point
@@ -2683,8 +3147,12 @@ bool commit_restored_samples(const SampleManifest& manifest, RestoredSamples& de
     // decode_samples already reset every absent staged slot before this call.
     // Disarm PAUL before replacing the bank behind its latched FFT source.
     // Budget rejection above leaves both bank and live runtime untouched.
+    if((hydrated && !hydrated->relic_storage_valid()) || (live_before_swap && !live_before_swap->relic_storage_valid()))return false;
+    if(live_before_swap)live_before_swap->retire_relic_sources_all();
+    if(hydrated)hydrated->retire_relic_sources_all();
     if (hydrated) for (auto& chain : hydrated->chains) for (Unit* unit : chain.units)
-        if (unit && unit->kind == UnitKind::Paul) static_cast<PaulUnit*>(unit)->reset();
+        if (unit && (unit->kind == UnitKind::Paul || unit->kind == UnitKind::Rule || unit->kind == UnitKind::Rot)) unit->reset();
+    if(live_before_swap)for(auto& chain:live_before_swap->chains)for(Unit* unit:chain.units)if(unit && (unit->kind==UnitKind::Rule || unit->kind==UnitKind::Rot))unit->reset();
     bank.swap_all(decoded.decoded, SampleManifest::SLOT_COUNT);
     for (int slot = 0; slot < trackr::synth::SAMPLE_BANK_SIZE; ++slot) {
         bank.slot(slot).exact_native_endpoint = manifest.exact_native[slot];
@@ -2733,6 +3201,7 @@ bool commit_restored_samples(const SampleManifest& manifest, RestoredSamples& de
         play->restore_edit_state(edit);
         play->stage_edit_source(play_source_metadata(manifest, slot), true);
     }
+    if(hydrated)hydrated->hydrate_relic_sources();
     return true;
 }
 

@@ -10,6 +10,8 @@ inline int unit_slot(const Unit* unit) {
     switch (unit->kind) {
         case UnitKind::SamplePlayer: return static_cast<const PlayUnit*>(unit)->sample_slot;
         case UnitKind::Paul: return static_cast<const PaulUnit*>(unit)->sample_slot;
+        case UnitKind::Rule: return static_cast<const RuleUnit*>(unit)->sample_slot;
+        case UnitKind::Rot: return static_cast<const RotUnit*>(unit)->sample_slot;
         case UnitKind::Scratch: return static_cast<const ScratchUnit*>(unit)->sample_slot;
         case UnitKind::Grain: return static_cast<const GrainUnit*>(unit)->sample_slot;
         case UnitKind::Recorder: return static_cast<const RecUnit*>(unit)->sample_slot;

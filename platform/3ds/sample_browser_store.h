@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cerrno>
+#include "../../core/io/file_publication.h"
 
 namespace seance::platform::ui3ds::sample_browser_store {
 constexpr int kCapacity = 64, kPath = 192;
@@ -185,9 +186,9 @@ inline bool load(const char* sidecar, State& out) {
 }
 // Exclusive sibling creation never truncates an existing temp/user file.
 // After write/flush/close, verify every canonical byte before publication.
-// Rename failure is fail-closed: no unlink/backup shuffle of the prior target.
-// This is not a power-loss/fsync guarantee; rename-over-existing must be
-// supported by the mounted filesystem. Otherwise the old target is retained.
+// Publication never renames onto an existing name (the SD card refuses it):
+// the prior sidecar moves to `.bak` first and comes back if the last step fails.
+// This is not a power-loss/fsync guarantee.
 inline bool save(const char* sidecar, const State& state) {
     if (!detail::path_valid(sidecar, false) || !detail::valid(state)) return false;
     char temporary[kPath + 16];
@@ -212,8 +213,11 @@ inline bool save(const char* sidecar, const State& state) {
             if (std::fclose(file) != 0) ok = false;
         }
     }
-    if (ok && std::rename(temporary, sidecar) == 0) return true;
-    std::remove(temporary); // only the exclusively-created file owned by this call
+    char previous[kPath + 16];
+    const int p = std::snprintf(previous, sizeof previous, "%s.bak", sidecar);
+    if (p < 0 || size_t(p) >= sizeof previous) ok = false;
+    if (ok && fileio::replace_via_previous(temporary, sidecar, previous)) return true;
+    if (!fileio::absent(temporary)) std::remove(temporary); // only the exclusively-created file owned by this call
     return false;
 }
 } // namespace seance::platform::ui3ds::sample_browser_store

@@ -8,7 +8,7 @@ try:
     from PIL import Image, ImageDraw, ImageFont
 except ModuleNotFoundError:
     Image = ImageDraw = ImageFont = None
-from module_catalogue import kind_ids, same_members
+from module_catalogue import active_kind_ids, same_members
 
 ROOT = Path(__file__).resolve().parents[1]
 FONT = ROOT / 'assets/fonts/Gossip-MedPixel.otf'
@@ -16,13 +16,25 @@ META = ROOT / 'platform/3ds/picker_catalogue.inc'
 OUT = ROOT / 'platform/3ds/module_heading_data.h'
 
 
+def completion():
+    return '\n'.join([
+        'constexpr bool complete() {',
+        '    for (int k=1; k<int(UnitKind::Count); ++k) {',
+        '        int seen=0; for (const auto& label:labels) if (int(label.kind)==k) ++seen;',
+        '        if (seen != int(unit_kind_available(UnitKind(k)))) return false;',
+        '    } return true;', '}',
+        'static_assert(int(UnitKind::Relic)==31 && !unit_kind_available(UnitKind::Relic), "reserved retired identity");',
+        'static_assert(complete(), "all active editor titles have exact masks; reserved kinds have none");',
+        '} // namespace seance::platform::ui3ds::module_heading_data', ''])
+
+
 def generate():
+    entries = re.findall(r'^PICKER_ENTRY\((\w+), "([^"]+)"', META.read_text(), re.M)
+    kinds = active_kind_ids((ROOT / 'core/engine/unit.h').read_text(), META.read_text())
+    same_members([kind for kind, _ in entries], kinds, 'heading generator catalogue')
     if Image is None:
         from generate_scratch_resources import retained_heading
         return retained_heading()
-    entries = re.findall(r'^PICKER_ENTRY\((\w+), "([^"]+)"', META.read_text(), re.M)
-    kinds = kind_ids((ROOT / 'core/engine/unit.h').read_text())
-    same_members([kind for kind, _ in entries], kinds, 'heading generator catalogue')
     face = ImageFont.truetype(str(FONT), 28)
     data, rows = [], []
     for kind, name in entries:
@@ -68,14 +80,7 @@ def generate():
         'inline constexpr uint8_t bitmap[] = {',
     ]
     lines += ['    ' + ','.join(f'0x{v:02x}' for v in data[i:i+20]) + ',' for i in range(0, len(data), 20)]
-    lines += ['};', 'inline constexpr Label labels[] = {', *rows, '};',
-        'constexpr bool complete() {',
-        '    for (int k=1; k<int(UnitKind::Count); ++k) {',
-        '        int seen=0; for (const auto& label:labels) if (int(label.kind)==k) ++seen;',
-        '        if (seen!=1) return false;',
-        '    } return true;', '}',
-        'static_assert(complete(), "all builtin editor titles have exact masks");',
-        '} // namespace seance::platform::ui3ds::module_heading_data', '']
+    lines += ['};', 'inline constexpr Label labels[] = {', *rows, '};', completion()]
     return '\n'.join(lines)
 
 

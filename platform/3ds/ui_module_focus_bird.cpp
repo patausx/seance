@@ -20,7 +20,7 @@ constexpr int TRACE=257, MINI=65;
 constexpr const char* NAMES[B::P_COUNT]={"pitch","sweep","length","trill","air","gain","contour","syllable"};
 constexpr int ORDER[B::P_COUNT]={B::P_PITCH,B::P_SWEEP,B::P_TIME,B::P_TRILL,B::P_CONTOUR,B::P_SYLLABLE,B::P_AIR,B::P_GAIN};
 struct Frame {
-    bool valid=false, bypass=false, mute=false, lock=false, full=false, lens=false;
+    bool valid=false, bypass=false, mute=false, lens=false;
     int chain=0, slot=0, selected=0;
     q15 edit[B::P_COUNT]={}, ready[B::P_COUNT]={};
     ParamInspector routes[B::P_COUNT]={};
@@ -36,8 +36,7 @@ int selected=0;
 struct Gesture {
     uintptr_t unit=0;
     Engine* engine=nullptr;
-    int chain=-1, slot=-1, step=-1, lock_chain=-1, bank=-1, param=-1, x=0, width=128;
-    bool locked=false;
+    int chain=-1, slot=-1, param=-1, x=0, width=128;
     q15 value=0;
 } gesture;
 bool bipolar(int p) {return p==B::P_SWEEP || p==B::P_CONTOUR;}
@@ -48,33 +47,25 @@ int position(q15 v,int p,int x,int width) {
 }
 bool context() {
     return g_eng && g_audio && g_overlay==Overlay::Editor &&
-        (g_view==View::Chains || (g_view==View::Sequencer && g_seq_lock_armed)) &&
+        g_view==View::Chains &&
         g_edit_chain>=0 && g_edit_chain<NUM_CHAINS && g_edit_slot>=0 && g_edit_slot<UNITS_PER_CHAIN;
-}
-bool lock_context() {
-    return g_seq_lock_armed && g_seq_lock_chain==g_edit_chain &&
-        g_seq_lock_step>=0 && g_seq_lock_step<SEQ_STEPS;
 }
 bool owns(const B& u) {
     return gesture.engine==g_eng && gesture.unit==uintptr_t(&u) &&
         gesture.chain==g_edit_chain && gesture.slot==g_edit_slot &&
-        g_eng->chains[g_edit_chain].units[g_edit_slot]==&u && gesture.locked==g_seq_lock_armed &&
-        (!gesture.locked || (lock_context() && gesture.step==g_seq_lock_step &&
-        gesture.lock_chain==g_seq_lock_chain && gesture.bank==g_eng->active_pattern));
+        g_eng->chains[g_edit_chain].units[g_edit_slot]==&u;
 }
 q15 edit_value(const B& u,int p) {
-    return lock_context()?seq_display_value(g_edit_slot,p,u.params[p].base):u.params[p].base;
+    return u.params[p].base;
 }
 void change(B& u,int p,q15 value) {
     if(value==edit_value(u,p))return;
-    if(g_seq_lock_armed) {if(lock_context())seq_record_lock(g_edit_slot,p,value);}
-    else {u.params[p].base=value;mark_project_mutated();}
+    u.params[p].base=value;mark_project_mutated();
 }
 void start(B& u,int p,int x,int width) {
     selected=p;gesture.unit=uintptr_t(&u);gesture.engine=g_eng;
-    gesture.chain=g_edit_chain;gesture.slot=g_edit_slot;gesture.step=g_seq_lock_step;
-    gesture.lock_chain=g_seq_lock_chain;gesture.bank=g_eng->active_pattern;
-    gesture.locked=g_seq_lock_armed;gesture.param=p;gesture.x=x;gesture.width=width;
+    gesture.chain=g_edit_chain;gesture.slot=g_edit_slot;
+    gesture.param=p;gesture.x=x;gesture.width=width;
     gesture.value=edit_value(u,p);g_drag=Drag::BirdParam;
 }
 void right(int x,int y,const char* text,u32 color) {ui::text(x-ui::text_w(text),y,text,color);}
@@ -115,11 +106,10 @@ void field(int index) {
 void route_text(char* out,size_t n) {
     const auto& d=frame.routes[frame.selected];
     const bool muted=d.source!=ModSource::None && !d.mod_enabled;
-    if(frame.full && !muted){std::snprintf(out,n,"lock full / 4 per step");return;}
     if(d.source==ModSource::None) {
-        std::snprintf(out,n,"%s",frame.lock?"stored lock / name: remove":frame.lens?"held l / modulation":"a: call / l: modulation");return;
+        std::snprintf(out,n,"%s",frame.lens?"held l / modulation":"a: call / l: modulation");return;
     }
-    const char* state=muted?(frame.full?"muted / lock full":"muted"):frame.selected==B::P_GAIN?"live gain":"next call";
+    const char* state=muted?"muted":frame.selected==B::P_GAIN?"live gain":"next call";
     if(d.source==ModSource::EnvFollow)std::snprintf(out,n,"env%d / %+d%% / %s",d.env_chain+1,int(d.depth)*100/32767,state);
     else std::snprintf(out,n,"sigil %c / %+d%% / %s",'a'+mod_source_sigil(d.source),int(d.depth)*100/32767,state);
 }
@@ -132,9 +122,8 @@ bool bird_focus_touch_body(B& u,int tx,int ty) {
     platform::AudioOut::Guard guard(*g_audio);
     bird_focus_release();
     if(g_eng->chains[g_edit_chain].units[g_edit_slot]!=&u)return false;
-    if(g_seq_lock_armed && !lock_context())return true;
     if(ty<25) {
-        if(!g_seq_lock_armed && hit(tx,ty,252,0,60,25)){u.bypass=!u.bypass;mark_project_mutated();}
+        if(hit(tx,ty,252,0,60,25)){u.bypass=!u.bypass;mark_project_mutated();}
         return true;
     }
     if(hit(tx,ty,8,30,304,59)){start(u,B::P_CONTOUR,tx,284);return true;}
@@ -142,10 +131,6 @@ bool bird_focus_touch_body(B& u,int tx,int ty) {
         const int p=ORDER[i],x=(i&1)?164:14,y=100+(i/2)*28;
         if(!hit(tx,ty,x-6,y-4,150,28))continue;
         selected=p;
-        if(lock_context() && hit(tx,ty,x-3,y-3,ui::text_w(NAMES[p])+6,12)) {
-            if(g_eng->remove_step_lock(g_seq_lock_chain,g_seq_lock_step,g_edit_slot,p))mark_project_mutated();
-            return true;
-        }
         if(bipolar(p) && hit(tx,ty,x+ui::text_w(NAMES[p])+3,y-3,30,12)){change(u,p,0);return true;}
         start(u,p,tx,128);return true;
     }
@@ -166,8 +151,8 @@ void bird_focus_capture() {
         if(!unit || unit->kind!=UnitKind::Bird){bird_focus_release();return;}
         const auto& u=*static_cast<const B*>(unit);
         if(gesture.unit && (!owns(u) || param_lens_is_open() || g_drag!=Drag::BirdParam))bird_focus_release();
-        frame.valid=true;frame.bypass=u.bypass;frame.mute=chain.mute;frame.lock=lock_context();
-        frame.full=frame.lock && g_seq_lock_flash>0;frame.lens=false;
+        frame.valid=true;frame.bypass=u.bypass;frame.mute=chain.mute;
+        frame.lens=false;
         frame.chain=g_edit_chain;frame.slot=g_edit_slot;frame.selected=selected;frame.visual=u.visual();
         for(int p=0;p<B::P_COUNT;++p) {
             frame.edit[p]=edit_value(u,p);frame.ready[p]=u.params[p].effective;
@@ -202,14 +187,14 @@ void bird_focus_draw(const B&) {
     ui::text(62,m::kHeaderTextY,text,m::ghost());ui::text(276,m::kHeaderTextY,"byp",frame.bypass?m::spot():m::ghost());
     if(frame.bypass)ui::line(276,m::kHeaderMarkY,293,m::kHeaderMarkY,m::spot());
     ui::text(18,33,"contour / drag",frame.selected==B::P_CONTOUR?m::spot():m::ink());
-    right(302,33,frame.lock?"stored lock":"stored shape",m::ghost());
+    right(302,33,"stored shape",m::ghost());
     ui::line(18,84,302,84,m::branch());
     for(int i=1;i<MINI;++i)ui::line(18+(i-1)*284/(MINI-1),48+frame.contour[i-1],18+i*284/(MINI-1),48+frame.contour[i],m::spot());
     for(int i=0;i<MINI;i+=4)ui::line(18+i*284/(MINI-1),50+frame.contour[i],18+i*284/(MINI-1),83,tint(m::spot(),70));
     for(int i=0;i<B::P_COUNT;++i)field(i);
-    ui::text(14,214,frame.full?"lock full / existing locks editable":"handle: stored / bead: next / gain live",m::ghost());
+    ui::text(14,214,"handle: stored / bead: next / gain live",m::ghost());
     ui::line(14,223,306,223,m::branch());
-    if(frame.lock)m::footer(320,"p-lock / name: remove","b back");else m::footer(320,"b back","l: mod >");
+    m::footer(320,"b back","l: mod >");
 }
 bool bird_focus_draw_top() {
     if(!frame.valid)return false;
@@ -219,7 +204,7 @@ bool bird_focus_draw_top() {
     const char* title=frame.selected==B::P_CONTOUR?"contour / arc < return > hook":
         frame.selected==B::P_SYLLABLE?"syllable / pitch per trill":NAMES[frame.selected];
     ui::text(16,46,title,m::spot());
-    right(384,46,frame.lock?"edit lock":"stored",m::ghost());
+    right(384,46,"stored",m::ghost());
     const auto hero=inspector_gothic::draw_numeric(16,94,frame.values[frame.selected],m::ink(),m::spot());
     if(hero.drawn)ui::text(hero.end_x+3,82,hero.suffix,m::spot());
     std::snprintf(text,sizeof text,"%s %s",frame.selected==B::P_GAIN?"live":"next",frame.ready_value);right(384,84,text,m::ghost());

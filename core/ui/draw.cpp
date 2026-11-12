@@ -104,15 +104,37 @@ void circle(float x, float y, float radius, uint32_t c, bool filled) {
     const int r = (int)(radius + 0.5f);
     const int cx = (int)(x + 0.5f);
     const int cy = (int)(y + 0.5f);
+    if (!filled) {
+        // Outline = the two extreme pixels of every row, as before. Rows with the
+        // same half-width share one 1-wide column per side: same pixels, each
+        // covered exactly once (rims may be translucent). dx(dy) = largest
+        // dx with dx*dx + dy*dy <= r*r, found incrementally (rises to the
+        // equator, falls after it). Exact: tests/test_circle_runs.py.
+        int dx = 0, run_dx = 0, run_y = cy - r;
+        auto column = [&](int end_y) {
+            const float top = (float)run_y, n = (float)(end_y - run_y);
+            rect((float)(cx - run_dx), top, 1.0f, n, c);
+            if (run_dx > 0) rect((float)(cx + run_dx), top, 1.0f, n, c);
+        };
+        for (int dy = -r; dy <= r; ++dy) {
+            if (dy <= 0) {
+                while ((dx + 1) * (dx + 1) + dy * dy <= r * r) ++dx;
+            } else {
+                while (dx * dx + dy * dy > r * r) --dx;
+            }
+            if (dy > -r && dx != run_dx) {
+                column(cy + dy);
+                run_y = cy + dy;
+            }
+            run_dx = dx;
+        }
+        column(cy + r + 1);
+        return;
+    }
     for (int dy = -r; dy <= r; ++dy) {
         int dx = 0;
         while ((dx + 1) * (dx + 1) + dy * dy <= r * r) ++dx;
-        if (filled) {
-            if (dx > 0) rect((float)(cx - dx), (float)(cy + dy), (float)(dx * 2 + 1), 1.0f, c);
-        } else {
-            rect((float)(cx - dx), (float)(cy + dy), 1.0f, 1.0f, c);
-            if (dx > 0) rect((float)(cx + dx), (float)(cy + dy), 1.0f, 1.0f, c);
-        }
+        if (dx > 0) rect((float)(cx - dx), (float)(cy + dy), (float)(dx * 2 + 1), 1.0f, c);
     }
 }
 

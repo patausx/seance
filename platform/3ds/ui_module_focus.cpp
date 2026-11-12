@@ -17,6 +17,12 @@ bool module_focus_touch_header(Unit& unit, int tx, int ty) {
 
 bool module_focus_touch_body(Unit& unit, int tx, int ty) {
     switch (unit.kind) {
+        case UnitKind::Rot:
+            return rot_focus_touch_body(static_cast<RotUnit&>(unit), tx, ty);
+        case UnitKind::Rule:
+            return rule_focus_touch_body(static_cast<RuleUnit&>(unit), tx, ty);
+        case UnitKind::Pent:
+            return pent_focus_touch_body(static_cast<PentUnit&>(unit), tx, ty);
         case UnitKind::Paul:
             return paul_focus_touch_body(static_cast<PaulUnit&>(unit), tx, ty);
         case UnitKind::Scratch:
@@ -97,6 +103,15 @@ bool module_focus_draw_header(const Unit& unit) {
 
 void module_focus_draw_body(const Unit& unit) {
     switch (unit.kind) {
+        case UnitKind::Rot:
+            rot_focus_draw(static_cast<const RotUnit&>(unit));
+            break;
+        case UnitKind::Rule:
+            rule_focus_draw(static_cast<const RuleUnit&>(unit));
+            break;
+        case UnitKind::Pent:
+            pent_focus_draw(static_cast<const PentUnit&>(unit));
+            break;
         case UnitKind::Paul:
             paul_focus_draw(static_cast<const PaulUnit&>(unit));
             break;
@@ -195,3 +210,6 @@ void module_focus_draw_body(const Unit& unit) {
 // Included once: keeps the existing production/host translation-unit lists intact.
 #include "ui_module_focus_scratch.h"
 #include "ui_module_focus_paul.h"
+#include "ui_module_focus_pent.h"
+#include "ui_module_focus_rule.h"
+#include "ui_module_focus_rot.h"

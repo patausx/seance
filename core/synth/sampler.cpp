@@ -148,9 +148,6 @@ static inline fx::q15 hermite4_q15(fx::q15 y0, fx::q15 y1, fx::q15 y2, fx::q15 y
 
     // ((a*t/2 + b/2)*t + c/2)*t + d (+ accumulator correction for /2)
     // safe to do via int64 to avoid overflow
-    int64_t acc = (int64_t)a * t;                    // q15 * q15 -> q30, *0.5 -> divide at the end
-    acc >>= 15;                                      // -> q15
-    acc += b;                                        // q15 (b in q0; we need b in the same scale - well, b is an int)
     // simplify: recompute directly without a*0.5/b*0.5/c*0.5 - multiply everything by 2 for integer math
     // -> out = (((a*t + b*2)/2*t + c*2)/2 *t + d*2)/2 ... messy. better to do it all in double inside. NO.
     // let's redo it cleaner:

@@ -11,6 +11,8 @@ build/
 # ignored paths already tracked in old history remain tracked; export a fresh
 # allowlisted source tree for the public/private-review repository.
 /release/
+/output/
+/experiments/
 /promo/
 /research/
 /workspace/

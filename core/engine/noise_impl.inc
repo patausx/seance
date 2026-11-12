@@ -168,7 +168,14 @@ void NoiseUnit::modern_process(q15* buf,int frames) {
     const int colour=std::min(3,int(control_value(P_COLOUR))*4/32768);
     const float gain=float(control_value(P_GAIN))/32767.f;
     int peak=0;
-    for(int i=0;i<frames;++i){
+    int i=0;
+    while(i<frames){
+        // Render only to the exact retained sweep-clock/end edge. Coefficients
+        // are constant in this span; libm work happens after the inner loop,
+        // at most once per control edge, never for a future unused curve.
+        const int span=sweep_left_?std::min(frames-i,int(std::min(sweep_left_,uint32_t(32-filter_clock_)))):frames-i;
+        const int end=i+span;
+        for(;i<end;++i){
         const float white=noise_detail::white(random_);
         const uint32_t before=grain_phase_;grain_phase_+=grain_increment_;
         if(full_rate_||grain_phase_<before)grain_=white;
@@ -206,7 +213,13 @@ void NoiseUnit::modern_process(q15* buf,int frames) {
         if(transition_left_){out=(int(transition_from_)*transition_left_+out*(128-transition_left_))/128;--transition_left_;}
         buf[i]=last_out_=q15(out);processed_=true;peak=std::max(peak,std::abs(out));
         advance_envelope();
-        if(sweep_left_){--sweep_left_;if(++filter_clock_>=32||!sweep_left_){filter_clock_=0;update_filter();}}
+        }
+        if(sweep_left_){
+            sweep_left_-=uint32_t(span);filter_clock_+=uint8_t(span);
+            // Publish even if this edge is the final sample of a caller block:
+            // immediate control/trigger/observation sees the original next state.
+            if(filter_clock_>=32||!sweep_left_){filter_clock_=0;update_filter();}
+        }
     }
     envelope_=q15(std::max(0,std::min(32767,int(modern_env_*32767.f))));
     visual_activity_=uint16_t(peak);

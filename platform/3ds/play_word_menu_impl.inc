@@ -58,7 +58,7 @@ void words_open(Page page){if(!words_push())return;finish();words.menu=WordMenu:
 void words_confirm(WordConfirm op){if(!words_push())return;finish();words.menu=WordMenu::None;words.confirm=true;words.operation=op;words.selected=0;
     words.engine=g_eng;words.source=ctx;words.ink=m::ink();words.spot=m::spot();words.dirty=true;}
 WordCell& word_cell(WordFrame&f,layout::Box b,const char*label,WordOp op,int arg=0,bool enabled=true,bool selected=false){
-    auto&c=f.cells[f.count++];c.box=b;std::snprintf(c.label,sizeof c.label,"%s",label);c.op=op;c.arg=arg;c.enabled=enabled;c.selected=selected;return c;
+    auto&c=f.cells[f.count++];c.box=b;static_assert(sizeof c.label==48,"%.47s keeps the label exact");std::snprintf(c.label,sizeof c.label,"%.47s",label);c.op=op;c.arg=arg;c.enabled=enabled;c.selected=selected;return c;
 }
 WordCell& word_cell(WordFrame&f,int col,int row,const char*label,WordOp op,int arg=0,bool enabled=true,bool selected=false){return word_cell(f,pw::cell(col,row),label,op,arg,enabled,selected);}
 void word_param(WordFrame&f,int col,int row,const char*label,int param,Gesture gesture,const char*value,int64_t raw,int64_t lo,int64_t hi,bool enabled=true){
@@ -119,7 +119,7 @@ void words_build(WordFrame&f){
     auto nudge_pair=[&](int row){word_cell(f,0,row,"-1 smp",WordOp::Nudge,-1,exact);word_cell(f,1,row,"+1 smp",WordOp::Nudge,1,exact);};
     switch(v.page){
     case Page::Edit:
-        if(v.selection_page==Page::Cuts){std::snprintf(f.title,sizeof f.title,"part %02d / boundary %u smp",v.cut+1,cut?d.cuts.at[v.cut]:0);
+        if(v.selection_page==Page::Cuts){std::snprintf(f.title,sizeof f.title,"part %02d / boundary %u smp",v.cut+1,unsigned(cut?d.cuts.at[v.cut]:0));
             word_cell(f,0,0,"< previous part",WordOp::CutFocus,-1,cut);word_cell(f,1,0,"next part >",WordOp::CutFocus,1,cut);
             word_cell(f,0,1,"edit boundary >",WordOp::Primary,0);nudge_pair(2);
         }else {std::snprintf(f.title,sizeof f.title,"loop seam");

@@ -255,8 +255,11 @@ static bool browser_copy_to_recorder(const BrowserEntry& entry, RecUnit& rec) {
             browser_message("sound busy or changed"); return false;
         }
         auto& bank = SampleBank::instance();
-        const auto result = bank.replace_sample(token.target_slot, std::move(staged),
-            SampleOrigin::Recording, bank.provenance(entry.slot).path);
+        if(!bank.can_replace(token.target_slot,staged.data.capacity())){browser_edit_notice(SampleEditResult::MemoryBudget);return false;}
+        relic_focus_release();
+        g_eng->retire_relic_sources_for_slot(token.target_slot);
+        bank.swap_sample_unchecked(token.target_slot, staged, SampleOrigin::Recording, bank.provenance(entry.slot).path);
+        const auto result = SampleEditResult::Ok;
         if (result != SampleEditResult::Ok) { browser_edit_notice(result); return false; }
         rec.sample_slot = token.target_slot;
         rec.adopt_take(frames);
@@ -278,6 +281,7 @@ bool sample_browser_assign_selected_slot() {
             browser_message("source missing or changed"); return false;
         }
         set_sample_slot_for_unit(owner, entry.slot);
+        if(sample_slot_for_unit(owner)!=entry.slot){browser_message("source busy or changed");return false;}
     }
     browser_close();
     return true;
@@ -373,8 +377,18 @@ struct BrowserFileOwners {
     uint32_t generations[trackr::synth::SAMPLE_BANK_SIZE] = {};
     int count = trackr::synth::SAMPLE_BANK_SIZE;
 };
+// UI-thread-only scratch shared by the sequential admission/commit paths. Keep
+// this ~17KiB snapshot off the 32KiB main stack; no aggregate reset temporary.
+static BrowserFileOwners browser_file_owners;
+static_assert(sizeof(BrowserFileOwners) <= 18 * 1024 &&
+              std::is_trivially_copyable<BrowserFileOwners>::value,
+              "bounded UI-owned browser file provenance scratch");
 // Guarded bounded metadata copies; no PCM reads, allocator or filesystem calls.
 static void browser_file_owners_capture(BrowserFileOwners& owners) {
+    // Every bank row and the counted pending prefix are overwritten below.
+    // Tail rows are never consulted; reset count so old pending sources cannot
+    // leak into the next capture after a cancel, refusal or owner-list change.
+    owners.count = trackr::synth::SAMPLE_BANK_SIZE;
     auto& bank = trackr::synth::SampleBank::instance();
     for (int i = 0; i < trackr::synth::SAMPLE_BANK_SIZE; ++i) {
         owners.generations[i] = bank.generation(i);
@@ -431,7 +445,7 @@ static bool browser_delete_file(const BrowserDeleteToken& token) {
     if (!browser_delete_current(token) || !has_wav_extension(token.identity.path)) {
         browser_message("file selection changed"); return false;
     }
-    BrowserFileOwners owners;
+    auto& owners = browser_file_owners;
     {
         platform::AudioOut::Guard guard(*g_audio);
         if (!token_is_current(token.sample) || !browser_can_remove_locked()) {
@@ -480,7 +494,7 @@ static void browser_open_delete() {
         if (!browser_file_safety::inspect(token.identity.path, token.identity.root, browser_cwd, token.file)) {
             browser_message("file missing, unsafe or not wav"); return;
         }
-        BrowserFileOwners owners;
+        auto& owners = browser_file_owners;
         {
             platform::AudioOut::Guard guard(*g_audio);
             browser_file_owners_capture(owners);
@@ -814,7 +828,7 @@ void sample_browser_draw() {
     }
     m::heading(16,8,"samples",m::ink());
     char label[64];
-    if (f.valid) std::snprintf(label,sizeof label,"ch %d / %s",f.chain+1,f.kind==UnitKind::Recorder?"rec":f.kind==UnitKind::Grain?"gran":"play");
+    if (f.valid) std::snprintf(label,sizeof label,"ch %d / %s",f.chain+1,f.kind==UnitKind::Scratch?"scrt":f.kind==UnitKind::Paul?"paul":f.kind==UnitKind::Recorder?"rec":f.kind==UnitKind::Grain?"gran":"play");
     else std::snprintf(label,sizeof label,"no target");
     ui::text(142,19,label,m::ghost()); ui::text(274,19,"close",m::ghost());
     const char* source = browser_source_name(f.mode);

@@ -24,7 +24,7 @@ inline int project_source(int64_t q16,uint32_t first,uint32_t last,int left,int 
     return left+int((q16-int64_t(first)*65536)*(width-1)/(int64_t(last-first)*65536));
 }
 struct Frame {
-    bool valid=false,loaded=false,bypass=false,mute=false,lock=false,lens=false,gesture=false;
+    bool valid=false,loaded=false,bypass=false,mute=false,lens=false,gesture=false;
     bool latched=false,latch_available=false,gesture_failed=false;
     uint8_t mode=0,map=0,page=0,selected=0;
     int axis_x=ScratchUnit::P_SPEED,axis_y=ScratchUnit::P_PITCH;

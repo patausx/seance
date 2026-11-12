@@ -7,6 +7,7 @@
 #include "sample_ownership.h"
 #include "ui_picker.h"
 #include "ui_nav.h"
+#include "ui_module_focus_internal.h"
 #include "chain_columns.h"
 #include "picker_motion.h"
 #include "editor_transition.h"
@@ -18,6 +19,9 @@
 #include "inst_readout.h"
 #include "scratch_readout.h"
 #include "paul_readout.h"
+#include "pent_readout.h"
+#include "rule_readout.h"
+#include "rot_readout.h"
 #include "../../core/engine/units.h"
 #include "../../core/ui/draw.h"
 #include <algorithm>
@@ -38,6 +42,7 @@ struct Tile {
     ParamInspector control[2];
 };
 struct Frame {
+    MusicalScale scale{};
     Tile tiles[UNITS_PER_CHAIN];
     ParamInspector route;
     cc::Layout layout;
@@ -92,7 +97,7 @@ bool editor_visible=false;
 
 bool editor_context() {
     if(!editor_transition::state.active||!g_eng||!g_audio||g_eng!=editor_engine||g_audio!=editor_audio||
-       nav_is_open()||g_view!=View::Chains||g_overlay!=Overlay::Editor||g_seq_lock_armed||
+       nav_is_open()||g_view!=View::Chains||g_overlay!=Overlay::Editor||
        g_sel_chain!=editor_chain||g_edit_chain!=editor_chain||g_sel_slot!=editor_slot||g_edit_slot!=editor_slot)return false;
     platform::AudioOut::Guard guard(*g_audio);
     for(int c=0;c<NUM_CHAINS;++c)for(int s=0;s<UNITS_PER_CHAIN;++s){
@@ -179,11 +184,14 @@ void open_picker(bool replace){
     picker_open();g_overlay=Overlay::Picker;blur_refresh=true;
 }
 void copy_unit(){
-    Unit* copy=nullptr;
-    {platform::AudioOut::Guard guard(*g_audio);if(!structure_ready_locked())return;copy=clone_unit(g_eng->chains[g_sel_chain].units[g_sel_slot]);}
+    Unit* copy=nullptr;Engine* owner=g_eng;const int ci=g_sel_chain,si=g_sel_slot;
+    {platform::AudioOut::Guard guard(*g_audio);if(!structure_ready_locked())return;
+        copy=clone_unit(g_eng->chains[ci].units[si]); // retained ordinary copy path
+    }
     if(copy){Unit* retired=copy;
-        {platform::AudioOut::Guard guard(*g_audio);if(structure_ready_locked()){
-            retired=g_clip_unit;g_clip_unit=copy;g_eng->set_external_sample_slot(sample_ownership::unit_slot(copy));notify("copied module");}}
+        {platform::AudioOut::Guard guard(*g_audio);
+            const bool same=owner==g_eng&&ci==g_sel_chain&&si==g_sel_slot;
+            if(same&&structure_ready_locked()){retired=g_clip_unit;g_clip_unit=copy;g_eng->set_external_sample_slot(sample_ownership::unit_slot(copy));notify("copied module");}}
         delete retired;}
     else notify("copy failed");
 }
@@ -203,6 +211,7 @@ void paste_unit(){
     if(result==trackr::synth::SampleEditResult::Ok){
         platform::AudioOut::Guard guard(*g_audio);
         if(!structure_ready_locked())result=trackr::synth::SampleEditResult::Busy;
+        else if(!g_eng->can_install_unit(copy,g_eng->chains[g_sel_chain].units[empty]))result=trackr::synth::SampleEditResult::MemoryBudget;
         else if(copy->kind==UnitKind::Recorder)result=g_eng->commit_recorder(plan);
         if(result==trackr::synth::SampleEditResult::Ok){
             displaced=g_eng->replace_unit(g_sel_chain,empty,copy);copy=nullptr;
@@ -213,7 +222,7 @@ void paste_unit(){
         }
     }
     delete displaced;delete copy;
-    if(result!=trackr::synth::SampleEditResult::Ok)notify("paste failed / recorder memory");
+    if(result!=trackr::synth::SampleEditResult::Ok)notify("paste refused / reader or sample budget");
 }
 void menu_action(int item){
     if(!menu_open||!available()||menu_engine!=g_eng||menu_chain!=g_sel_chain||menu_slot!=g_sel_slot||
@@ -252,6 +261,7 @@ int primary(const Unit& unit,int which){
     switch(k){
     case UnitKind::SamplePlayer:return which?PlayUnit::P_GAIN:
         static_cast<const PlayUnit&>(unit).pitch_mode()==PlayUnit::PitchMode::Legacy?PlayUnit::P_SPEED:PlayUnit::P_NOTE;
+    case UnitKind::Pent:return which?PentUnit::P_BOND:PentUnit::P_ROOT;
     case UnitKind::Paul:return which?PaulUnit::P_WINDOW:PaulUnit::P_STRETCH;
     case UnitKind::Scratch:{const auto& s=static_cast<const ScratchUnit&>(unit);int x,y;s.axis_params(x,y);return which?y:x;}
     case UnitKind::Osc:return which?OscUnit::P_GAIN:OscUnit::P_PITCH;
@@ -314,10 +324,13 @@ void value_text(char* out,size_t n,const ParamInspector& p,q15 value,const Tile&
     // physical law is available. Never present parameter state as audio peaks.
     const auto k=UnitKind(p.kind);
     if(k==UnitKind::SamplePlayer){
-        play_readout::value_text(out,n,p.param,value,tile.play_modern,tile.play_quantize,tile.play_pitch_mode);return;
+        play_readout::value_text(out,n,p.param,value,tile.play_modern,tile.play_quantize,tile.play_pitch_mode,frame.scale);return;
     }
-    if(k==UnitKind::Paul)paul_readout::value_text(out,n,p.param,value);
+    if(k==UnitKind::Pent)pent_readout::value_text(out,n,p.param,value);
+    else if(k==UnitKind::Paul)paul_readout::value_text(out,n,p.param,value);
     else if(k==UnitKind::Scratch)scratch_readout::value_text(out,n,p.param,value);
+    else if(k==UnitKind::Rule)rule_readout::value_text(out,n,p.param,value);
+    else if(k==UnitKind::Rot)rot_readout::value_text(out,n,p.param,value);
     else if(k==UnitKind::Inst)inst_readout::value_text(out,n,p.param,value);
     else if(k==UnitKind::Arp&&p.param==ArpUnit::P_RATE)std::snprintf(out,n,"%s",ArpUnit::rate_name(ArpUnit::rate_index(value)));
     else if(k==UnitKind::Arp&&p.param==ArpUnit::P_GATE)std::snprintf(out,n,"%d%%",ArpUnit::gate_percent(value));
@@ -337,13 +350,14 @@ template<class P> void param_rail(const P& p,const ParamInspector& v,int left,in
     // The upper selected card has a real captured effective value. Lower card
     // controls are base-only; no duplicated live marker is invented for them.
     module_fader::horizontal(p,left,right,y,base,effective,
-        {live&&v.mod_enabled&&v.source!=ModSource::None,false,false},v.bipolar?(left+right)/2:-1);
+        {live&&v.mod_enabled&&(v.source!=ModSource::None||v.relic_source),false,false},v.bipolar?(left+right)/2:-1);
 }
 // New card titles reuse the registered private masks at the existing card
 // anchor. Older menu masks stay byte-identical; the painter keeps native/cache
 // clipping and disclosure opacity, so no shared atlas/layout change is needed.
 template<class P> void card_heading(const P& p,int x,int y,UnitKind kind,uint32_t color){
-    if(kind!=UnitKind::Scratch&&kind!=UnitKind::Paul){p.heading(x,y,m::module_name(kind),color);return;}
+    if(kind!=UnitKind::Pent&&kind!=UnitKind::Scratch&&kind!=UnitKind::Paul&&kind!=UnitKind::Rule&&kind!=UnitKind::Rot){
+        p.heading(x,y,m::module_name(kind),color);return;}
     const auto* at=module_heading::label(kind);
     if(!at)return;
     const int stride=(at->width+7)/8;
@@ -384,7 +398,8 @@ template<class P> void tile(P p,int slot,bool top){
             if(frame.route.valid){
                 const auto& r=frame.route;char route[24];lower_name(param,sizeof param,r.name);
                 const int sigil=mod_source_sigil(r.source);
-                if(sigil>=0)std::snprintf(route,sizeof route,"%c > %.10s",'a'+sigil,param);
+                if(r.relic_source){constexpr const char* ports[]={"pull","comp","bend","wave"};std::snprintf(route,sizeof route,"r.%s > %.8s",ports[std::min(3,int(r.relic_port))],param);}
+                else if(sigil>=0)std::snprintf(route,sizeof route,"%c > %.10s",'a'+sigil,param);
                 else std::snprintf(route,sizeof route,"env > %.8s",param);
                 p.text(x+14,185,route,r.mod_enabled?m::spot():m::ghost());
                 p.line(x+14,205,right-12,205,m::branch());
@@ -489,12 +504,13 @@ void capture_frame(bool modal,bool picker){
     frame.menu_x=std::clamp(frame.anchor_x+26,24,236);
     {
         platform::AudioOut::Guard guard(*g_audio);
+        frame.scale=g_eng->project_scale();
         for(int s=0;s<UNITS_PER_CHAIN;++s){const Unit* u=g_eng->chains[g_sel_chain].units[s];if(!u)continue;
             auto& t=frame.tiles[s];t.kind=u->kind;t.bypass=u->bypass;
             if(u->kind==UnitKind::SamplePlayer){const auto& play=*static_cast<const PlayUnit*>(u);
                 t.play_modern=play.modern();t.play_quantize=play.pitch_quantize;t.play_pitch_mode=play.pitch_mode();}
             for(int i=0;i<2;++i)g_eng->capture_param_inspector(g_sel_chain,s,primary(*u,i),t.control[i]);
-            if(s==selected)for(int p=0;p<u->num_params;++p)if(u->params[p].src!=ModSource::None){g_eng->capture_param_inspector(g_sel_chain,s,p,frame.route);break;}
+            if(s==selected)for(int p=0;p<u->num_params;++p)if(u->params[p].src!=ModSource::None||u->params[p].relic_source){g_eng->capture_param_inspector(g_sel_chain,s,p,frame.route);break;}
         }
         if(g_eng->chains[g_sel_chain].mute)std::snprintf(frame.status,sizeof frame.status,"chain muted");
     }
@@ -635,7 +651,7 @@ template<int W> void editor_surface(bool top){
 
 void chains_editor_begin(){
     editor_forget();
-    if(!available()||nav_is_open()||g_overlay!=Overlay::None||g_seq_lock_armed||
+    if(!available()||nav_is_open()||g_overlay!=Overlay::None||
        !frame.valid||frame.modal||frame.picker||frame.dragged>=0||frame.chain!=g_sel_chain||
        frame.selected!=g_sel_slot||g_sel_slot<0||g_sel_slot>=UNITS_PER_CHAIN||
        context_engine!=g_eng||context_chain!=g_sel_chain)return;
@@ -659,6 +675,7 @@ bool chains_editor_back(){
     capture_frame(false,false);
     editor_transition::close(osGetTime());return true;
 }
+void chains_editor_cancel_input(){editor_forget();editor_drain=0;}
 bool chains_editor_input(u32& down,u32& held,u32& up){
     const u32 blocked=editor_drain;
     editor_drain&=held;
@@ -715,7 +732,7 @@ void chains_picker_begin(){
 bool chains_context_is_open(){return menu_open;}
 void chains_close_context_branch(){close_menu();delete_slot=-1;blur_refresh=true;}
 bool chains_confirm_editor_delete(){
-    if(!available()||nav_is_open()||g_overlay!=Overlay::Editor||g_seq_lock_armed||
+    if(!available()||nav_is_open()||g_overlay!=Overlay::Editor||
        g_edit_chain<0||g_edit_chain>=NUM_CHAINS||g_edit_slot<0||g_edit_slot>=UNITS_PER_CHAIN||
        !g_eng->chains[g_edit_chain].units[g_edit_slot])return false;
     {platform::AudioOut::Guard guard(*g_audio);if(!structure_ready_locked())return false;}

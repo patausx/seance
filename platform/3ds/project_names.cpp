@@ -1,4 +1,5 @@
 #include "project_names.h"
+#include "../../core/io/file_publication.h"
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -98,40 +99,28 @@ bool project_names_load(const char* path, ProjectNames& out) {
 bool project_names_save(const char* path, const ProjectNames& names) {
     uint8_t bytes[kBytes];
     if (!path || !*path || !encode(names, bytes)) return false;
-    char temp[256], backup[256];
-    if (std::snprintf(temp, sizeof temp, "%s.tmp", path) >= int(sizeof temp) ||
-        std::snprintf(backup, sizeof backup, "%s.bak", path) >= int(sizeof backup)) return false;
-    FILE* f = std::fopen(temp, "wb");
-    if (!f) return false;
-    bool ok = std::fwrite(bytes, 1, sizeof bytes, f) == sizeof bytes;
-    if (std::fflush(f) != 0) ok = false;
-    if (std::fclose(f) != 0) ok = false;
+    char backup[256], unreadable[256];
+    const int n = std::snprintf(backup, sizeof backup, "%s.bak", path);
+    const int m = std::snprintf(unreadable, sizeof unreadable, "%s.old", path);
+    if (n < 0 || size_t(n) >= sizeof backup || m < 0 || size_t(m) >= sizeof unreadable) return false;
+    bool exists = false, recovery_exists = false;
+    if (!fileio::regular_or_absent(path, exists) ||
+        !fileio::regular_or_absent(backup, recovery_exists)) return false;
+    (void)recovery_exists;
+    fileio::OwnedFile temporary;
+    if (!fileio::create_temporary(temporary, path)) return false;
+    FILE* f = temporary.stream();
+    const bool wrote = std::fwrite(bytes, 1, sizeof bytes, f) == sizeof bytes;
+    const bool closed = temporary.close(true);
     ProjectNames verify;
-    ok = ok && project_names_load(temp, verify) && !std::memcmp(names.names, verify.names, kPayload);
-    if (!ok) { std::remove(temp); return false; }
-    struct stat st{};
-    const int status = stat(path, &st);
-    const bool exists = status == 0;
-    if ((exists && !S_ISREG(st.st_mode)) || (status != 0 && errno != ENOENT)) {
-        std::remove(temp); return false;
-    }
-    // Reuse verify: invalid primary never overwrites the last recovery catalogue.
-    const bool backup_primary = exists && project_names_load(path, verify);
-    if (backup_primary) {
-        // Refuse blocked recovery destinations rather than deleting directories.
-        struct stat old{};
-        const int found = stat(backup, &old);
-        if ((found == 0 && !S_ISREG(old.st_mode)) || (found != 0 && errno != ENOENT) ||
-            (found == 0 && std::remove(backup) != 0)) { std::remove(temp); return false; }
-        if (std::rename(path, backup) != 0) { std::remove(temp); return false; }
-    } else if (exists && std::remove(path) != 0) {
-        std::remove(temp); return false;
-    }
-    if (std::rename(temp, path) != 0) {
-        if (backup_primary) std::rename(backup, path);
-        std::remove(temp);
-        return false;
-    }
-    return true;
+    if (!wrote || !closed || !project_names_load(temporary.path(), verify) ||
+        std::memcmp(names.names, verify.names, kPayload)) return false;
+    if (!exists) return temporary.publish_vacant(path);
+    // The SD card refuses rename onto an existing name, so the current file is
+    // moved aside first: a valid one becomes the .bak recovery copy, an
+    // unreadable one goes to .old and never displaces a good .bak.
+    uint8_t prior[kBytes + 1]; size_t got = 0;
+    if (!fileio::read_bounded(path, prior, sizeof prior, got)) return false;
+    return temporary.publish_replacing(path, decode(prior, got, verify) ? backup : unreadable);
 }
 } // namespace seance::platform::ui3ds

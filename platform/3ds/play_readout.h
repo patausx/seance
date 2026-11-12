@@ -1,6 +1,7 @@
 #pragma once
 // UI-only stored/control-value readouts. No engine, sample, voice or captured-frame
-// dependency: callers supply the frozen PLAY mode and semitone-quantize flag.
+// dependency: callers supply the frozen PLAY mode, quantize flag and scale.
+// Musical Normal/Stretch note/time laws stay unchanged; only Legacy qnt opts in.
 #include "../../core/engine/units.h"
 #include <algorithm>
 #include <cstddef>
@@ -9,7 +10,7 @@
 
 namespace seance::platform::ui3ds::play_readout {
 inline void value_text(char* out, size_t size, int param, q15 raw, bool modern, bool quantize,
-                       PlayUnit::PitchMode mode = PlayUnit::PitchMode::Legacy) {
+                       PlayUnit::PitchMode mode = PlayUnit::PitchMode::Legacy, MusicalScale scale = {}) {
     if (!out || !size) return;
     using P = PlayUnit;
     if (param < 0 || param >= (modern ? P::P_COUNT : 6)) {
@@ -29,7 +30,7 @@ inline void value_text(char* out, size_t size, int param, q15 raw, bool modern, 
         // the nonzero floor and its retained negative-near-zero ordering.
         // This is global speed only: cut multiplier/reverse, arp and scrub motion
         // belong to the voice, not to this one parameter's nominal readout.
-        const auto w = play_window(2, nullptr, 0, raw, 0, 32767, 0, quantize, modern);
+        const auto w = play_window(2, nullptr, 0, raw, 0, 32767, 0, quantize, modern, scale);
         std::snprintf(out, size, "%+.2fx", double(w.increment) / 65536.0);
     } else if (param == P::P_HOLD) std::snprintf(out, size, "%s", raw > 16383 ? "hold" : "scratch");
     else if (param == P::P_LOOP || param == P::P_SCRUB) std::snprintf(out, size, "%s", raw > 16383 ? "on" : "off");

@@ -24,7 +24,7 @@ using C=MicUnit;
 constexpr int GAIN_SPAN=279;
 struct Frame {
     uint16_t mod_links=0;
-    bool valid=false,bypass=false,mute=false,lock=false,lock_full=false,lens=false;
+    bool valid=false,bypass=false,mute=false,lens=false;
     bool output_valid=false,clip=false;
     int8_t chain=0,slot=0,selected=0,sign=0;
     q15 edit[C::P_COUNT]={},live[C::P_COUNT]={};
@@ -41,11 +41,11 @@ static_assert(C::INPUT_VISUAL_SAMPLES==relief::SAMPLES,"raw window contract");
 relief::History history;
 struct Gesture {
     uintptr_t unit=0;Engine* engine=nullptr;platform::AudioOut* audio=nullptr;
-    int chain=-1,slot=-1,step=-1,lock_chain=-1,bank=-1,x=0,param=-1,action=0;
-    View view=View::Chains;bool locked=false,bypass=false;
+    int chain=-1,slot=-1,bank=-1,x=0,param=-1,action=0;
+    View view=View::Chains;bool bypass=false;
     q15 value=0;geo::Box box{};
 } gesture;
-enum Action { DragGain=0, Choice, Remove, Bypass };
+enum Action { DragGain=0, Choice, Bypass };
 int selected=C::P_GAIN;
 bool blocked_frame=false;
 struct Freshness {
@@ -54,31 +54,29 @@ struct Freshness {
 } freshness;
 bool capture_context() {
     return g_eng && g_audio && g_overlay==Overlay::Editor &&
-        (g_view==View::Chains || (g_view==View::Sequencer && g_seq_lock_armed)) &&
+        g_view==View::Chains &&
         g_edit_chain>=0 && g_edit_chain<NUM_CHAINS && g_edit_slot>=0 && g_edit_slot<UNITS_PER_CHAIN;
 }
 bool context(){return !param_lens_is_open() && capture_context();}
-bool locked(){return g_seq_lock_armed && g_seq_lock_chain==g_edit_chain && g_seq_lock_step>=0 && g_seq_lock_step<SEQ_STEPS;}
 C* current(){if(!capture_context())return nullptr;Unit*u=g_eng->chains[g_edit_chain].units[g_edit_slot];return u&&u->kind==UnitKind::MicIn?static_cast<C*>(u):nullptr;}
-q15 edit_value(const C&u,int p){return locked()?seq_display_value(g_edit_slot,p,u.params[p].base):u.params[p].base;}
+q15 edit_value(const C&u,int p){return u.params[p].base;}
 bool owns(const C&u){
     return context() && !blocked_frame && g_drag==Drag::MicGain && gesture.engine==g_eng && gesture.audio==g_audio &&
         gesture.unit==uintptr_t(&u) && current()==&u && gesture.chain==g_edit_chain && gesture.slot==g_edit_slot &&
-        gesture.view==g_view && gesture.locked==g_seq_lock_armed && gesture.bank==g_eng->active_pattern &&
-        gesture.bypass==u.bypass && (!gesture.locked || (locked() && gesture.step==g_seq_lock_step && gesture.lock_chain==g_seq_lock_chain));
+        gesture.view==g_view && gesture.bank==g_eng->active_pattern &&
+        gesture.bypass==u.bypass;
 }
 void begin(C&u,int x,int p,int action,geo::Box box){
     gesture={};gesture.unit=uintptr_t(&u);gesture.engine=g_eng;gesture.audio=g_audio;
-    gesture.chain=g_edit_chain;gesture.slot=g_edit_slot;gesture.view=g_view;gesture.locked=g_seq_lock_armed;
-    gesture.step=g_seq_lock_step;gesture.lock_chain=g_seq_lock_chain;gesture.bank=g_eng->active_pattern;
+    gesture.chain=g_edit_chain;gesture.slot=g_edit_slot;gesture.view=g_view;
+    gesture.bank=g_eng->active_pattern;
     gesture.x=x;gesture.param=p;gesture.action=action;gesture.box=box;gesture.bypass=u.bypass;
     if(p>=0)gesture.value=edit_value(u,p);
     g_drag=Drag::MicGain;
 }
 void set_value(C&u,int p,q15 v){
     if(v==edit_value(u,p))return;
-    if(g_seq_lock_armed){if(locked())seq_record_lock(g_edit_slot,p,v);}
-    else{u.params[p].base=v;mark_project_mutated();}
+    u.params[p].base=v;mark_project_mutated();
 }
 int gain_x(q15 v){return 20+(std::max(0,int(v))*GAIN_SPAN+16383)/32767;}
 void marker(int x,int y,u32 c){
@@ -123,11 +121,10 @@ void mic_focus_input(u32 down,bool blocked){
 bool mic_focus_touch_body(C&u,int x,int y){
     mic_focus_release();if(!context()||blocked_frame)return false;
     platform::AudioOut::Guard guard(*g_audio);if(current()!=&u)return false;
-    if(g_seq_lock_armed&&!locked())return true;
-    if(geo::bypass.has(x,y)){if(!g_seq_lock_armed)begin(u,x,-1,Bypass,geo::bypass);return true;}
+    if(geo::bypass.has(x,y)){begin(u,x,-1,Bypass,geo::bypass);return true;}
     const geo::Box names[]={geo::gain_name,geo::input_name,geo::cut_name};
     for(int p=0;p<C::P_COUNT;++p)if(names[p].has(x,y)){
-        selected=p;if(locked())begin(u,x,p,Remove,names[p]);return true;}
+        selected=p;return true;}
     if(geo::gain_value.has(x,y)||geo::gain_rail.has(x,y)){
         selected=C::P_GAIN;begin(u,x,C::P_GAIN,DragGain,geo::gain_rail);return true;}
     if(geo::open.has(x,y)||geo::mute.has(x,y)){
@@ -148,11 +145,9 @@ void mic_focus_touch_release(){
     if(gesture.unit&&context()&&!blocked_frame){platform::AudioOut::Guard guard(*g_audio);C*u=current();
         if(u&&owns(*u)){
             const int p=gesture.param;
-            if(gesture.action==Bypass&&!g_seq_lock_armed){u->bypass=!u->bypass;mark_project_mutated();}
+            if(gesture.action==Bypass){u->bypass=!u->bypass;mark_project_mutated();}
             else if(p>=0&&edit_value(*u,p)==gesture.value){
-                if(gesture.action==Remove&&locked()){
-                    if(g_eng->remove_step_lock(g_seq_lock_chain,g_seq_lock_step,g_edit_slot,p))mark_project_mutated();
-                }else if(gesture.action==Choice){
+                if(gesture.action==Choice){
                     const q15 value=p==C::P_MON?(gesture.box.x==geo::open.x?32767:0):
                         gesture.box.x==geo::cut(0).x?0:gesture.box.x==geo::cut(1).x?16384:32767;
                     set_value(*u,p,value);
@@ -169,7 +164,7 @@ void mic_focus_capture(){
         if(!u){mic_focus_release();freshness={};history.reset();return;}
         identity=uintptr_t(u);if(gesture.unit&&!owns(*u))mic_focus_release();
         frame.valid=true;frame.bypass=u->bypass;frame.mute=g_eng->chains[g_edit_chain].mute;
-        frame.lock=g_seq_lock_armed;frame.lock_full=frame.lock&&g_seq_lock_flash>0;frame.lens=param_lens_is_open();
+        frame.lens=param_lens_is_open();
         frame.chain=g_edit_chain;frame.slot=g_edit_slot;frame.selected=selected;frame.mod_links=focus_mod_links(*u);
         for(int p=0;p<C::P_COUNT;++p){frame.edit[p]=edit_value(*u,p);frame.live[p]=u->params[p].effective;}
         if(g_mic_ok)count=C::copy_input(input_copy,C::INPUT_VISUAL_SAMPLES);
@@ -214,11 +209,11 @@ void mic_focus_draw(const C&){
     const int edit_mode=C::low_cut_mode(frame.edit[C::P_LOW_CUT]),live_mode=C::low_cut_mode(frame.live[C::P_LOW_CUT]);
     for(int i=0;i<3;++i){geo::word(xs[i],203,words[i],i==edit_mode?m::spot():m::ghost(),1);
         if(i==live_mode&&i!=edit_mode)marker(xs[i],212,m::spot());}
-    ui::text(m::kLeft,m::kTextY,frame.lock?(frame.lock_full?"lock full":"p-lock / name: remove"):"b back",m::ghost());
-    right(m::right_edge(320),m::kTextY,frame.lock?"b back":"l: mod >",m::ghost());
+    ui::text(m::kLeft,m::kTextY,"b back",m::ghost());
+    right(m::right_edge(320),m::kTextY,"l: mod >",m::ghost());
 }
 bool mic_focus_draw_top(){
-    if(!frame.valid||frame.lock||frame.lens)return false;
+    if(!frame.valid||frame.lens)return false;
     m::paper(400);module_heading::header(UnitKind::MicIn,m::spot());char text[24];
     std::snprintf(text,sizeof text,"ch%02d / %02d",frame.chain+1,frame.slot+1);right(m::right_edge(400),m::kHeaderTextY,text,m::ghost());
     ui::text(20,59,"live input",m::ghost());

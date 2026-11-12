@@ -12,6 +12,10 @@
 #include "inst_unit.h"
 #include "scratch_unit.h"
 #include "paul_unit.h"
+#include "pent_unit.h"
+#include "rule_unit.h"
+#include "rot_unit.h"
+#include "relic_unit.h"
 #include "play_mode.h"
 #include "play_window.h"
 #include "musical_note.h"
@@ -44,6 +48,8 @@ public:
     struct NoteRecall { q15 values[4] = {}; uint8_t mask = 0; } note_recall;
     ArpUnit();
     void process(q15*, int) override {} // genuine pass-through, no pitch DSP
+    bool supports_stereo() const override { return true; }
+    bool process_stereo(q15*, int) override { return true; }
     void control_tick() override;
     void trigger() override;
     void reset() override;
@@ -205,7 +211,8 @@ public:
     }
 
     int sample_slot = 0;    // SampleBank slot
-    bool pitch_quantize = false; // snap playback speed to semitone ratios
+    bool pitch_quantize = false; // snap playback speed to semitone ratios / selected project scale
+    MusicalScale pitch_scale{}; // runtime project context; never cloned or serialized as UNIT
 
     // param indices. SLCE: 0 = window, 1..16 = Sample::chops[n-1] .. next chop/end.
     enum { P_SPEED = 0, P_START, P_LEN, P_LOOP, P_GAIN, P_SLICE, P_MODE, P_GATE,
@@ -292,6 +299,11 @@ public:
     enum class Window : uint8_t { Linear, Hann };
     enum class Reading : uint8_t { SignedPitch=0, Forward=1, Reverse=2, Mixed=3 };
     GrainUnit();
+    // Starting knobs of a card the USER adds (picker, REC send): 1x pitch,
+    // ~3.5 overlapping 152 ms grains, 30% spawn jitter. Knob values only. The
+    // bare constructor keeps the historical values that old files, scenes,
+    // migrations and retained fixtures rely on; loaders never call this.
+    void apply_new_card_start();
     void process(q15* buf, int frames) override;
     void control_tick() override;
     void trigger() override;
@@ -466,7 +478,8 @@ public:
 
     enum class Wave : uint8_t { Sine = 0, Tri, Saw, Pulse, Count };
     Wave wave = Wave::Sine;
-    bool pitch_quantize = false; // snap pitch modulation to MIDI semitones
+    bool pitch_quantize = false; // snap pitch modulation to MIDI semitones / selected project scale
+    MusicalScale pitch_scale{}; // runtime project context, independent of Params and DSP history
     bool shape_morph = true;     // UNIT bit1: continuous SHAPE path; false is exact legacy wave
     bool clean = true;           // UNIT bit2: independent opt-in; old morph is NOT clean
 
@@ -483,6 +496,8 @@ public:
         uint32_t frequency_millihz = 0;
     };
     void set_visual_capture(bool enabled);
+    // Coherent after every process return, including previously retained refs.
+    // Caller copies under the audio guard; draw consumes only the frozen copy.
     const Visual& visual() const { return visual_; }
     void reset() override; // clean state only; historical reset remains a no-op
 
@@ -522,6 +537,9 @@ private:
     uint16_t visual_warmup_ = 0, visual_cycle_samples_ = 0, visual_history_clock_ = 0;
     uint32_t visual_last_phase_ = 0;
     Visual visual_{}, visual_work_{};
+    float visual_pitch_ratio_[Visual::HISTORY] = {};
+    uint64_t visual_pitch_pending_ = 0; // private conversion debt, <=48 slots
+    void flush_visual_pitch();
     void clean_control_tick();
     void clean_process(q15* buf, int frames);
     void collect_visual(uint32_t phase, q15 pre, q15 out, float frequency);
@@ -795,6 +813,8 @@ class FilterUnit : public Unit {
 public:
     FilterUnit();
     void process(q15* buf, int frames) override;
+    bool supports_stereo() const override { return true; }
+    bool process_stereo(q15* buf, int frames) override;
     void control_tick() override;
     void reset() override;
 
@@ -808,13 +828,17 @@ public:
 private:
     q15 cutoff_smooth_ = 24000;
     q15 res_smooth_ = 4096;
-    trackr::dsp::Svf2 svf_;
+    trackr::dsp::Svf2 svf_, right_svf_;
+    bool right_active_ = false;
+    void process_channel(q15* buf, int frames, int stride, trackr::dsp::Svf2& state);
 };
 
 class VcaUnit : public Unit {
 public:
     explicit VcaUnit(bool modern = true);
     void process(q15* buf, int frames) override;
+    bool supports_stereo() const override { return true; }
+    bool process_stereo(q15* buf, int frames) override;
     void trigger() override;
     SequencerProperties sequencer_properties() const override {
         // Duck and a retained floor shape an already-continuous signal; only
@@ -860,7 +884,8 @@ private:
     q15 reset_from_ = 0, last_multiplier_ = 0;
     uint8_t reset_blend_left_ = 0;
     q15 resolved(int p) const;
-    void process_legacy(q15* buf, int frames);
+    void process_channels(q15* buf, int frames, int channels);
+    void process_legacy(q15* buf, int frames, int channels = 1);
     void enter_stage(uint8_t stage);
     void prepare_live();
     // Modern phase is exact Q32 with a Bresenham remainder; no lost fractional
@@ -1328,6 +1353,8 @@ class RecUnit : public Unit {
 public:
     RecUnit();
     void process(q15* buf, int frames) override;
+    bool supports_stereo() const override { return true; }
+    bool process_stereo(q15* buf, int frames) override;
     void trigger() override;
     void reset() override;
     void stop();
@@ -1352,6 +1379,8 @@ public:
     uint64_t state_token() const { return state_token_; }
     uint32_t recorded_frames() const { return wr_frames_; }
     void capture_input(const q15* buf, int frames);
+    // Interleaved capture, same writer/session; mismatch finalizes before reading.
+    void capture_input_channels(const q15* buf, int frames, uint8_t channels);
     uint32_t capacity_frames() const;
     uint32_t target_frames() const;
     uint32_t active_target_frames() const { return target_frames_; }
@@ -1361,7 +1390,8 @@ public:
     static constexpr int WAVE_POINTS = 64;
     void copy_visual_wave(q15* out) const;
     trackr::synth::SampleEditResult prepare_slot();
-    static trackr::synth::SampleEditResult stage_workspace(uint32_t frames, trackr::synth::Sample& out);
+    static trackr::synth::SampleEditResult stage_workspace(uint32_t frames, trackr::synth::Sample& out,
+                                                         uint8_t channels = 1);
     void adopt_workspace();
     uint32_t required_capacity_frames() const;
 
@@ -1378,6 +1408,7 @@ private:
     int writer_slot_ = -1;
     uint32_t writer_generation_ = 0, writer_capacity_ = 0;
     const q15* writer_data_ = nullptr;
+    uint8_t writer_channels_ = 1;
     bool writer_storage_matches() const;
     void renew_session();
     uint32_t wr_frames_ = 0;

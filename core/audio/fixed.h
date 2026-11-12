@@ -39,24 +39,28 @@ inline q15 lerp_q15(q15 a, q15 b, uq16 frac) {
 // soft cubic saturation from q31 to q15 - a smooth knee, unlike hard sat_q15.
 // idea: for |v|<=knee it passes through linearly. above that - cubic taper into the asymptote.
 // removes hard-clipping crackle when summing multiple sources.
+//
+// Bit-exact with the original int64 formulation for every int32 input
+// (tests/test_soft_clip_exact.py compares all 2^32 values). After the knee clamp
+// every intermediate fits in 32 bits, so ARM11 needs no software 64-bit division:
+// both divisors are constants and become multiplies.
 inline q15 soft_clip_q31(q31 v) {
     constexpr q31 KNEE  = 24000;            // linear range up to ~73% amplitude, above that - cubic
     constexpr q31 RANGE = 32767 - KNEE;     // 8767
+    constexpr uint32_t SPAN = uint32_t(RANGE) * 4;   // 35068: full taper width
+    static_assert(uint64_t(SPAN) * 32767 <= UINT32_MAX, "over * 32767 must fit");
+    static_assert(uint64_t(32767) * 32767 <= UINT32_MAX, "r * r and r2 * r must fit");
     if (v >= -KNEE && v <= KNEE) return (q15)v;     // linear
-    bool neg = v < 0;
-    // Avoid signed overflow for the one q31 value whose positive magnitude does
-    // not fit in int32. The subsequent knee clamp only needs a wider temporary.
-    int64_t abs_v = neg ? -(int64_t)v : (int64_t)v;
-    int64_t over = abs_v - KNEE;
-    if (over > (int64_t)RANGE * 4) over = (int64_t)RANGE * 4;
-    int64_t r = ((int64_t)over * 32767) / (RANGE * 4);   // q15 [0..32767]
-    int64_t r2 = (r * r) >> 15;
-    int64_t r3 = (r2 * r) >> 15;
-    int64_t shaped = r - r3 / 3;
-    if (shaped > 32767) shaped = 32767;
-    if (shaped < 0) shaped = 0;
-    q31 result = KNEE + (q31)((shaped * RANGE) >> 15);
-    if (result > 32767) result = 32767;
+    const bool neg = v < 0;
+    // Unsigned magnitude is defined for INT32_MIN too (2^31).
+    const uint32_t mag = neg ? 0u - uint32_t(v) : uint32_t(v);
+    uint32_t over = mag - uint32_t(KNEE);            // >= 1
+    if (over > SPAN) over = SPAN;
+    const uint32_t r  = (over * 32767u) / SPAN;      // q15 [0..32767]
+    const uint32_t r2 = (r * r) >> 15;
+    const uint32_t r3 = (r2 * r) >> 15;              // r3 <= r
+    const uint32_t shaped = r - r3 / 3;              // [0..32767]: the old clamps were unreachable
+    const q31 result = KNEE + q31((shaped * uint32_t(RANGE)) >> 15);   // <= 32766
     return neg ? (q15)(-result) : (q15)result;
 }
 

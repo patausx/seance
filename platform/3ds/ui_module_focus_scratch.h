@@ -36,8 +36,8 @@ struct ScratchTrace {q15 x=0,y=0;uint64_t time=0;bool join=false;} scratch_trace
 unsigned scratch_trace_count=0;
 struct ScratchTouch {
     Engine* engine=nullptr; platform::AudioOut* audio=nullptr;
-    uintptr_t unit=0;int chain=-1,slot=-1,sample=-1,step=-1,bank=-1,page=0;
-    View view=View::Chains;bool lock=false;uint32_t generation=0,token=0;
+    uintptr_t unit=0;int chain=-1,slot=-1,sample=-1,page=0;
+    View view=View::Chains;uint32_t generation=0,token=0;
     SC::Mode mode=SC::Mode::Scratch;SC::Map map=SC::Map::PositionGain;
     int axis_x=-1,axis_y=-1;
     int x=0,y=0,param=-1,action=-1;sg::Box box{};
@@ -53,24 +53,22 @@ struct ScratchWords {
     sg::Frame background{};
 } scratch_words;
 bool scratch_context(){return g_eng&&g_audio&&g_overlay==Overlay::Editor&&
-    (g_view==View::Chains||(g_view==View::Sequencer&&g_seq_lock_armed))&&
+    g_view==View::Chains&&
     g_edit_chain>=0&&g_edit_chain<NUM_CHAINS&&g_edit_slot>=0&&g_edit_slot<UNITS_PER_CHAIN;}
 SC* scratch_current(){if(!scratch_context())return nullptr;auto* u=g_eng->chains[g_edit_chain].units[g_edit_slot];
     return u&&u->kind==UnitKind::Scratch?static_cast<SC*>(u):nullptr;}
-int scratch_bank(){const int b=sequencer_edit_bank();return g_seq_lock_armed&&b>=0&&b<NUM_PATTERNS?b:g_eng->active_pattern;}
-q15 scratch_edit(const SC& u,int p){return g_seq_lock_armed?seq_display_value(g_edit_slot,p,u.params[p].base):u.params[p].base;}
+q15 scratch_edit(const SC& u,int p){return u.params[p].base;}
 bool scratch_owns(const SC& u){return scratch_context()&&!param_lens_is_open()&&
     scratch_touch.engine==g_eng&&scratch_touch.audio==g_audio&&scratch_touch.unit==uintptr_t(&u)&&
     scratch_touch.chain==g_edit_chain&&scratch_touch.slot==g_edit_slot&&scratch_touch.view==g_view&&
-    scratch_touch.lock==g_seq_lock_armed&&scratch_touch.page==scratch_page&&scratch_touch.mode==u.mode&&scratch_touch.map==u.map&&
+    scratch_touch.page==scratch_page&&scratch_touch.mode==u.mode&&scratch_touch.map==u.map&&
     scratch_touch.axis_x==u.axis_x&&scratch_touch.axis_y==u.axis_y&&
     scratch_touch.sample==u.sample_slot&&
     (u.sample_slot<0||(u.sample_slot<trackr::synth::SAMPLE_BANK_SIZE&&scratch_touch.generation==SB::instance().generation(u.sample_slot)))&&
-    (!g_seq_lock_armed||(scratch_touch.step==g_seq_lock_step&&scratch_touch.bank==scratch_bank()&&g_seq_lock_chain==g_edit_chain))&&
     (!scratch_touch.field||g_eng->scratch_gesture_active(scratch_touch.token));}
 bool scratch_menu_owns(const SC& u){
     const auto saved=scratch_touch;scratch_touch=scratch_words.owner;
-    const bool valid=scratch_owns(u)&&!g_seq_lock_armed&&scratch_words.ink==m::ink()&&scratch_words.spot==m::spot();
+    const bool valid=scratch_owns(u)&&scratch_words.ink==m::ink()&&scratch_words.spot==m::spot();
     scratch_touch=saved;return valid;
 }
 void scratch_close_words(){scratch_words.axis=-1;scratch_words.owner={};scratch_words.motion={};}
@@ -86,8 +84,8 @@ void scratch_begin(SC& u,int x,int y){
     scratch_touch={};scratch_touch.engine=g_eng;scratch_touch.audio=g_audio;scratch_touch.unit=uintptr_t(&u);
     scratch_touch.chain=g_edit_chain;scratch_touch.slot=g_edit_slot;scratch_touch.sample=u.sample_slot;
     scratch_touch.generation=u.sample_slot>=0&&u.sample_slot<trackr::synth::SAMPLE_BANK_SIZE?SB::instance().generation(u.sample_slot):0;
-    scratch_touch.step=g_seq_lock_step;scratch_touch.bank=scratch_bank();scratch_touch.page=scratch_page;
-    scratch_touch.view=g_view;scratch_touch.lock=g_seq_lock_armed;scratch_touch.mode=u.mode;scratch_touch.map=u.map;
+    scratch_touch.page=scratch_page;
+    scratch_touch.view=g_view;scratch_touch.mode=u.mode;scratch_touch.map=u.map;
     scratch_touch.axis_x=u.axis_x;scratch_touch.axis_y=u.axis_y;
     scratch_touch.x=x;scratch_touch.y=y;scratch_trace_count=0;g_drag=Drag::ScratchParam;
 }
@@ -117,7 +115,7 @@ template<class P> void scratch_word(const P& p,sg::Box b,const char* s,bool sele
     p.text(x,b.y+8,s,dim?m::ghost():selected?m::spot():m::ink());
     if(selected)p.line(x,b.y+20,x+ui::text_w(s)-1,b.y+20,m::spot());}
 template<class P> void scratch_field(const P& p){const auto& f=scratch_frame;const auto b=sg::field;
-    const bool enabled=f.loaded&&!f.bypass&&!f.mute&&!f.lock&&!f.gesture_failed;
+    const bool enabled=f.loaded&&!f.bypass&&!f.mute&&!f.gesture_failed;
     for(int x:{b.x,b.x+b.w-1})for(int y:{b.y,b.y+b.h-1}){int dx=x==b.x?9:-9,dy=y==b.y?9:-9;
         p.line(x,y,x+dx,y,enabled?m::ink():m::ghost());p.line(x,y,x,y+dy,enabled?m::ink():m::ghost());}
     const int ax=f.axis_x,ay=f.axis_y;
@@ -170,22 +168,17 @@ bool scratch_focus_touch_body(SC& u,int x,int y){
     }
     if(sg::setup.has(x,y)){scratch_arm(u,x,y,SSetup,sg::setup);return true;}
     if(sg::back.has(x,y)){scratch_arm(u,x,y,SBack,sg::back);return true;}
-    if(!g_seq_lock_armed){
+    {
         const sg::Box boxes[]={sg::source,sg::scratch,sg::hold,sg::speed,sg::position,sg::mod,sg::latch};
         const int actions[]={SSource,SScratch,SHold,SSpeed,SPosition,SMod,SLatch};
         for(int i=0;i<7;++i)if(boxes[i].has(x,y)){scratch_arm(u,x,y,actions[i],boxes[i]);return true;}}
     int ax,ay;u.axis_params(ax,ay);
     for(int i=0;i<2;++i)if(!scratch_page&&sg::axis(i).has(x,y)){
-        scratch_selected=i?ay:ax;if(!g_seq_lock_armed)scratch_arm(u,x,y,i?SAxisY:SAxisX,sg::axis(i));return true;}
-    if(scratch_page==1||g_seq_lock_armed){for(int i=0;i<scratch_setup_count(u.mode);++i){auto b=sg::parameter(i);if(!b.has(x,y))continue;
+        scratch_selected=i?ay:ax;scratch_arm(u,x,y,i?SAxisY:SAxisX,sg::axis(i));return true;}
+    if(scratch_page==1){for(int i=0;i<scratch_setup_count(u.mode);++i){auto b=sg::parameter(i);if(!b.has(x,y))continue;
         const int p=scratch_setup_param(u.mode,i);scratch_selected=p;
-        if(g_seq_lock_armed&&g_seq_lock_chain!=g_edit_chain)return true;
-        if(g_seq_lock_armed&&y<b.y+10&&x<b.x+ui::text_w(scratch_names[p])){
-            if(g_eng->remove_step_lock(g_seq_lock_chain,g_seq_lock_step,g_edit_slot,p,scratch_bank()))mark_project_mutated();
-            return true;}
         scratch_begin(u,x,y);scratch_touch.param=p;scratch_touch.ox=scratch_edit(u,p);return true;}return true;}
     if(scratch_page==0&&sg::field.has(x,y)){
-        if(g_seq_lock_armed)return true;
         const q15 vx=scratch_absolute(x,sg::field.x,sg::field.w,u.params[ax].bipolar);
         const q15 vy=scratch_absolute(y,sg::field.y,sg::field.h,u.params[ay].bipolar,true);
         const q15 source=scratch_absolute(x,sg::field.x,sg::field.w,false);
@@ -208,7 +201,7 @@ void scratch_focus_drag(SC& u,int x,int y){if(!scratch_touch.unit)return;
         const auto vy=scratch_absolute(y,sg::field.y,sg::field.h,u.params[ay].bipolar,true);
         if(!g_eng->set_scratch_gesture(scratch_touch.token,vx,vy))scratch_cancel();
     }else if(scratch_touch.param>=0){int p=scratch_touch.param;auto value=relative(scratch_touch.ox,int64_t(x)-scratch_touch.x,128,u.params[p].bipolar);
-        if(value!=scratch_edit(u,p)){if(g_seq_lock_armed)seq_record_lock(g_edit_slot,p,value);else{u.params[p].base=value;mark_project_mutated();}}}
+        if(value!=scratch_edit(u,p)){u.params[p].base=value;mark_project_mutated();}}
 }
 void scratch_focus_touch_release(){
     int action=-1;SC* browser=nullptr;bool normal_field=false;
@@ -218,7 +211,7 @@ void scratch_focus_touch_release(){
             action=scratch_touch.action;
             if(scratch_touch.field){g_eng->end_scratch_gesture(scratch_touch.token);scratch_touch.token=0;normal_field=true;}
             else if(action==SSetup)scratch_page=scratch_page==1?0:1;
-            else if(!g_seq_lock_armed){bool changed=false;
+            else {bool changed=false;
                 if(action==SAxisX||action==SAxisY)scratch_open_words(*u,action==SAxisY?1:0);
                 else if(action==SAxisChoice&&scratch_words.axis>=0&&scratch_menu_owns(*u)){
                     const int p=scratch_touch.param;int ax,ay;u->axis_params(ax,ay);
@@ -250,7 +243,7 @@ static void scratch_capture_locked(){
     if((scratch_touch.unit&&(!scratch_owns(*u)||param_lens_is_open()))||(scratch_words.axis>=0&&!scratch_menu_owns(*u)))scratch_cancel_all();
     if(!SC::parameter_available(u->mode,scratch_selected)){int ax,ay;u->axis_params(ax,ay);scratch_selected=ax;}
     auto& f=scratch_frame;f.valid=true;f.chain=g_edit_chain;f.slot=g_edit_slot;f.mode=uint8_t(u->mode);f.map=uint8_t(u->map);
-    f.page=g_seq_lock_armed?1:scratch_page;f.selected=scratch_selected;f.lock=g_seq_lock_armed;f.lens=param_lens_is_open();
+    f.page=scratch_page;f.selected=scratch_selected;f.lens=param_lens_is_open();
     f.bypass=u->bypass;f.mute=g_eng->chains[g_edit_chain].mute;f.sample_slot=u->sample_slot;f.visual=u->visual();
     f.gesture=scratch_touch.field&&scratch_touch.token;f.origin_x=scratch_touch.ox;f.origin_y=scratch_touch.oy;
     u->axis_params(f.axis_x,f.axis_y);f.latched=u->latched();f.gesture_failed=scratch_gesture_failed;
@@ -260,7 +253,7 @@ static void scratch_capture_locked(){
     if(u->sample_slot<0||u->sample_slot>=trackr::synth::SAMPLE_BANK_SIZE)return;
     const auto& s=SB::instance().slot(u->sample_slot);f.frames=s.playable_frames();f.generation=SB::instance().generation(u->sample_slot);
     f.loaded=!s.empty()&&f.frames&&(s.channels==1||s.channels==2);f.view_last=f.frames?f.frames-1:0;
-    f.latch_available=f.loaded&&!f.bypass&&!f.mute&&!f.lock&&!f.gesture_failed&&!g_eng->recording_active_or_pending();
+    f.latch_available=f.loaded&&!f.bypass&&!f.mute&&!f.gesture_failed&&!g_eng->recording_active_or_pending();
     for(int p:{f.axis_x,f.axis_y})if(u->params[p].performance_override||u->params[p].step_lock_override||
         (u->params[p].temp_override&&!f.gesture))f.latch_available=false;
     const char* path=SB::instance().provenance(u->sample_slot).path;const char* name=std::strrchr(path,'/');name=name?name+1:path;
@@ -269,7 +262,7 @@ static void scratch_capture_locked(){
     // Trace samples are captured actual resolved target pairs, not interpolated
     // stylus fiction. Context cancellation clears; a real lift fades for 240ms.
     const uint64_t now=osGetTime();const int ax=f.axis_x,ay=f.axis_y;
-    if(f.gesture&&!f.bypass&&!f.mute&&!f.lock){const q15 x=f.params[ax].target,y=f.params[ay].target;
+    if(f.gesture&&!f.bypass&&!f.mute){const q15 x=f.params[ax].target,y=f.params[ay].target;
         if(!scratch_trace_count||scratch_trace[scratch_trace_count-1].x!=x||scratch_trace[scratch_trace_count-1].y!=y){
             bool join=false;if(scratch_trace_count){const auto& last=scratch_trace[scratch_trace_count-1];join=now>=last.time&&now-last.time<=80&&
                 std::abs(int(x)-last.x)*4<=(u->params[ax].bipolar?65534:32767)&&std::abs(int(y)-last.y)*4<=(u->params[ay].bipolar?65534:32767);}
@@ -303,8 +296,8 @@ template<class P> void scratch_bottom(const P& p){const auto& f=scratch_frame;if
                 p.rect(module_heading::kX+x,module_heading::kY+y,1,1,m::spot());}}
     p.text(76,m::kHeaderTextY,f.source_name[0]?f.source_name:"source >",m::ink());
     p.right(m::right_edge(320),m::kHeaderTextY,"setup",m::ghost());
-    scratch_word(p,sg::scratch,"scratch",f.mode==0,f.lock);scratch_word(p,sg::hold,"hold",f.mode==1,f.lock);
-    scratch_word(p,sg::speed,"speed",f.map==2,f.lock);scratch_word(p,sg::position,"position",f.map!=2,f.lock);
+    scratch_word(p,sg::scratch,"scratch",f.mode==0);scratch_word(p,sg::hold,"hold",f.mode==1);
+    scratch_word(p,sg::speed,"speed",f.map==2);scratch_word(p,sg::position,"position",f.map!=2);
     if(f.page==1){for(int i=0;i<scratch_setup_count(SC::Mode(f.mode));++i){const int id=scratch_setup_param(SC::Mode(f.mode),i);const auto b=sg::parameter(i);const auto& d=f.params[id];
         // Shared MOD owns its labels; don't print duplicate setup text beneath it.
         if(!f.lens){p.text(b.x,b.y,scratch_names[id],f.selected==id?m::spot():m::ink());p.right(b.x+b.w,b.y+12,f.values[id],m::ghost());}
@@ -313,8 +306,8 @@ template<class P> void scratch_bottom(const P& p){const auto& f=scratch_frame;if
     else{
         p.text(sg::axis(0).x,66,f.axis_labels[0],f.selected==f.axis_x?m::spot():m::ink());
         p.right(306,66,f.axis_labels[1],f.selected==f.axis_y?m::spot():m::ink());scratch_field(p);}
-    p.text(m::kLeft,m::kTextY,f.lock?"p-lock / name: remove":"mod >",m::ghost());
-    if(!f.lock)p.text(sg::latch.x+(sg::latch.w-ui::text_w("latch off"))/2,m::kTextY,f.latched?"latch on":"latch off",
+    p.text(m::kLeft,m::kTextY,"mod >",m::ghost());
+    p.text(sg::latch.x+(sg::latch.w-ui::text_w("latch off"))/2,m::kTextY,f.latched?"latch on":"latch off",
         f.latched?m::spot():f.latch_available?m::ink():m::ghost());
     p.right(m::right_edge(320),m::kTextY,"back >",m::ghost());
 }

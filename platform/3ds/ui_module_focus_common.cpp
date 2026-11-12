@@ -192,7 +192,7 @@ u32 faint() { return palette::subdued(); }
 
 void paper_button(int x, int y, int w, int h, const char* label,
                   bool active, bool dim) {
-    const auto press = small_press::pose(x, y, w, h, !dim && !(g_seq_lock_armed && y < 22));
+    const auto press = small_press::pose(x, y, w, h, !dim);
     y += press.dy;
     ui::rect(x, y, w, h, small_press::tone(active ? spot() : paper_hi(), press.weight));
     ui::frame(x, y, w, h, dim ? ghost() : (active ? spot() : ink()));

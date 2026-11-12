@@ -25,6 +25,7 @@
 #include "../../core/engine/vca_envelope.h"
 #include "../../core/engine/patch_io.h"
 #include "../../core/engine/project_session.h"
+#include "../../core/engine/project_recovery.h"
 #include "../../core/synth/wav_loader.h"
 #include "../../core/synth/wav_writer.h"
 #include "../../core/ui/draw.h"
@@ -64,8 +65,13 @@
 #include "ui_workspace.h"
 #include "ui_start_menu.h"
 #include "startup_input_tail.h"
+#include "lifecycle_input.h"
 #include "start_menu_store.h"
 #include "project_names.h"
+#include "project_file_ops.h"
+#include "word_menu.h"
+#include "sigil_surface.h"
+#include "../../core/engine/patch_preview.h"
 
 using namespace seance;
 using namespace seance::platform::ui3ds;
@@ -123,6 +129,10 @@ bool g_export_is_load = false;
 int  g_sample_page = 0;
 int  g_patch_slot = 0;
 ProjectSession g_project_session;
+static recovery::Store g_recovery_store("sdmc:/3ds/seance/recovery");
+static recovery::Controller g_recovery;
+static recovery::Inventory g_recovery_boot;
+static bool g_recovered_session = false;
 bool g_exit_requested = false;
 int  g_patch_confirm_slot = -1;
 int g_patch_delete_confirm_slot = -1;
@@ -151,8 +161,7 @@ bool g_sigil_clip_valid = false;
 bool g_sig_canvas_mutated = false;
 u32   g_ui_rng = 0x51A7CEu;
 u32   g_ui_frame = 0;
-bool g_seq_lock_armed = false;
-int g_seq_lock_chain = 0, g_seq_lock_step = 0, g_seq_lock_flash = 0;
+int g_seq_lock_flash = 0;
 
 // Presentation only: the destination is already live. No input ownership, heap,
 // engine pointers or retained LCD surfaces. Frame is frozen before C3D begins.
@@ -173,68 +182,6 @@ void mark_project_structural_mutated() { g_project_session.mark_mutated(); }
 bool project_is_dirty() { return g_project_session.dirty(); }
 int project_active_slot() { return g_project_session.active_slot(); }
 
-bool seq_record_lock(int slot, int param, q15 value) {
-    if (!g_seq_lock_armed) return true;
-    if (g_edit_chain != g_seq_lock_chain ||
-        g_seq_lock_chain < 0 || g_seq_lock_chain >= NUM_CHAINS ||
-        g_seq_lock_step < 0 || g_seq_lock_step >= SEQ_STEPS) {
-        g_seq_lock_flash = 90;
-        return false;
-    }
-    // SCRT/PAUL focused locks follow the UI's selected bank, not the worker's
-    // active bank. Keep unrelated older module routes unchanged here.
-    if (slot >= 0 && slot < UNITS_PER_CHAIN && g_audio) {
-        platform::AudioOut::Guard guard(*g_audio);
-        Unit* target = g_eng->chains[g_edit_chain].units[slot];
-        if (target && (target->kind == UnitKind::Paul || target->kind == UnitKind::Scratch)) {
-            if (param < 0 || param >= target->num_params ||
-                (target->kind == UnitKind::Paul && g_eng->recording_active_or_pending())) return false;
-            const int selected = sequencer_edit_bank();
-            const int bank = selected >= 0 && selected < NUM_PATTERNS ? selected : g_eng->active_pattern;
-            SeqStep& step = g_eng->sequence_pattern(bank).steps[g_seq_lock_chain][g_seq_lock_step];
-            const int count = std::min(int(step.lock_count), SEQ_LOCKS);
-            const q15 next = q15(std::clamp(int(value), target->params[param].bipolar ? -32767 : 0, 32767));
-            for (int i = 0; i < count; ++i) if (step.locks[i].slot == slot && step.locks[i].param == param) {
-                if (step.locks[i].value != next) {step.locks[i].value = next;mark_project_mutated();}
-                return true;
-            }
-            if (count >= SEQ_LOCKS) {g_seq_lock_flash = 90;return false;}
-            step.locks[count] = {uint8_t(slot), uint8_t(param), next};
-            step.lock_count = uint8_t(count + 1);mark_project_mutated();return true;
-        }
-    }
-    const SeqStep& before = g_eng->pattern.steps[g_seq_lock_chain][g_seq_lock_step];
-    bool changed = true;
-    const int count = before.lock_count > SEQ_LOCKS ? SEQ_LOCKS : before.lock_count;
-    for (int i = 0; i < count; ++i) {
-        const StepLock& lock = before.locks[i];
-        if (lock.slot == slot && lock.param == param) {
-            changed = lock.value != value;
-            break;
-        }
-    }
-    const bool ok = g_eng->set_step_lock(g_seq_lock_chain, g_seq_lock_step, slot, param, value);
-    if (!ok) g_seq_lock_flash = 90;
-    else if (changed) mark_project_mutated();
-    return ok;
-}
-
-q15 seq_display_value(int slot, int param, q15 fallback) {
-    if (!g_seq_lock_armed || g_edit_chain != g_seq_lock_chain) return fallback;
-    // Pattern activation is audio-worker-owned. Copy the one armed step under a
-    // short guard and release it before any renderer issues Citro2D commands.
-    platform::AudioOut::Guard guard(*g_audio);
-    if (g_seq_lock_chain < 0 || g_seq_lock_chain >= NUM_CHAINS || g_seq_lock_step < 0 || g_seq_lock_step >= SEQ_STEPS) return fallback;
-    const Unit* target = slot >= 0 && slot < UNITS_PER_CHAIN ? g_eng->chains[g_edit_chain].units[slot] : nullptr;
-    const int selected = target && (target->kind == UnitKind::Paul || target->kind == UnitKind::Scratch) ? sequencer_edit_bank() : -1;
-    const SeqStep& step = selected >= 0 && selected < NUM_PATTERNS ?
-        g_eng->sequence_pattern(selected).steps[g_seq_lock_chain][g_seq_lock_step] : g_eng->pattern.steps[g_seq_lock_chain][g_seq_lock_step];
-    const int count = step.lock_count > SEQ_LOCKS ? SEQ_LOCKS : step.lock_count;
-    for (int i = 0; i < count; ++i)
-        if (step.locks[i].slot == slot && step.locks[i].param == param)
-            return step.locks[i].value;
-    return fallback;
-}
 
 
 // ===================== small helpers =====================
@@ -259,7 +206,7 @@ uint64_t start_timestamp() {
 void remember_project(int slot) {
     // Successful LOAD only (manual menu/browser or startup resume), never SAVE.
     start_store_touch(g_start_store, slot, start_timestamp());
-    g_start_store_write_failed = !start_store_save(START_MENU_PATH, g_start_store);
+    g_start_store_write_failed = !start_store_save_preferences(START_MENU_PATH, g_start_store);
 }
 
 int load_last_patch_slot() {
@@ -279,22 +226,14 @@ void save_last_patch_slot() {
         remove(LAST_PATCH_PATH);
         return;
     }
-    char temporary[96];
-    std::snprintf(temporary, sizeof temporary, "%s.tmp", LAST_PATCH_PATH);
-    FILE* f = fopen(temporary, "wb");
-    const unsigned char data[5] = { 'S', 'L', 'O', 'T', (unsigned char)active_slot };
-    bool ok = f && fwrite(data, 1, sizeof data, f) == sizeof data && fflush(f) == 0;
-    if (f) {
-        if (fclose(f) != 0) ok = false;
-        f = nullptr;
-    }
-    if (ok) {
-        remove(LAST_PATCH_PATH);
-        if (rename(temporary, LAST_PATCH_PATH) != 0) remove(temporary);
-    } else {
-        if (f) fclose(f);
-        remove(temporary);
-    }
+    (void)last_patch_store_save(LAST_PATCH_PATH, active_slot);
+}
+
+static void persist_last_project() {
+    // A detached recovered draft must not erase the old manual resume pointer.
+    // Explicit Save attaches a slot; successful New/load clears this exception.
+    if (!g_recovered_session || project_slot_valid(g_project_session.active_slot()))
+        save_last_patch_slot();
 }
 
 void patch_path(int slot, char* out, size_t n) {
@@ -331,10 +270,11 @@ bool transactional_patch_load(const char* path) {
     // Release momentary live controls before taking the patch-swap guard;
     // performance_view_reset() takes that guard itself.
     performance_view_reset();
+    relic_focus_release();
     bool commit_ok = false;
     {
         platform::AudioOut::Guard g(*g_audio);
-        commit_ok = !g_eng->play_editor_busy() && patchio::commit_restored_samples(*manifest, *restored, staged);
+        commit_ok = !g_eng->play_editor_busy() && patchio::commit_restored_samples(*manifest, *restored, staged, g_eng);
         if (commit_ok) {
             for (int c = 0; c < NUM_CHAINS; ++c)
                 for (int s = 0; s < UNITS_PER_CHAIN; ++s) {
@@ -353,7 +293,6 @@ bool transactional_patch_load(const char* path) {
             g_eng->transport_stop();
             g_eng->set_sequencer_enabled(false);
             sequencer_forget_pins();
-            g_seq_lock_armed = false;
             g_seq_lock_flash = 0;
         }
     }
@@ -389,6 +328,66 @@ static bool project_recordings_ready(bool require_saved) {
             if (unit && unit->kind == UnitKind::Recorder &&
                 static_cast<const RecUnit*>(unit)->take_needs_save()) return false;
     return true;
+}
+
+static void recovery_idle_tick(bool input_quiet, u32 fresh_down, bool transport_was_playing = true) {
+    const uint64_t now = svcGetSystemTick() / (SYSCLOCK_ARM11 / 1000);
+    static uint32_t lifecycle_seen = 0;
+    const uint32_t lifecycle = g_audio->lifecycle_epoch();
+    recovery::State state;
+    state.quiet = input_quiet && lifecycle == lifecycle_seen && g_drag == Drag::None &&
+        g_overlay == Overlay::None && !nav_is_open() && !g_project_session.has_pending() &&
+        !param_lens_is_open() && !chains_context_is_open() && !play_editor_word_modal() &&
+        !rot_focus_menu_modal() && !rule_focus_menu_modal() && !pent_focus_menu_modal() &&
+        !grain_focus_menu_modal() && g_view != View::Bounce && g_save_flash == 0;
+    lifecycle_seen = lifecycle;
+    if (g_recovery.disabled() && !g_recovery.unresolved()) {
+        // A successful project swap cannot undo a failed durable disposition.
+        // Keep its retained fallback visible instead of implying autosave works.
+        g_save_flash=180;
+        std::snprintf(g_patch_notice,sizeof g_patch_notice,"recovery retained / snapshots disabled");
+    }
+    {
+        platform::AudioOut::Guard guard(*g_audio);
+        // START must have reached an actual transport-play route. Modal closing,
+        // R+START reset, navigation A and startup/lifecycle tails never authorize.
+        if ((fresh_down & KEY_START) && !transport_was_playing && g_eng->transport_playing)
+            g_audio->authorize_recovered_output();
+        state.stopped = !g_eng->transport_playing;
+        state.safe = !g_eng->recording_active_or_pending() && project_recordings_ready(true);
+        state.revision = g_project_session.revision();
+        state.random_revision = g_eng->module_random_revision();
+        state.dirty = g_project_session.dirty();
+    }
+    if (!g_recovery.due(now,state)) return;
+    patchio::PatchDocument document; // heap constructed BEFORE guard
+    WorkspaceLayout workspace; workspace_get_layout(workspace);
+    bool captured = false;
+    if (document.valid()) {
+        platform::AudioOut::Guard guard(*g_audio);
+        captured = !g_eng->transport_playing && !g_eng->recording_active_or_pending() &&
+            project_recordings_ready(true) && state.revision == g_project_session.revision() &&
+            state.random_revision == g_eng->module_random_revision() &&
+            patchio::capture(*g_eng,document,&workspace);
+    }
+    recovery::Record committed;
+    const bool ok = captured && g_recovery_store.checkpoint(document,g_recovery.epoch(),state.revision,committed);
+    // Audio-clocked rand can advance during SD I/O. Its newer bases stay dirty;
+    // coverage names only the captured revision, never the subsequently polled one.
+    module_rand_poll();
+    // Backoff/next cadence begin at completion, even after a long SD stall.
+    g_recovery.attempted(svcGetSystemTick() / (SYSCLOCK_ARM11 / 1000),state,ok,committed);
+    if (!ok) {
+        g_save_flash=180;
+        std::snprintf(g_patch_notice,sizeof g_patch_notice,"snapshot failed / previous retained");
+    }
+}
+
+static bool recovery_retire_covered() {
+    if (g_recovery.unresolved() || !g_recovery.covered_generation()) return true;
+    const bool ok = g_recovery_store.dispose(g_recovery.covered_generation());
+    g_recovery.retired(ok);
+    return ok;
 }
 
 bool save_current_patch(int slot) {
@@ -428,7 +427,7 @@ bool save_current_patch(int slot) {
     g_edit_chain = old_edit_chain; g_edit_slot = old_edit_slot;
     if (!recordings_ok) { g_patch_save_error = "recording export failed / retry save"; return false; }
     patchio::PatchDocument document;
-    if (!document.valid()) return false;
+    if (!document.valid()) { g_patch_save_error = "save failed / out of memory"; return false; }
     uint64_t saved_random_revision=0;
     WorkspaceLayout workspace;
     workspace_get_layout(workspace);
@@ -439,12 +438,21 @@ bool save_current_patch(int slot) {
             if (!g_project_session.dirty()) g_project_session.mark_mutated();
             return false;
         }
-        if (!patchio::capture(*g_eng, document, &workspace)) return false;
+        if (!patchio::capture(*g_eng, document, &workspace)) { g_patch_save_error = "save failed / capture refused"; return false; }
         saved_random_revision=g_eng->module_random_revision();
     }
     // The document owns every persisted scalar/table/path needed by SNC7. SD
     // serialization/flush/rename stay outside the audio guard (SD can stall UI).
-    const bool ok = patchio::save(document, path);
+    patchio::SaveFailure failure = patchio::SaveFailure::None;
+    const bool ok = patchio::save(document, path, &failure);
+    if (!ok) switch (failure) {
+        // The failing step, so an SD refusal is not reported like a bad project.
+        case patchio::SaveFailure::Invalid: g_patch_save_error = "save failed / project not admitted"; break;
+        case patchio::SaveFailure::Create: g_patch_save_error = "save failed / cannot create file on sd"; break;
+        case patchio::SaveFailure::Write: g_patch_save_error = "save failed / sd write error"; break;
+        case patchio::SaveFailure::Publish: g_patch_save_error = "save failed / cannot place file on sd"; break;
+        case patchio::SaveFailure::None: break;
+    }
     if (ok) {
         // A new/copy save can replace a different project in this slot. Drop
         // that project's open history, but do not pretend the new file was
@@ -452,7 +460,7 @@ bool save_current_patch(int slot) {
         // even if those checks fail, the destination has already changed.
         if (g_project_session.active_slot() != slot) {
             start_store_forget(g_start_store, slot);
-            g_start_store_write_failed = !start_store_save(START_MENU_PATH, g_start_store);
+            g_start_store_write_failed = !start_store_save_preferences(START_MENU_PATH, g_start_store);
         }
         // Audio continued during SD I/O. Never authorize save-and-leave if a
         // queued/gated REC started meanwhile, even if the SNC write succeeded.
@@ -471,6 +479,9 @@ bool save_current_patch(int slot) {
             module_rand_poll(); // acknowledge exactly the revision stored on disk
             g_project_session.mark_saved(slot);
         }
+        // Only after the existing REC/rand postcheck. Never under the guard;
+        // failed disposition keeps recovery and disables further checkpoints.
+        if (!recovery_retire_covered()) g_patch_save_error = "saved / recovery retained";
     }
     return ok;
 }
@@ -522,8 +533,10 @@ void scan_patch_slots() {
     g_patch_catalog_ready = true;
 }
 
+static void patch_library_invalidate(int slot);
 void refresh_patch_slot(int slot) {
     if (!project_slot_valid(slot)) return;
+    patch_library_invalidate(slot); // explicit selected-path refresh invalidates its saved preview only
     char path[96]; patch_path(slot, path, sizeof path);
     struct stat st{};
     const int status = stat(path, &st);
@@ -540,7 +553,7 @@ void refresh_patch_slot(int slot) {
         h[0] == 'S' && h[1] == 'N' && h[2] == 'C' &&
         ((h[3] >= '1' && h[3] <= '9' && h[4] == (unsigned char)(h[3] - '0')) ||
          (h[3] == 'A' && h[4] == 10) || (h[3] == 'B' && h[4] == 11) ||
-         (h[3] == 'C' && h[4] == 12) || (h[3] == 'E' && h[4] == 14) || (h[3] == 'F' && h[4] == 15) || (h[3] == 'D' && h[4] == 13));
+         (h[3] == 'C' && h[4] == 12) || (h[3] == 'G' && h[4] == 16) || (h[3] == 'H' && h[4] == 17) || (h[3] == 'I' && h[4] == 18) || (h[3] == 'J' && h[4] == 19) || (h[3] == 'K' && h[4] == 20) || (h[3] == 'L' && h[4] == 21) || (h[3] == 'M' && h[4] == 22) || (h[3] == 'E' && h[4] == 14) || (h[3] == 'F' && h[4] == 15) || (h[3] == 'D' && h[4] == 13));
     const bool closed = fclose(f) == 0;
     g_patch_valid[slot] = recognized && closed;
 }
@@ -560,7 +573,7 @@ void patch_browser_result(bool ok, PatchAction action, int slot = -1) {
             return; // successful NEW has no result toast
     }
     const int target = slot >= 0 ? slot : g_patch_slot;
-    if (!ok && action == PatchAction::Save && g_patch_save_error)
+    if (action == PatchAction::Save && g_patch_save_error)
         std::snprintf(g_patch_notice, sizeof g_patch_notice, "%s", g_patch_save_error);
     else std::snprintf(g_patch_notice, sizeof g_patch_notice, "%s p.%03d", verb, target + 1);
     // Only this entry changed. A new project/rename never requires a disk scan.
@@ -591,6 +604,8 @@ bool execute_destructive(PendingDestructiveAction pending) {
             platform::AudioOut::Guard guard(*g_audio);
             ready=!g_eng->play_editor_busy();
             if (ready) {
+            relic_focus_release();
+            g_eng->retire_relic_sources_all();
             g_eng->swap_patch_state(*fresh);
             module_rand_rebase();
             g_eng->set_external_sample_slot(sample_ownership::unit_slot(g_clip_unit));
@@ -608,7 +623,9 @@ bool execute_destructive(PendingDestructiveAction pending) {
         g_loaded_samples = 0;
         g_sample_flash = 120;
         workspace_reset_all();
+        g_recovery.context_changed(svcGetSystemTick() / (SYSCLOCK_ARM11 / 1000), recovery_retire_covered());
         g_project_session.reset_new();
+        g_recovered_session = false;
         nav_close();
         sigils_forget_undo();
         patchbay_forget();
@@ -616,7 +633,6 @@ bool execute_destructive(PendingDestructiveAction pending) {
         g_view = View::Chains;
         g_sel_chain = g_edit_chain = 0;
         g_sel_slot = g_edit_slot = 0;
-        g_seq_lock_armed = false;
         g_overlay = Overlay::None;
         if (g_session_started && g_menu_audio) g_menu_audio->enter_patch();
         return true;
@@ -629,7 +645,9 @@ bool execute_destructive(PendingDestructiveAction pending) {
         char path[96]; patch_path(slot, path, sizeof path);
         const bool ok = transactional_patch_load(path);
         if (ok) {
+            g_recovery.context_changed(svcGetSystemTick() / (SYSCLOCK_ARM11 / 1000), recovery_retire_covered());
             g_project_session.reset_loaded(slot);
+            g_recovered_session = false;
             remember_project(slot);
             if (g_session_started && g_menu_audio) g_menu_audio->enter_patch();
         }
@@ -637,13 +655,22 @@ bool execute_destructive(PendingDestructiveAction pending) {
         g_overlay = ok ? Overlay::None : Overlay::PatchBrowser;
         return ok;
     }
-    if (pending.action == DestructiveAction::ExitApp) { g_exit_requested = true; return true; }
+    if (pending.action == DestructiveAction::ExitApp) {
+        // This is an explicit saved/discarded leave, unlike aptMainLoop false.
+        if (!recovery_retire_covered()) {
+            g_save_flash = 180;
+            std::snprintf(g_patch_notice,sizeof g_patch_notice,"recovery retained / retry exit");
+            return false;
+        }
+        g_exit_requested = true; return true;
+    }
     return false;
 }
 
+static void patch_library_request_confirmation();
 void request_destructive(DestructiveAction action, int slot = -1) {
     if (g_project_session.request(action, slot)) execute_destructive({action, slot});
-    else g_overlay = Overlay::ConfirmDiscard;
+    else patch_library_request_confirmation();
 }
 
 #include "project_library_ui.inc"
@@ -748,6 +775,7 @@ static void capture_nav_ink_transition() {
 
 static void commit_nav_destination(View from_view, Overlay from_overlay,
                                    View to_view, Overlay to_overlay) {
+    relic_focus_release();
     stranular_focus_cancel();
     reverb_focus_release();
     inst_focus_release();
@@ -803,6 +831,42 @@ static void draw_nav_ink_transition(C3D_RenderTarget* top, C3D_RenderTarget* bot
 }
 
 // ===================== input dispatch =====================
+
+static platform::LifecycleInput lifecycle_input;
+static void cancel_lifecycle_input() {
+    // UI-thread cancellation only. Never turn an interrupted press into a lift.
+    editor_cancel_input();
+    param_lens_cancel();
+    recorder_focus_cancel_lifecycle();
+    sample_browser_touch_release(false);
+    sample_browser_stop_preview();
+    project_overlay_cancel_lifecycle();
+    if (g_overlay == Overlay::ConfirmDiscard) g_overlay = Overlay::None;
+    nav_close();
+    nav_transition_clear();
+    cancel_nav_ink_transition();
+    chains_view_touch_release(false);
+    chains_close_context_branch();
+    chains_editor_cancel_input();
+    picker_cancel_input();
+    sequencer_view_cancel_input();
+    performance_view_leave(); // existing cancel/return endpoint; protected painter untouched
+    bounce_cancel_input();
+    patchbay_cancel_input();
+    sigils_close_mode_menu();
+    // Canvas points already written before sleep are data, not a deferred lift.
+    if (g_sig_canvas_mutated) { mark_project_mutated(); g_sig_canvas_mutated = false; }
+    g_drag = Drag::None; g_last_px = -1; g_smooth_active = false;
+}
+static u32 poll_lifecycle_input(bool startup = false) {
+    if (!g_audio) return 0;
+    const u32 epoch = g_audio->lifecycle_epoch();
+    if (lifecycle_input.observe(epoch)) {
+        if (startup) start_menu_cancel_lifecycle();
+        else cancel_lifecycle_input();
+    }
+    return epoch;
+}
 
 static void handle_touch(u32 down, u32 held) {
     // Project actions own press/hold/lift as one gesture on every underlying
@@ -972,6 +1036,9 @@ static void handle_touch(u32 down, u32 held) {
         case Drag::TiltMix:
         case Drag::TiltRange:
         case Drag::TiltModDepth:
+        case Drag::RotParam:
+        case Drag::RuleParam:
+        case Drag::PentParam:
         case Drag::PaulParam:
         case Drag::ScratchParam:
         case Drag::InstParam:
@@ -1041,6 +1108,7 @@ static void seed_demo_sigil(Sigil& s) {
 }
 
 static void clear_sample_bank() {
+    if(g_eng) g_eng->retire_relic_sources_all();
     auto& bank = trackr::synth::SampleBank::instance();
     for (int slot = 0; slot < trackr::synth::SAMPLE_BANK_SIZE; ++slot) {
         bank.clear_slot(slot);
@@ -1114,16 +1182,17 @@ static StartMenuData startup_data() {
     static const uint64_t stable_order[PROJECT_SLOTS] = {};
     out.recent_count = start_store_recent(g_start_store, candidates, stable_order,
         g_start_store.count == 0 ? load_last_patch_slot() : -1, out.recent_slots);
+    out.recovery_offer = g_recovery_boot.offered() && g_recovery.unresolved();
     out.show_menu = g_start_store.show_menu;
     out.menu_sound = g_start_store.menu_sound;
     out.theme = g_start_store.theme;
     return out;
 }
 
-// App-only preference: commit to the existing atomic sidecar before changing
+// App-only preference: commit the bounded preference journal before changing
 // either screen. No engine mutation, project dirtiness or audio guard / GPU I/O.
 static bool save_start_preferences(const StartMenuStore& proposed) {
-    if (!start_store_save(START_MENU_PATH, proposed)) return false;
+    if (!start_store_save_preferences(START_MENU_PATH, proposed)) return false;
     g_start_store = proposed;
     g_start_store_write_failed = false;
     palette::animate_to(proposed.theme, osGetTime());
@@ -1166,25 +1235,54 @@ static void startup_screenshot() {
     }
 }
 
+static bool recovery_restore() {
+    char path[256];
+    if (!g_recovery_store.candidate_path(g_recovery_boot,path,sizeof path) ||
+        !transactional_patch_load(path)) return false;
+    // Recovery is a working draft, never attached to the old manual destination.
+    g_project_session.reset_new();
+    g_project_session.mark_mutated();
+    g_recovered_session = true;
+    g_recovery.restored(g_recovery_boot.records[g_recovery_boot.latest],
+        g_project_session.revision(),svcGetSystemTick() / (SYSCLOCK_ARM11 / 1000));
+    { platform::AudioOut::Guard guard(*g_audio); g_audio->inhibit_recovered_output(); }
+    g_save_flash=300;
+    std::snprintf(g_patch_notice,sizeof g_patch_notice,"recovered draft / start or chain a for sound");
+    return true;
+}
+
 static bool startup_choose(C3D_RenderTarget* top, C3D_RenderTarget* bottom) {
     if (!aptMainLoop()) return false;
     platform::debug_overlay::reset();
     start_menu_open(startup_data());
     if (g_menu_audio) g_menu_audio->open_menu();
-    if (g_patch_catalog_failed) start_menu_error("library unavailable / sd error");
+    if (g_recovery_boot.blocked) start_menu_error("recovery sd error / snapshots disabled");
+    else if (g_patch_catalog_failed) start_menu_error("library unavailable / sd error");
     startup_draw(top, bottom); // first frame fully dark; shared 3s image/sound entrance
     u64 previous_tick = svcGetSystemTick();
     while (aptMainLoop()) {
+        poll_lifecycle_input(true);
         const u64 now_tick = svcGetSystemTick();
         const u64 elapsed_ms = (now_tick - previous_tick) / (SYSCLOCK_ARM11 / 1000);
         previous_tick = now_tick;
         start_menu_tick(u32(elapsed_ms > 1000 ? 1000 : elapsed_ms));
         hidScanInput();
         u32 down = hidKeysDown(), held = hidKeysHeld(), up = hidKeysUp();
+        poll_lifecycle_input(true);
+        lifecycle_input.filter(down, held, up);
         platform::debug_overlay::input(down, held, up);
         touchPosition touch{}; hidTouchRead(&touch);
         const StartMenuResult result = start_menu_input(down, held, touch.px, touch.py);
         if (result.action == StartMenuAction::Exit) return false;
+        if (result.action == StartMenuAction::RecoverProject) {
+            if (recovery_restore()) {
+                if (g_menu_audio) g_menu_audio->shutdown(); // runtime-only; drop the queued menu tail too
+                return true;
+            }
+            start_menu_error("recovery failed / retained unchanged");
+        }
+        if (result.action == StartMenuAction::CancelRecovery)
+            start_menu_error("recovery retained / snapshots disabled");
         if (result.action == StartMenuAction::PreferencesChanged) {
             const StartMenuData& settings = start_menu_data();
             StartMenuStore proposed = g_start_store;
@@ -1193,7 +1291,7 @@ static bool startup_choose(C3D_RenderTarget* top, C3D_RenderTarget* bottom) {
             proposed.theme = settings.theme;
             if (!save_start_preferences(proposed)) {
                 start_menu_set_data(startup_data());
-                start_menu_error("settings not saved / sd error");
+                start_menu_error("settings not saved / retry");
             }
         }
         if (result.action == StartMenuAction::NewProject || result.action == StartMenuAction::LoadProject) {
@@ -1237,8 +1335,7 @@ int main() {
     mkdir("sdmc:/3ds/seance", 0777);
     mkdir(SAMPLE_DIR, 0777);
     mkdir(RECORDING_DIR, 0777);
-    if (!start_store_load(START_MENU_PATH, g_start_store))
-        start_store_load("sdmc:/3ds/seance/start_menu.bin.bak", g_start_store);
+    (void)start_store_load_preferences(START_MENU_PATH, g_start_store);
     if (!project_names_load(PROJECT_NAMES_PATH, g_project_names))
         project_names_load("sdmc:/3ds/seance/project_names.bin.bak", g_project_names);
     palette::set(g_start_store.theme);
@@ -1266,10 +1363,16 @@ int main() {
     menu_style::ambient_init();
     editor_style::init(); // optional16KiB; static phase-zero grid before audio starts
     stylus_feedback::init(); // optional 16KiB, no allocations during touch/draw
-    platform::AudioOut audio;
+    relic_material_init(); // retired allocation-free lifecycle hook
+    // The three-snapshot mailbox must not occupy the 32KiB main stack while
+    // nested project-name readback or REC/WAV export uses its own workspace.
+    // Construct once here (before startup/APT); every exit still joins/unhooks
+    // explicitly through shutdown(), with no heap allocation or audio change.
+    static platform::AudioOut audio;
     g_audio = &audio;
     platform::MenuAudio menu_audio;
     g_menu_audio = &menu_audio;
+    audio.attach_lifecycle(); // startup and NO DSP mode still receive APT authority edges
     menu_audio.init(g_start_store.menu_sound); // optional, independent of project audio
 
     hidScanInput();
@@ -1277,11 +1380,14 @@ int main() {
     const bool force_menu = (boot_held & KEY_R) != 0;
     const bool force_demo = !force_menu && (boot_held & KEY_L) != 0;
     bool project_ready = false;
+    mkdir("sdmc:/3ds/seance/recovery", 0777);
+    g_recovery_boot = g_recovery_store.inspect(); // once, BEFORE last/demo bypass
+    g_recovery.boot(g_recovery_boot, svcGetSystemTick() / (SYSCLOCK_ARM11 / 1000));
     scan_patch_slots(); // one directory enumeration at boot, zero patch file reads
-    if (force_demo) {
+    if (force_demo && !g_recovery.unresolved()) {
         project_ready = execute_destructive({DestructiveAction::NewProject, -1});
         if (project_ready) g_overlay = Overlay::Editor;
-    } else if (!force_menu && !g_start_store.show_menu) {
+    } else if (!force_menu && !g_start_store.show_menu && !g_recovery.unresolved()) {
         // An explicit preference, never an automatic load behind the menu.
         StartMenuData data = startup_data();
         const int slot = data.recent_count ? data.recent_slots[0] : -1;
@@ -1304,6 +1410,7 @@ int main() {
     if (!project_ready) {
         menu_audio.shutdown(); g_menu_audio = nullptr;
         clear_sample_bank();
+        audio.shutdown();
         delete g_eng; g_eng = nullptr; g_audio = nullptr;
         // Leaving the menu alone must never delete/replace legacy last_patch.bin.
         if (C3D_FrameBegin(0)) {
@@ -1313,6 +1420,7 @@ int main() {
             menu_style::ambient_shutdown();
             editor_style::shutdown();
             stylus_feedback::shutdown();
+            relic_material_shutdown();
             ui::text_shutdown();
         } // Failed fence: retain the textures until process teardown.
         platform::debug_overlay::shutdown();
@@ -1342,6 +1450,7 @@ int main() {
     platform::debug_overlay::reset(); // do not bridge startup/activation/audio init
 
     while (aptMainLoop()) {
+        poll_lifecycle_input();
         // Audio-clocked rand writes bases; acknowledge on UI thread before save,
         // discard and navigation handlers inspect project dirty state.
         module_rand_poll();
@@ -1349,8 +1458,16 @@ int main() {
         u32 down = hidKeysDown();
         u32 held = hidKeysHeld();
         u32 up = hidKeysUp();
+        const u32 recovery_input_epoch = poll_lifecycle_input();
+        lifecycle_input.filter(down, held, up);
         platform::debug_overlay::input(down, held, up); // diagnostic opt-in only; normal ZR is undo
         startup_input_tail.filter(down, held, up);
+        const u32 recovery_fresh_down = down;
+        const bool recovery_quiet_input = (down | held | up) == 0;
+        bool recovery_transport_was_playing = false;
+        { platform::AudioOut::Guard guard(*g_audio);
+          g_audio->begin_recovery_input(recovery_input_epoch);
+          recovery_transport_was_playing = g_eng->transport_playing; }
         nav_ink_input(down);
         // Decorative entry never delays a fresh editor action. Closing owns its
         // local input/tails; global navigation and transport remain interruptible.
@@ -1374,6 +1491,27 @@ int main() {
         // Seq-origin cuts own destructive keys before a fresh held-L can open
         // the module lens (notably the existing L+X slice-lock removal chord).
         mic_focus_input(down, stage_modal_frame || nav_is_open());
+        const bool rot_word_skip_touch = rot_focus_menu_input(down, held, up,
+            stage_modal_frame || nav_is_open() || g_overlay == Overlay::ConfirmDiscard);
+        if (rot_focus_menu_modal()) {
+            touchPosition t{};
+            if (held & KEY_TOUCH) hidTouchRead(&t);
+            rot_focus_menu_touch(down, held, t.px, t.py);
+        }
+        const bool rule_word_skip_touch = rule_focus_menu_input(down, held, up,
+            stage_modal_frame || nav_is_open() || g_overlay == Overlay::ConfirmDiscard);
+        if (rule_focus_menu_modal()) {
+            touchPosition t{};
+            if (held & KEY_TOUCH) hidTouchRead(&t);
+            rule_focus_menu_touch(down, held, t.px, t.py);
+        }
+        const bool pent_word_skip_touch = pent_focus_menu_input(down, held, up,
+            stage_modal_frame || nav_is_open() || g_overlay == Overlay::ConfirmDiscard);
+        if (pent_focus_menu_modal()) {
+            touchPosition t{};
+            if (held & KEY_TOUCH) hidTouchRead(&t);
+            pent_focus_menu_touch(down, held, t.px, t.py);
+        }
         const bool gran_word_skip_touch = grain_focus_menu_input(down, held, up,
             stage_modal_frame || nav_is_open() || g_overlay == Overlay::ConfirmDiscard);
         if (grain_focus_menu_modal()) {
@@ -1382,6 +1520,7 @@ int main() {
             grain_focus_menu_touch(down, held, t.px, t.py);
         }
         grain_focus_input(down, held, stage_modal_frame || nav_is_open());
+        relic_focus_input(down, held, stage_modal_frame || nav_is_open() || g_overlay == Overlay::ConfirmDiscard);
         paul_focus_input(down, held, stage_modal_frame || nav_is_open() || g_overlay == Overlay::ConfirmDiscard);
         scratch_focus_input(down, held, stage_modal_frame || nav_is_open() || g_overlay == Overlay::ConfirmDiscard);
         reverb_focus_input(down, held, stage_modal_frame || nav_is_open());
@@ -1398,8 +1537,8 @@ int main() {
         const u32 play_owned_keys = nav_is_open() || play_editor_word_modal() ? 0 : play_editor_context_keys(down, held);
         down &= ~play_owned_keys;
         const bool param_skip_touch = (play_word_skip_touch || rec_skip_touch || play_owned_keys != 0 || param_lens_input(down, held, up,
-            grain_focus_menu_modal() || play_editor_word_modal() || nav_is_open() || g_overlay == Overlay::ConfirmDiscard || recorder_focus_confirming())) || gran_word_skip_touch;
-        const bool param_owned_frame = grain_focus_menu_modal() || play_editor_word_modal() || param_lens_is_open() || recorder_focus_confirming();
+            rot_focus_menu_modal() || rule_focus_menu_modal() || pent_focus_menu_modal() || grain_focus_menu_modal() || play_editor_word_modal() || nav_is_open() || g_overlay == Overlay::ConfirmDiscard || recorder_focus_confirming())) || gran_word_skip_touch || pent_word_skip_touch || rule_word_skip_touch || rot_word_skip_touch;
+        const bool param_owned_frame = rot_focus_menu_modal() || rule_focus_menu_modal() || pent_focus_menu_modal() || grain_focus_menu_modal() || play_editor_word_modal() || param_lens_is_open() || recorder_focus_confirming();
         const bool discard_modal_had_frame = g_overlay == Overlay::ConfirmDiscard;
         const bool nav_had_frame = nav_is_open();   // consumed input this frame,
                                                     // even if a pick just closed it
@@ -1440,10 +1579,6 @@ int main() {
                 // are real lifecycle work, not decoration, so never replay them.
                 if (from_view != to_view) {
                     if (from_view == View::Performance) performance_view_leave();
-                    if (from_view == View::Sequencer && g_seq_lock_armed) {
-                        g_seq_lock_armed = false;
-                        g_seq_lock_flash = 0;
-                    }
                     if (to_view == View::Sequencer) sequencer_view_enter();
                     if (to_view == View::Performance) performance_view_reset();
                     if (to_view == View::Bounce) bounce_enter();
@@ -1461,15 +1596,13 @@ int main() {
             // Physical buttons remain explicit modal actions. Any button edge
             // cancels a held stylus command and owns this entire frame.
             if (down & ~(KEY_TOUCH | KEY_ZL)) {
-                if (down & (KEY_B | KEY_A)) confirm_discard_activate(220, 170);
-                else if (down & KEY_X) confirm_discard_activate(150, 170);
+                confirm_discard_buttons(down);
             } else handle_touch(down, held);
         } else {
         // SELECT has one meaning everywhere: open/close GO TO. Shoulder chords
         // deliberately do not change transport or create a second control layer.
         if ((down & KEY_SELECT) && g_overlay != Overlay::ConfirmDiscard) {
-            if (g_overlay == Overlay::PatchBrowser && g_project_session.has_pending())
-                g_project_session.cancel_pending();
+            if (g_overlay == Overlay::PatchBrowser) patch_library_interrupt();
             sequencer_view_cancel_input();
             picker_cancel_input();
             patchbay_cancel_input();
@@ -1549,6 +1682,10 @@ int main() {
             if (local) { stage_skip_touch = true; down &= KEY_TOUCH | KEY_ZL; }
         }
 
+        // PATCHES drops its own unfinished command before the unchanged global
+        // transport route. The START chord cannot also save/confirm or name it.
+        if ((down & KEY_START) && input_overlay == Overlay::PatchBrowser &&
+            g_overlay == Overlay::PatchBrowser && !nav_is_open()) patch_library_interrupt();
         // Old-3DS global navigation works from every view and overlay.
         // L belongs to sequencer editing / temporary performance faders on their bare pages.
         if (!stage_modal_frame && !nav_is_open() && !param_owned_frame && g_overlay != Overlay::ConfirmDiscard && g_overlay != Overlay::PatchBrowser && (held & KEY_L) && !(held & KEY_R) &&
@@ -1601,10 +1738,6 @@ int main() {
             chains_view_touch_release(false);
             sequencer_view_cancel_input();
             if (g_view == View::Performance) performance_view_leave();
-            if (g_view == View::Sequencer && g_seq_lock_armed) {
-                g_seq_lock_armed = false;
-                g_seq_lock_flash = 0;
-            }
             // Primary muscle-memory loop: build sound <-> draw control.
             // SEQ/PERFORM remain reachable directly through SELECT > GO TO.
             g_view = (g_view == View::Chains) ? View::Sigils : View::Chains;
@@ -1621,27 +1754,19 @@ int main() {
         if ((down & KEY_B) && !(g_view == View::Sequencer && g_overlay == Overlay::None)) {
             const bool overlay_owned_b = g_overlay != Overlay::None;
             sequencer_view_cancel_input();
-            const bool returning_from_seq_lock = g_view == View::Sequencer &&
-                g_overlay == Overlay::Editor && g_seq_lock_armed;
             chains_close_context_branch();
             sigils_close_mode_menu();
             if (g_overlay == Overlay::PatchBrowser && g_project_session.has_pending())
                 g_project_session.cancel_pending();
             bool consumed = false;
-            if (!returning_from_seq_lock && g_overlay == Overlay::Editor) consumed = editor_back();
+            if (g_overlay == Overlay::Editor) consumed = editor_back();
             if (!consumed && g_overlay == Overlay::Editor && chains_editor_back()) {
                 editor_cancel_input();
                 consumed = true;
                 stage_skip_touch = true;
                 down &= KEY_ZL; // back owns simultaneous A/X/touch too
             }
-            if (!consumed) {
-                if (g_overlay == Overlay::Editor && g_seq_lock_armed) {
-                    g_seq_lock_armed = false;
-                    g_seq_lock_flash = 0;
-                }
-                g_overlay = Overlay::None;
-            }
+            if (!consumed) g_overlay = Overlay::None;
             g_patch_confirm_slot = g_patch_delete_confirm_slot = -1;
             g_drag = Drag::None;
             if (!overlay_owned_b && g_view == View::Performance) {
@@ -1666,11 +1791,15 @@ int main() {
             Sigil& selected = g_eng->sigils[g_sel_sigil];
             if (g_view == View::Sigils && g_overlay == Overlay::None &&
                 selected.mode == SigilMode::Follow)
-                g_eng->request_chain_trigger(g_eng->step_dest[g_sel_sigil], g_eng->launch_quantize);
+                { audio.authorize_recovered_output();
+                  g_eng->request_chain_trigger(g_eng->step_dest[g_sel_sigil], g_eng->launch_quantize); }
             else if (g_view == View::Sigils && g_overlay == Overlay::None)
                 g_eng->reset_sigil(g_sel_sigil);
-            else
+            else {
+                audio.authorize_recovered_output(); // actual fresh A chain-audition route
                 g_eng->request_chain_trigger(g_sel_chain, g_eng->launch_quantize);
+                pent_focus_chain_trigger_requested(g_sel_chain);
+            }
         }
 
         if (g_view == View::Sequencer && g_overlay == Overlay::None && !nav_is_open())
@@ -1721,6 +1850,7 @@ int main() {
 
         if (input_view != g_view || input_overlay != g_overlay || input_chain != g_sel_chain ||
             input_slot != g_sel_slot || nav_is_open()) {
+            relic_focus_release();
             project_overlay_cancel_input();
             if (input_overlay == Overlay::SampleBrowser) {
                 sample_browser_touch_release(false);
@@ -1784,13 +1914,14 @@ int main() {
         // Includes inactive/navigation cancellation; pending decode/use stays
         // outside GPU work and may expose its loading notice for one frame.
         sample_browser_tick();
+        patch_library_tick(); // selected SD inspection/controller invalidation, outside audio guard
         performance_view_tick();
+        recovery_idle_tick(recovery_quiet_input, recovery_fresh_down, recovery_transport_was_playing);
 
         // Tell the audio publisher which single unit editor is visible. Capture
         // validates PLAY/REC kind before publishing focused-only telemetry.
         const bool unit_focus_visible =
-            (g_view == View::Chains || (g_view == View::Sequencer && g_seq_lock_armed)) &&
-            g_overlay == Overlay::Editor;
+            g_view == View::Chains && g_overlay == Overlay::Editor;
         const int focus_chain = unit_focus_visible ? g_edit_chain : -1;
         const int focus_slot = unit_focus_visible ? g_edit_slot : -1;
         const int focus_sigil = g_view == View::Sigils && g_overlay == Overlay::None ? g_sel_sigil : -1;
@@ -1838,8 +1969,11 @@ int main() {
         // reader is fenced. Both displays/crops then share this frozen time.
         menu_style::ambient_frame(osGetTime());
         editor_style::frame(); // separate static material, same synchronized upload fence
+        relic_material_upload(); // retired no-op; no Relic texture exists
         nav_gpu_frame(); // previous LCD pair is fenced; one freeze on popup entry
         sigils_gpu_frame(); // includes the shared GO TO blur pair
+        rot_focus_gpu_frame(true); // owns ROT upload/retirement after successful SYNCDRAW
+        pent_focus_gpu_frame(); // exact art uploads only after the same GPU fence
 
         if (g_nav_ink.frame.active) {
             draw_nav_ink_transition(top, bot);
@@ -1885,6 +2019,7 @@ int main() {
         }
     }
 
+    relic_focus_release();
     sample_browser_touch_release(false);
     sample_browser_stop_preview();
     performance_release_all();
@@ -1895,16 +2030,19 @@ int main() {
     g_audio = nullptr;
     delete g_clip_unit;
     g_clip_unit = nullptr;
-    save_last_patch_slot();
+    persist_last_project();
     delete g_eng;
 
-    if (C3D_FrameBegin(0)) {
+    if (C3D_FrameBegin(C3D_FRAME_SYNCDRAW)) {
+        rot_focus_shutdown(true); // final last-reader fence; never in a destructor
         C2D_Prepare();
         C3D_TexBind(0, nullptr);
         C3D_FrameEnd(0);
         menu_style::ambient_shutdown();
         editor_style::shutdown();
         stylus_feedback::shutdown();
+        relic_material_shutdown();
+        pent_focus_shutdown();
         sigils_visual_shutdown();
         ui::text_shutdown();
     } // If the final fence fails, keep the textures until process teardown.

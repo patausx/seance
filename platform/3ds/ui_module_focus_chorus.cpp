@@ -25,7 +25,7 @@ struct Frame {
     uint16_t mod_links=0,compare_gain=0;
     uint8_t source[C::P_COUNT]={},kinds[UNITS_PER_CHAIN]={};
     bool crossed[UNITS_PER_CHAIN]={};
-    bool valid=false,bypass=false,mute=false,lock=false,full=false,ready=false,lens=false;
+    bool valid=false,bypass=false,mute=false,ready=false,lens=false;
     bool compare=false,compare_allowed=false;
     int8_t chain=0,slot=0,selected=C::P_SPREAD;
     int16_t center[2]={200,200};
@@ -37,40 +37,34 @@ struct Gesture {
     Engine* engine=nullptr;
     uintptr_t unit=0;
     View view=View::Chains;
-    int chain=-1,slot=-1,bank=-1,step=-1,lock_chain=-1,param=-1,selection=-1;
+    int chain=-1,slot=-1,bank=-1,param=-1,selection=-1;
     int x=0,last_x=0;
     q15 value=0;
-    bool locked=false,compare=false;
+    bool compare=false;
 } gesture;
 // All chorus gestures share an existing UI-only token; no persisted enum changes.
 constexpr Drag TOKEN=Drag::ChorusRate;
 bool context(bool body=true) {
     return g_eng && g_audio && (!body || !param_lens_is_open()) && g_overlay==Overlay::Editor &&
-        (g_view==View::Chains || (g_view==View::Sequencer && g_seq_lock_armed)) &&
+        g_view==View::Chains &&
         g_edit_chain>=0 && g_edit_chain<NUM_CHAINS && g_edit_slot>=0 && g_edit_slot<UNITS_PER_CHAIN;
 }
-bool lock_context() {
-    return g_seq_lock_armed && g_seq_lock_chain==g_edit_chain &&
-        g_seq_lock_step>=0 && g_seq_lock_step<SEQ_STEPS;
-}
 q15 edit_value(const C& u,int p) {
-    return lock_context()?seq_display_value(g_edit_slot,p,u.params[p].base):u.params[p].base;
+    return u.params[p].base;
 }
 bool can_compare(const C& u) {
-    return !g_seq_lock_armed && !u.bypass && !g_eng->chains[g_edit_chain].mute &&
+    return !u.bypass && !g_eng->chains[g_edit_chain].mute &&
         u.ready() && u.visual_ready() && !g_eng->recording_active_or_pending();
 }
 bool owns(const C& u) {
     return context() && gesture.engine==g_eng && gesture.unit==uintptr_t(&u) && gesture.view==g_view &&
         gesture.chain==g_edit_chain && gesture.slot==g_edit_slot && gesture.bank==g_eng->active_pattern &&
-        g_eng->chains[g_edit_chain].units[g_edit_slot]==&u && gesture.locked==g_seq_lock_armed &&
-        gesture.selection==selected && (!gesture.locked || (lock_context() &&
-        gesture.step==g_seq_lock_step && gesture.lock_chain==g_seq_lock_chain));
+        g_eng->chains[g_edit_chain].units[g_edit_slot]==&u &&
+        gesture.selection==selected;
 }
 void start(C& u,int p,int x,bool compare=false) {
     gesture={};gesture.engine=g_eng;gesture.unit=uintptr_t(&u);gesture.view=g_view;
     gesture.chain=g_edit_chain;gesture.slot=g_edit_slot;gesture.bank=g_eng->active_pattern;
-    gesture.step=g_seq_lock_step;gesture.lock_chain=g_seq_lock_chain;gesture.locked=g_seq_lock_armed;
     gesture.param=p;gesture.selection=selected;gesture.x=gesture.last_x=x;
     gesture.value=p>=0?edit_value(u,p):0;gesture.compare=compare;g_drag=TOKEN;
 }
@@ -156,7 +150,7 @@ bool chorus_focus_touch_body(C& u,int tx,int ty) {
     platform::AudioOut::Guard guard(*g_audio);
     if(g_eng->chains[g_edit_chain].units[g_edit_slot]!=&u)return false;
     if(ty<28) {
-        if(!g_seq_lock_armed && hit(tx,ty,244,0,37,24)){u.bypass=!u.bypass;mark_project_mutated();}
+        if(hit(tx,ty,244,0,37,24)){u.bypass=!u.bypass;mark_project_mutated();}
         return true;
     }
     if(hit(tx,ty,16,194,100,24)) {
@@ -165,11 +159,6 @@ bool chorus_focus_touch_body(C& u,int tx,int ty) {
     }
     if(!hit(tx,ty,8,39,304,148))return true;
     const int p=(ty-39)/37;selected=p;
-    if(g_seq_lock_armed && !lock_context())return true;
-    if(lock_context() && hit(tx,ty,12,43+37*p,52,14)) {
-        if(g_eng->remove_step_lock(g_seq_lock_chain,g_seq_lock_step,g_edit_slot,p))mark_project_mutated();
-        return true;
-    }
     start(u,p,tx);return true;
 }
 void chorus_focus_drag(C& u,int tx,int ty) {
@@ -187,8 +176,7 @@ void chorus_focus_drag(C& u,int tx,int ty) {
     const int lo=gesture.param==C::P_SPREAD?-32767:0;
     const q15 next=q15(std::max(lo,std::min(32767,int(gesture.value)+(tx-gesture.x)*(32767-lo)/(RAIL_END-RAIL_X))));
     if(next==edit_value(u,gesture.param))return;
-    if(g_seq_lock_armed)seq_record_lock(g_edit_slot,gesture.param,next);
-    else {u.params[gesture.param].base=next;mark_project_mutated();}
+    u.params[gesture.param].base=next;mark_project_mutated();
 }
 void chorus_focus_capture() {
     frame={};
@@ -201,8 +189,7 @@ void chorus_focus_capture() {
         if(gesture.unit && (!owns(u) || g_drag!=TOKEN ||
             (gesture.compare && (!can_compare(u) || !u.dry_compare_requested()))))chorus_focus_release();
         frame.bypass=u.bypass;frame.mute=chain.mute;frame.ready=u.visual_ready();
-        frame.lock=lock_context();frame.lens=param_lens_is_open();
-        frame.full=frame.lock && (g_seq_lock_flash>0 || g_eng->pattern.steps[g_edit_chain][g_seq_lock_step].lock_count>=SEQ_LOCKS);
+        frame.lens=param_lens_is_open();
         frame.chain=g_edit_chain;frame.slot=g_edit_slot;frame.selected=selected;
         frame.compare=gesture.compare && u.dry_compare_requested();frame.compare_gain=u.visual_compare_q15();
         frame.compare_allowed=can_compare(u);frame.mod_links=focus_mod_links(u);
@@ -234,7 +221,7 @@ void chorus_focus_draw(const C&) {
         ui::text(16,32,NAMES[frame.selected],m::spot());ui::text(m::kLeft,m::kTextY,"b / return",m::ghost());return;
     }
     const bool quiet=frame.bypass || frame.mute || !frame.ready;
-    ui::text(16,32,"parameter",m::ghost());right(304,32,frame.lock?"lock draft":!frame.ready?"base":quiet?"last":"live",m::ghost());
+    ui::text(16,32,"parameter",m::ghost());right(304,32,!frame.ready?"base":quiet?"last":"live",m::ghost());
     for(int p=0;p<C::P_COUNT;++p) {
         const int y=47+37*p;
         const u32 ink=quiet?m::ghost():frame.selected==p?m::spot():m::ink();
@@ -243,18 +230,18 @@ void chorus_focus_draw(const C&) {
             source_text(text,sizeof text,ModSource(frame.source[p]));right(218,y,text,frame.mod_links&(1u<<p)?m::spot():m::ghost());
             if(!(frame.mod_links&(1u<<p)))ui::line(218-ui::text_w(text),y+4,217,y+4,m::ghost());
         }
-        value_text(p,frame.lock?frame.edit[p]:frame.live[p],value,sizeof value);right(304,y,value,ink);
-        value_text(p,frame.lock?frame.live[p]:frame.base[p],value,sizeof value);
-        std::snprintf(text,sizeof text,"%s %s",frame.lock?"live":"base",value);ui::text(16,y+16,text,m::ghost());
+        value_text(p,frame.live[p],value,sizeof value);right(304,y,value,ink);
+        value_text(p,frame.base[p],value,sizeof value);
+        std::snprintf(text,sizeof text,"base %s",value);ui::text(16,y+16,text,m::ghost());
         module_fader::horizontal(RAIL_X,RAIL_END,y+19,position(p,frame.edit[p]),position(p,frame.live[p]),
             {bool(frame.mod_links&(1u<<p)),false,quiet});
         if(frame.selected==p)ui::line(8,y,8,y+7,m::spot());
     }
     ui::text(20,202,frame.compare?"dry held":"hold dry",frame.compare?m::spot():frame.compare_allowed?m::ghost():quiet_branch());
-    ui::text(134,202,frame.compare?"release to return":frame.full?"lock full":frame.lock?"tap name: clear":
+    ui::text(134,202,frame.compare?"release to return":
         frame.compare_allowed?"compare":"unavailable",m::ghost());
     if(frame.compare)ui::line(20,215,67,215,m::spot());
-    ui::text(m::kLeft,m::kTextY,"b back",m::ghost());if(!frame.lock)right(m::right_edge(320),m::kTextY,"l: mod >",m::ghost());
+    ui::text(m::kLeft,m::kTextY,"b back",m::ghost());right(m::right_edge(320),m::kTextY,"l: mod >",m::ghost());
 }
 bool chorus_focus_draw_top() {
     if(!frame.valid)return false;
@@ -296,10 +283,10 @@ bool chorus_focus_draw_top() {
     const char* caption=frame.bypass||frame.mute?"last read":!frame.ready?"no read":"read delays";
     ui::text(200-ui::text_w(caption)/2,175,caption,m::ghost());ui::line(16,194,384,194,quiet_branch());
     const int p=frame.selected;ui::text(16,205,NAMES[p],m::spot());
-    value_text(p,frame.lock?frame.edit[p]:frame.live[p],a,sizeof a);
-    std::snprintf(text,sizeof text,"%s%s",frame.lock?"draft ":"",a);right(222,205,text,m::ink());
-    value_text(p,frame.lock?frame.live[p]:frame.base[p],a,sizeof a);
-    std::snprintf(text,sizeof text,"%s %s",frame.lock?"live":"base",a);right(384,205,text,m::ghost());
+    value_text(p,frame.live[p],a,sizeof a);
+    std::snprintf(text,sizeof text,"%s",a);right(222,205,text,m::ink());
+    value_text(p,frame.base[p],a,sizeof a);
+    std::snprintf(text,sizeof text,"base %s",a);right(384,205,text,m::ghost());
     const auto& d=frame.detail;
     if(d.source==ModSource::None)std::snprintf(text,sizeof text,"delay model / mod off%s",d.layer?" / override":"");
     else {

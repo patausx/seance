@@ -21,7 +21,7 @@ inline constexpr uint8_t bounce_channels(BounceSource source) {
     return source == BounceSource::Master ? 2 : (bounce_source_valid(source) ? 1 : 0);
 }
 enum class BounceStatus : uint8_t { Empty, Armed, Recording, Complete, Partial, Cancelled };
-enum class BounceReason : uint8_t { None, Stopped, Reset, TempoChanged, MeterChanged, SampleChanged };
+enum class BounceReason : uint8_t { None, Stopped, Reset, TempoChanged, MeterChanged, SampleChanged, ChannelsChanged };
 enum class BounceResult : uint8_t {
     Ok, Busy, Invalid, NoFreeSlot, MemoryBudget, TempoModulated, Stale, NotSaved, UnsafeChain
 };
@@ -29,6 +29,7 @@ struct BounceSnapshot {
     BounceStatus status = BounceStatus::Empty;
     BounceReason reason = BounceReason::None;
     BounceSource source = BounceSource::Master;
+    uint8_t channels = 0; // latched actual width; zero only for old synthetic caller tokens
     int8_t slot = -1;
     uint8_t bars = 1, beats_per_bar = 4;
     bool saved = false;
@@ -39,6 +40,9 @@ struct BounceSnapshot {
     bool active() const { return status == BounceStatus::Armed || status == BounceStatus::Recording; }
     bool take() const { return frames && (status == BounceStatus::Complete || status == BounceStatus::Partial); }
 };
+inline constexpr uint8_t bounce_channels(const BounceSnapshot& take) {
+    return take.channels ? take.channels : bounce_channels(take.source);
+}
 // Create/destroy outside guard. plan/commit are bounded guarded scalar operations;
 // only stage allocates. Reusing a staged plan requires destruction outside guard.
 struct BouncePlan {
@@ -48,6 +52,7 @@ struct BouncePlan {
     uint8_t bars = 1, beats_per_bar = 4;
     int32_t bpm_q16 = 0;
     BounceSource source = BounceSource::Master;
+    uint8_t channels = 0;
     uint32_t clock_increment = 0;
     bool phase_clock = false;
     trackr::synth::Sample staged;

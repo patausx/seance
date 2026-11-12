@@ -7,6 +7,8 @@ void nudge_step_values(int direction, bool group) {
     platform::AudioOut::Guard guard(*g_audio);
     capture_score_locked();
     sync_edit_context();
+    // On a flow row of the trig layer the buttons move the selected point of the curve.
+    const SeqMode mode = flow_row() ? SeqMode::Level : g_seq_mode;
     if (group && !g_selection.mask) {
         edit_status("select a group first");
         return;
@@ -15,18 +17,18 @@ void nudge_step_values(int direction, bool group) {
     const uint64_t targets = group ? g_selection.mask : seq_edit::bit(g_seq_col);
     int slot = -1, param = -1;
     uint16_t slices = 0;
-    const bool parameter_mode = g_seq_mode == SeqMode::Note || g_seq_mode == SeqMode::Level ||
-                                g_seq_mode == SeqMode::Lock || g_seq_mode == SeqMode::Slice;
-    if (g_seq_mode == SeqMode::Note) {
+    const bool parameter_mode = mode == SeqMode::Note || mode == SeqMode::Level ||
+                                mode == SeqMode::Lock || mode == SeqMode::Slice;
+    if (mode == SeqMode::Note) {
         slot = g_score.sequence_pitch_slot[g_seq_chain];
         param = g_score.sequence_pitch_param[g_seq_chain];
-    } else if (g_seq_mode == SeqMode::Level) {
+    } else if (mode == SeqMode::Level) {
         slot = g_score.sequence_value_slot[g_seq_chain];
         param = g_score.sequence_value_param[g_seq_chain];
-    } else if (g_seq_mode == SeqMode::Lock) {
+    } else if (mode == SeqMode::Lock) {
         normalize_lock_target();
         slot = g_lock_slot; param = g_lock_param;
-    } else if (g_seq_mode == SeqMode::Slice) {
+    } else if (mode == SeqMode::Slice) {
         slot = slice_source_slot(g_seq_chain); param = PlayUnit::P_SLICE;
         if (slot >= 0) slices = slice_source_mask(slot);
         if (!slices) { edit_status("no playable cuts"); return; }
@@ -40,15 +42,15 @@ void nudge_step_values(int direction, bool group) {
     for (int s = 0; s < SEQ_STEPS; ++s) {
         if (!(targets & seq_edit::bit(s))) continue;
         auto& step = g_edit_draft.steps[s];
-        if (g_seq_mode == SeqMode::Trig) {
+        if (mode == SeqMode::Trig) {
             if (direction > 0) step.flags |= SeqStep::Trig;
             else step.flags &= ~SeqStep::Trig;
-        } else if (g_seq_mode == SeqMode::Retrig) {
+        } else if (mode == SeqMode::Retrig) {
             step.set_retrig_count(uint8_t(std::max(1, std::min(4, int(step.retrig_count()) + direction))));
-        } else if (g_seq_mode == SeqMode::When) {
+        } else if (mode == SeqMode::When) {
             const int count = int(SeqStep::Condition::Count);
             step.set_condition(SeqStep::Condition((int(step.condition()) + direction + count) % count));
-        } else if (g_seq_mode == SeqMode::Time) {
+        } else if (mode == SeqMode::Time) {
             g_edit_draft.timing[s] = int8_t(std::max(-SEQ_MICROTIMING_MAX,
                 std::min(SEQ_MICROTIMING_MAX, int(g_edit_draft.timing[s]) + direction)));
         } else if (unit) {
@@ -56,9 +58,9 @@ void nudge_step_values(int direction, bool group) {
             const int found = seq_edit::find(step, slot, param);
             const q15 current = found >= 0 ? step.locks[found].value : target.base;
             int next = current;
-            if (g_seq_mode == SeqMode::Note) next = nudged_pitch(current, direction);
-            else if (g_seq_mode == SeqMode::Level) next = int(current) + direction * 331;
-            else if (g_seq_mode == SeqMode::Slice) {
+            if (mode == SeqMode::Note) next = nudged_pitch(current, direction);
+            else if (mode == SeqMode::Level) next = int(current) + direction * 331;
+            else if (mode == SeqMode::Slice) {
                 const int from = seq_slice::decode(current);
                 const int to = nudged_slice(slices, from, direction);
                 if (from == to) continue; // retain legacy raw values at boundaries
@@ -85,7 +87,7 @@ void nudge_step_values(int direction, bool group) {
     }
     const bool changed = commit_draft();
     finish_edit();
-    if (changed && !group && (g_seq_mode == SeqMode::Note || g_seq_mode == SeqMode::Slice))
+    if (changed && !group && (mode == SeqMode::Note || mode == SeqMode::Slice))
         g_eng->audition_sequence_step(g_seq_chain, g_seq_col, g_seq_bank);
     edit_status(changed ? (group ? (direction > 0 ? "group values +" : "group values -") : "") : "unchanged / at limit");
 }

@@ -148,13 +148,17 @@ void publish() {
     for (int i = 0; i <= VISIBLE; ++i) g_frame.rows[i] = entry_at(g_start + i);
 }
 void place(const cat::Entry* entry) {
-    if (!entry || !validate_owner() || picker_motion::state.closing) return;
+    if (!entry || !unit_kind_available(entry->kind) || !validate_owner() || picker_motion::state.closing) return;
     {platform::AudioOut::Guard guard(*g_audio);if(g_eng->recording_active_or_pending()){
         module_focus_show_sample_result(trackr::synth::SampleEditResult::Busy);return;}}
-    Unit* unit = make_unit(entry->kind); // ONLY commit creates a module.
+    Unit* unit = make_unit(entry->kind); // controller allocation, never worker
     if (!unit) return;
     if (unit->kind == UnitKind::SamplePlayer)
         static_cast<PlayUnit*>(unit)->set_pitch_mode(PlayUnit::PitchMode::Normal);
+    if (unit->kind == UnitKind::Grain)
+        static_cast<GrainUnit*>(unit)->apply_new_card_start();
+    if (unit->kind == UnitKind::Rot)
+        static_cast<RotUnit*>(unit)->apply_new_card_start();
     RecWorkspacePlan plan;
     auto result = trackr::synth::SampleEditResult::Ok;
     bool owned = true;
@@ -173,6 +177,8 @@ void place(const cat::Entry* entry) {
         owned = guarded_owner(); // Revalidate AFTER allocating/staging, before any bank mutation.
         if (owned) {
             if (g_eng->recording_active_or_pending()) result = trackr::synth::SampleEditResult::Busy;
+            else if (!g_eng->can_install_unit(unit,g_owner.units[g_owner.chain][g_owner.slot]))
+                result = trackr::synth::SampleEditResult::MemoryBudget;
             else if (unit->kind == UnitKind::Recorder) result = g_eng->commit_recorder(plan);
             if (result == trackr::synth::SampleEditResult::Ok) {
                 const int chain = g_owner.chain, slot = g_owner.slot;
@@ -186,8 +192,8 @@ void place(const cat::Entry* entry) {
                         g_sel_slot = g_edit_slot = final_slot;
                     }
                 }
-                mark_project_structural_mutated();
-                installed = true;
+                installed = g_eng->chains[chain].units[g_edit_slot] == unit;
+                if(installed)mark_project_structural_mutated();
             }
         }
     } else if (!shallow_owner()) owned = false;

@@ -14,8 +14,14 @@ checked; a successful compile is not device or listening approval.
 - retain editable resource inputs and their original licenses. check generated
   output without regenerating unrelated assets.
 - keep current resource generators in `tools/` and packaging in `scripts/`.
-  add required helper files to `scripts/source-files.json`. the public source export
+  add required helper files to sorted `scripts/source-files.json`, including every
+  production generator named by generated headers. keep independent generator-to-
+  helper closure regression coverage; a local test helper is not automatically public.
+  the public source export
   excludes local tests and research; do not link public guides to omitted files.
+- development admission requires explicit `make test-module-frame` and
+  `python3 -B tests/test_nav_instant.py`, plus scoped checks for the change. these
+  local-only suites are not automatic normal/public make or release dependencies.
 - do not commit captures, local receipts, binaries, credentials or private audio.
 
 for a bug, include version/source revision, console model, launch format, minimal steps and the

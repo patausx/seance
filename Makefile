@@ -2,8 +2,8 @@
 .SUFFIXES:
 #---------------------------------------------------------------------------------
 
-TEST_GOALS := $(filter test% sanitize% check-module-frame /tmp/seance_%,$(MAKECMDGOALS))
-HOST_ONLY_GOALS := clean release-samples release-clean $(TEST_GOALS)
+TEST_GOALS := $(filter check test% sanitize% check-module-frame /tmp/seance_%,$(MAKECMDGOALS))
+HOST_ONLY_GOALS := clean release-samples release-source release-clean $(TEST_GOALS)
 NEEDS_DEVKIT := $(if $(MAKECMDGOALS),$(filter-out $(HOST_ONLY_GOALS),$(MAKECMDGOALS)),all)
 
 ifneq ($(strip $(NEEDS_DEVKIT)),)
@@ -56,7 +56,8 @@ export VPATH    := $(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) $(CURDIR)/assets/m
 export DEPSDIR  := $(CURDIR)/$(BUILD)
 
 CFILES   := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
-CPPFILES := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
+# Retired Relic material renderer stays archived/on disk, never linked into the app.
+CPPFILES := $(filter-out relic_material.cpp,$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp))))
 SFILES   := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
 BINFILES := menu_drone.bin menu_entry.bin
 
@@ -66,8 +67,9 @@ else
     export LD := $(CXX)
 endif
 
+export CXX_OFILES := $(CPPFILES:.cpp=.o)
 export OFILES := $(addsuffix .o,$(BINFILES)) \
-                 $(CPPFILES:.cpp=.o) $(CFILES:.c=.o) $(SFILES:.s=.o)
+                 $(CXX_OFILES) $(CFILES:.c=.o) $(SFILES:.s=.o)
 
 export INCLUDE := $(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
                   $(foreach dir,$(LIBDIRS),-I$(dir)/include) \
@@ -77,7 +79,7 @@ export LIBPATHS := $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 
 export _3DSXFLAGS += --smdh=$(CURDIR)/$(TARGET).smdh
 
-.PHONY: $(BUILD) clean all run send cia cci test sanitize test-branding release release-app release-samples
+.PHONY: $(BUILD) clean all run send cia cci test sanitize test-branding release release-app release-samples release-source release-clean
 
 all: $(BUILD)
 
@@ -99,7 +101,7 @@ send: run
 # Host tests are local-only and never part of the application build.
 ifneq ($(strip $(TEST_GOALS)),)
 ifeq ($(wildcard $(TOPDIR)/tests/Makefile),)
-$(error host tests are local-only and are not installed in this checkout)
+$(error host checks require local tests/Makefile; tests are not installed in public source exports)
 else
 include $(TOPDIR)/tests/Makefile
 endif
@@ -111,7 +113,12 @@ release-app: $(BUILD) cia
 release-samples:
 	python3 scripts/package_release.py --samples --version "$(RELEASE_VERSION)"
 
+# Binary/application + sample archives only; matching source is a separate duty.
+# For source-bound candidates use scripts/prepare_public_release.py explicitly.
 release: release-app release-samples
+
+release-source:
+	python3 scripts/package_release.py --source --version "$(RELEASE_VERSION)"
 
 release-clean:
 	rm -f release/seance-*.zip release/*.cia release/SHA256SUMS.txt \
@@ -144,7 +151,13 @@ $(OUTPUT).3dsx : $(OUTPUT).elf $(OUTPUT).smdh
 $(OUTPUT).smdh : $(APP_ICON) $(APP_SMALL_ICON) $(TOPDIR)/Makefile
 	smdhtool --create "$(APP_TITLE)" "$(APP_DESCRIPTION)" "$(APP_AUTHOR)" \
 	  $(APP_ICON) $@ $(APP_SMALL_ICON)
-$(OUTPUT).elf  : $(OFILES)
+$(OUTPUT).elf  : $(OFILES) $(TOPDIR)/VERSION
+
+# SEANCE_VERSION is a C++ command-line define, which make cannot track itself.
+# Invalidate every C++ consumer as well as the link when VERSION changes.
+ifneq ($(strip $(CXX_OFILES)),)
+$(CXX_OFILES): $(TOPDIR)/VERSION
+endif
 
 # Already prepared PCM travels inside the executable; builds require neither
 # ffmpeg nor access to the original uploads. bin2o exports aligned const data.

@@ -23,7 +23,7 @@ namespace l=noise_editor_visual;
 using N=NoiseUnit;
 struct Frame {
     uint16_t mod_links=0;
-    bool valid=false,modern=false,setup=false,bypass=false,mute=false,lock=false,lock_full=false,audible=false;
+    bool valid=false,modern=false,setup=false,bypass=false,mute=false,audible=false;
     int8_t chain=0,slot=0,selected=0;
     q15 edit[N::P_COUNT]={},live[N::P_COUNT]={};
     uint16_t envelope=0,peak=0;
@@ -36,8 +36,8 @@ static_assert(sizeof(Frame)<1024 && std::is_trivially_copyable<Frame>::value,
               "bounded pointer-free Noise scalars; draw never reads engine or PCM");
 struct Gesture {
     Engine* engine=nullptr;uintptr_t unit=0;View view=View::Chains;
-    int chain=-1,slot=-1,bank=-1,step=-1,lock_chain=-1,param=-1,start=0;
-    q15 value=0;bool locked=false,modern=false,setup=false;
+    int chain=-1,slot=-1,bank=-1,param=-1,start=0;
+    q15 value=0;bool modern=false,setup=false;
 } gesture;
 struct ModelKey {q15 tone=0,body=0,resonance=0,sweep=0,attack=0,decay=0,mode=0;bool modern=false;};
 ModelKey cached={};bool cache_valid=false;
@@ -65,56 +65,38 @@ constexpr const char* colour_names[]={"white","pink","crackle","metal"};
 int uni(int value){return std::max(0,std::min(32767,value));}
 int colour(q15 value){return std::min(3,uni(value)*4/32768);}
 bool capture_context(){return g_eng && g_audio && g_overlay==Overlay::Editor &&
-    (g_view==View::Chains || (g_view==View::Sequencer && g_seq_lock_armed)) &&
+    g_view==View::Chains &&
     g_edit_chain>=0 && g_edit_chain<NUM_CHAINS && g_edit_slot>=0 && g_edit_slot<UNITS_PER_CHAIN;}
 bool context(){return !param_lens_is_open() && capture_context();}
-bool lock_context(){return g_seq_lock_armed && g_seq_lock_chain==g_edit_chain &&
-    g_seq_lock_step>=0 && g_seq_lock_step<SEQ_STEPS;}
 int clamp(int v,int lo=0,int hi=32767){return std::max(lo,std::min(v,hi));}
-int bank(){const int b=sequencer_edit_bank();return b>=0&&b<NUM_PATTERNS?b:g_eng->active_pattern;}
-int gesture_bank(){return g_seq_lock_armed?bank():g_eng->active_pattern;}
 void release(){gesture={};if(g_drag==Drag::NoiseDensity)g_drag=Drag::None;}
 void bind(const N& u){if(bound_unit!=uintptr_t(&u)||bound_chain!=g_edit_chain||bound_slot!=g_edit_slot||bound_modern!=u.modern()){
     release();setup=false;selected=N::P_DENSITY;bound_unit=uintptr_t(&u);bound_chain=g_edit_chain;
     bound_slot=g_edit_slot;bound_modern=u.modern();cache_valid=false;}}
 q15 edit_value(const N& u,int p){
-    if(lock_context()){
-        const auto& step=g_eng->sequence_pattern(bank()).steps[g_edit_chain][g_seq_lock_step];
-        for(int i=0;i<std::min(int(step.lock_count),SEQ_LOCKS);++i)
-            if(step.locks[i].slot==g_edit_slot&&step.locks[i].param==p)return step.locks[i].value;
-    }
     return u.params[p].base;
 }
-void set_value(N& u,int p,q15 value){ // caller owns audio guard; full bank never edits base
-    if((g_seq_lock_armed&&!lock_context())||p<0||p>=u.num_params)return;
-    if(g_seq_lock_armed){
-        auto& step=g_eng->sequence_pattern(bank()).steps[g_edit_chain][g_seq_lock_step];
-        const int count=std::min(int(step.lock_count),SEQ_LOCKS);int found=-1;
-        for(int i=0;i<count;++i)if(step.locks[i].slot==g_edit_slot&&step.locks[i].param==p){found=i;break;}
-        if(found>=0){if(step.locks[found].value==value)return;step.locks[found].value=value;}
-        else {if(count>=SEQ_LOCKS){g_seq_lock_flash=90;return;}
-            step.locks[count]={uint8_t(g_edit_slot),uint8_t(p),value};step.lock_count=uint8_t(count+1);}
-    }else {if(u.params[p].base==value)return;u.params[p].base=value;}
+void set_value(N& u,int p,q15 value){ // caller owns audio guard
+    if(p<0||p>=u.num_params)return;
+    if(u.params[p].base==value)return;
+    u.params[p].base=value;
     mark_project_mutated();cache_valid=false;
 }
 bool name_touch(int p,int x,int y,int w,int tx,int ty){
     if(!hit(tx,ty,x-3,y-4,w+6,16))return false;
     selected=p;
-    if(lock_context()&&g_eng->remove_step_lock(g_seq_lock_chain,g_seq_lock_step,g_edit_slot,p,bank()))mark_project_mutated();
     cache_valid=false;return true;
 }
 void begin(N& u,int p,int x){
     selected=p;gesture={};gesture.engine=g_eng;gesture.unit=uintptr_t(&u);gesture.view=g_view;
-    gesture.chain=g_edit_chain;gesture.slot=g_edit_slot;gesture.bank=gesture_bank();
-    gesture.step=g_seq_lock_step;gesture.lock_chain=g_seq_lock_chain;gesture.locked=g_seq_lock_armed;
+    gesture.chain=g_edit_chain;gesture.slot=g_edit_slot;gesture.bank=g_eng->active_pattern;
     gesture.param=p;gesture.start=x;gesture.value=edit_value(u,p);gesture.setup=setup;
     gesture.modern=u.modern();g_drag=Drag::NoiseDensity;g_drag_param=p;
 }
 bool owns(const N& u){return gesture.engine==g_eng&&gesture.unit==uintptr_t(&u)&&
     gesture.view==g_view&&gesture.chain==g_edit_chain&&gesture.slot==g_edit_slot&&
-    gesture.bank==gesture_bank()&&gesture.param==selected&&gesture.locked==g_seq_lock_armed&&
-    gesture.setup==setup&&gesture.modern==u.modern()&&g_eng->chains[g_edit_chain].units[g_edit_slot]==&u&&
-    (!gesture.locked||(lock_context()&&gesture.step==g_seq_lock_step&&gesture.lock_chain==g_seq_lock_chain));}
+    gesture.bank==g_eng->active_pattern&&gesture.param==selected&&
+    gesture.setup==setup&&gesture.modern==u.modern()&&g_eng->chains[g_edit_chain].units[g_edit_slot]==&u;}
 int position(int p,q15 value,int left,int end){const int lo=p==N::P_SWEEP?-32767:0;
     return left+(clamp(value,lo)-lo)*(end-left)/(32767-lo);}
 void value_text(char* out,size_t size,int p,q15 v,bool modern,int colour_index=0){
@@ -183,7 +165,7 @@ void noise_focus_select(int param){if(param>=0&&param<N::P_COUNT){if(param!=sele
 void noise_focus_release(){release();}
 bool noise_focus_modern(){return frame.valid&&frame.modern;}
 void noise_focus_value_text(char* out,size_t size,int p,q15 v){
-    const int colour_index=frame.valid?colour(frame.lock?frame.edit[N::P_COLOUR]:frame.live[N::P_COLOUR]):0;
+    const int colour_index=frame.valid?colour(frame.live[N::P_COLOUR]):0;
     value_text(out,size,p,v,noise_focus_modern(),colour_index);
 }
 bool noise_focus_touch_body(N& u,int tx,int ty){
@@ -193,20 +175,18 @@ bool noise_focus_touch_body(N& u,int tx,int ty){
     bind(u);release();
     if(u.modern()&&l::contains(l::kSetup,tx,ty)){setup=!setup;return true;}
     if(!u.modern()&&hit(tx,ty,164,0,76,26)){
-        if(!g_seq_lock_armed){N defaults;
+        {N defaults;
             for(int p=N::LEGACY_COUNT;p<N::P_COUNT;++p)u.params[p]=defaults.params[p];
             for(auto& scene:g_eng->scenes[g_edit_chain])if(scene.kind[g_edit_slot]==UnitKind::Noise)
                 for(int p=N::LEGACY_COUNT;p<N::P_COUNT;++p)scene.base[g_edit_slot][p]=defaults.params[p].base;
             u.set_modern(true);mark_project_mutated();bind(u);}
         return true;}
-    if(ty<26){if(!g_seq_lock_armed&&hit(tx,ty,246,0,38,25)){
+    if(ty<26){if(hit(tx,ty,246,0,38,25)){
         u.bypass=!u.bypass;mark_project_mutated();}return true;}
-    if(g_seq_lock_armed&&!lock_context())return true;
     if(u.modern()&&setup){
         for(int i=0;i<2;++i)if(l::contains(l::kSetupControls[i],tx,ty)){
             const int p=i?N::P_SWEEP_TIME:N::P_EVENT_LENGTH;
-            selected=p;const int y=i?148:73;
-            if(lock_context()&&name_touch(p,14,y,ui::text_w(i?"sweep time":"event length"),tx,ty))return true;
+            selected=p;
             if((!i&&colour(edit_value(u,N::P_COLOUR))!=2)||
                 (i&&N::drone_mode(edit_value(u,N::P_MODE),edit_value(u,N::P_DECAY))))return true;
             begin(u,p,tx);return true;}
@@ -222,7 +202,6 @@ bool noise_focus_touch_body(N& u,int tx,int ty){
             const int x=l::kColumns[col],p=modern_params[row][col],y=l::kRows[row];
             if(!hit(tx,ty,x-6,y-5,146,32))continue;
             selected=p;const bool drone=N::drone_mode(edit_value(u,N::P_MODE),edit_value(u,N::P_DECAY));
-            if(lock_context()&&name_touch(p,x,y,ui::text_w(modern_names[row][col]),tx,ty))return true;
             if((p==N::P_SWEEP||p==N::P_DECAY)&&drone)return true;
             begin(u,p,tx);return true;}
         return true;
@@ -234,7 +213,6 @@ bool noise_focus_touch_body(N& u,int tx,int ty){
         selected=N::P_MODE;set_value(u,selected,i?32767:16384);return true;}
     for(const auto& c:controls)if(hit(tx,ty,c.x,c.y,c.w,c.h)){
         selected=c.param;
-        if(lock_context()&&name_touch(selected,c.label_x,c.label_y,ui::text_w(c.name),tx,ty))return true;
         begin(u,selected,tx);return true;}
     return true;
 }
@@ -269,14 +247,12 @@ void noise_focus_capture(){
         if(selected>=u.num_params){selected=N::P_DENSITY;release();}
         frame.valid=true;frame.modern=u.modern();frame.setup=setup;
         frame.bypass=u.bypass;frame.mute=chain.mute;frame.chain=g_edit_chain;frame.slot=g_edit_slot;
-        frame.lock=lock_context();frame.lock_full=frame.lock&&
-            g_eng->sequence_pattern(bank()).steps[g_edit_chain][g_seq_lock_step].lock_count>=SEQ_LOCKS;
         frame.selected=selected;frame.mod_links=focus_mod_links(u);
         for(int i=0;i<UNITS_PER_CHAIN;++i){frame.kinds[i]=chain.units[i]?uint8_t(chain.units[i]->kind):uint8_t(UnitKind::Empty);
             frame.bypassed[i]=chain.units[i]&&chain.units[i]->bypass;}
         for(int p=0;p<u.num_params;++p){frame.edit[p]=edit_value(u,p);
             frame.live[p]=u.modern()?u.control_value(p):u.params[p].effective;}
-        const q15* s=frame.lock?frame.edit:frame.live;
+        const q15* s=frame.live;
         key={s[N::P_TONE],s[N::P_BODY],s[N::P_RESONANCE],s[N::P_SWEEP],
             s[N::P_ATTACK],s[N::P_DECAY],s[N::P_MODE],u.modern()};
         const bool tele=g_ui_snapshot.effect_focus_valid&&g_ui_snapshot.effect_focus_kind==uint8_t(UnitKind::Noise)&&
@@ -285,7 +261,7 @@ void noise_focus_capture(){
         if(frame.audible){frame.envelope=std::min(32767,int(g_ui_snapshot.generator_phase_hi)*256+g_ui_snapshot.generator_phase_lo);
             frame.peak=std::min(32767,int(g_ui_snapshot.generator_energy));}
     }
-    const int c=colour(frame.lock?frame.edit[N::P_COLOUR]:frame.live[N::P_COLOUR]);
+    const int c=colour(frame.live[N::P_COLOUR]);
     for(int p=0;p<(frame.modern?N::P_COUNT:N::LEGACY_COUNT);++p)
         value_text(frame.values[p],sizeof frame.values[p],p,frame.edit[p],frame.modern,c);
     if(frame.modern){
@@ -302,14 +278,14 @@ void noise_focus_draw(const N&){
     char text[24];std::snprintf(text,sizeof text,"ch%02d / %02d",frame.chain+1,frame.slot+1);
     ui::text(76,m::kHeaderTextY,text,m::ghost());
     if(frame.modern)ui::text(205,m::kHeaderTextY,frame.setup?"main":"setup",m::spot());
-    else ui::text(170,m::kHeaderTextY,"extend",frame.lock?m::ghost():m::spot());
+    else ui::text(170,m::kHeaderTextY,"extend",m::spot());
     ui::text(258,m::kHeaderTextY,"byp",frame.bypass?m::spot():m::ghost());
     ui::text(m::right_edge(320)-ui::text_w("x"),m::kHeaderTextY,"x",m::ghost());
     if(frame.bypass)ui::line(258,m::kHeaderMarkY,275,m::kHeaderMarkY,m::spot());
     // The held-L sheet owns the body. Do not paint ordinary control labels
     // through its depth/source rows; retain the shared module identity/footer.
     if(param_lens_is_open()){m::footer(320,"b back","l: mod >");return;}
-    const q15* state=frame.lock?frame.edit:frame.live;
+    const q15* state=frame.live;
     const bool drone=N::drone_mode(state[N::P_MODE],state[N::P_DECAY]);
     if(frame.modern){
         if(frame.setup){
@@ -349,8 +325,7 @@ void noise_focus_draw(const N&){
                     p==N::P_SWEEP?position(p,0,x,end):-1);
             }
         }
-        if(frame.lock)m::footer(320,frame.lock_full?"lock full":"p-lock / name: remove",frame.setup?"main":"b back");
-        else m::footer(320,frame.setup?"tap main":"b back","l: mod >");
+        m::footer(320,frame.setup?"tap main":"b back","l: mod >");
         return;
     }
     ui::text(14,33,"colour",frame.selected==N::P_COLOUR?m::spot():m::ghost());
@@ -387,8 +362,7 @@ void noise_focus_draw(const N&){
     meter(122,"env",frame.envelope,frame.audible,m::ink());
     meter(144,"out",frame.peak,frame.audible,m::spot());
     ui::line(14,223,306,223,m::branch());
-    if(frame.lock)m::footer(320,frame.lock_full?"lock full":"p-lock / name: remove","b back");
-    else m::footer(320,"b back","l: mod >");
+    m::footer(320,"b back","l: mod >");
 }
 bool noise_focus_draw_top(){
     if(!frame.valid||!frame.modern||param_lens_is_open())return false;
@@ -426,8 +400,8 @@ bool noise_focus_draw_top(){
     }
     ui::text(14,163,"amp contour",m::ink());
     std::snprintf(text,sizeof text,"a %s / %s",frame.values[N::P_ATTACK],
-        N::drone_mode(frame.lock?frame.edit[N::P_MODE]:frame.live[N::P_MODE],
-            frame.lock?frame.edit[N::P_DECAY]:frame.live[N::P_DECAY])?"hold":frame.values[N::P_DECAY]);
+        N::drone_mode(frame.live[N::P_MODE],
+            frame.live[N::P_DECAY])?"hold":frame.values[N::P_DECAY]);
     right(386,163,text,m::ghost());
     ui::line(x0,214,x1,214,palette::shadow());ui::line(x0,180,x0,214,palette::shadow());
     for(int i=1;i<l::kEnvelopePoints;++i){
@@ -436,7 +410,7 @@ bool noise_focus_draw_top(){
     }
     if(frame.audible)std::snprintf(text,sizeof text,"out %u%%",unsigned((uint32_t(frame.peak)*100+16383)/32767));
     else std::snprintf(text,sizeof text,"out --");
-    m::footer(400,frame.lock?"lock model / not audio":"filter + amp model / not audio",text);
+    m::footer(400,"filter + amp model / not audio",text);
     return true;
 }
 } // namespace seance::platform::ui3ds

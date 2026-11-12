@@ -41,7 +41,7 @@ void inline_build(WordFrame&f){
     auto parameter=[&](layout::Box b,const char*s,int p,Gesture gesture,int64_t raw,int64_t lo,int64_t hi,bool enabled=true){
         auto&c=word_cell(f,b,s,WordOp::SetParam,0,can&&enabled&&!frame.quiet);c.gesture=gesture;c.param=p;c.raw=raw;c.lo=lo;c.hi=hi;
         c.live=p<0?raw:frame.live[p];c.linked=p>=0&&(frame.links&(1u<<p));
-        play_readout::value_text(c.value,sizeof c.value,p,p<0?0:d.bases[p],d.modern,d.quantize,d.pitch_mode);return &c;};
+        play_readout::value_text(c.value,sizeof c.value,p,p<0?0:d.bases[p],d.modern,d.quantize,d.pitch_mode,d.scale);return &c;};
     auto&mode_cell=word_cell(f,pl::mode,workspace_name(frame),WordOp::Menu,int(WordMenu::Mode),can&&!frame.quiet);mode_cell.chevron=true;
     choice(pl::shot,"one shot",C::P_MODE,0,d.modern&&!gate);
     if(gate){auto&c=word_cell(f,pl::gate,"gate",WordOp::SetParam,0,can&&!frame.quiet,true);c.gesture=Gesture::Gate;c.param=C::P_GATE;

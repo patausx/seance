@@ -368,7 +368,11 @@ const char* module_name(UnitKind kind) {
         case UnitKind::Tilt:         return "tilt";
         case UnitKind::Strain:       return "strain";
         case UnitKind::Scratch:      return "scrt";
+        case UnitKind::Pent:         return "pent";
+        case UnitKind::Rule:         return "rule";
+        case UnitKind::Rot:          return "rot";
         case UnitKind::Paul:         return "paul";
+        case UnitKind::Relic:        return "relic";
         default:                    return "?";
     }
 }
@@ -405,7 +409,11 @@ const char* module_description(UnitKind kind) {
         case UnitKind::Tilt:         return "spectral tilt";
         case UnitKind::Strain:       return "moving distortion";
         case UnitKind::Scratch:      return "scratch / hold";
+        case UnitKind::Pent:         return "five coupled voices";
+        case UnitKind::Rule:         return "ring cellular score";
+        case UnitKind::Rot:          return "rotting sample loop";
         case UnitKind::Paul:         return "spectral stretch";
+        case UnitKind::Relic:        return "material sample / four ports";
         default:                    return "unknown module";
     }
 }

@@ -2,9 +2,14 @@
 // callback -> LightEvent -> core-1 worker -> Engine::render under RecursiveLock.
 // watchdog wakes every 100ms even if the ndsp callback goes missing (apt edge cases).
 #include "audio_out.h"
+#include "audio_profile.h"
 #include <cstring>
 
 namespace seance::platform {
+
+// The overlay calls a block late against this constant; keep it the real one.
+static_assert(uint64_t(audio_profile::BudgetUs) * ENGINE_SR == uint64_t(FRAMES_PER_BUF) * 1000000u,
+              "diagnostic block budget must equal one block of audio");
 
 static LightEvent* g_wake_for_cb = nullptr;
 
@@ -16,14 +21,15 @@ static void apt_hook_cb(APT_HookType type, void* opaque) {
     switch (type) {
         case APTHOOK_ONRESTORE:
         case APTHOOK_ONWAKEUP:
+            static_cast<AudioOut*>(opaque)->interrupt_recording();
             APT_SetAppCpuTimeLimit(80);
-            ndspChnSetPaused(0, false);
+            if (static_cast<AudioOut*>(opaque)->alive()) ndspChnSetPaused(0, false);
             if (g_wake_for_cb) LightEvent_Signal(g_wake_for_cb);
             break;
         case APTHOOK_ONSUSPEND:
         case APTHOOK_ONSLEEP:
             static_cast<AudioOut*>(opaque)->interrupt_recording();
-            ndspChnSetPaused(0, true);
+            if (static_cast<AudioOut*>(opaque)->alive()) ndspChnSetPaused(0, true);
             APT_SetAppCpuTimeLimit(10);
             break;
         default: break;
@@ -34,7 +40,14 @@ static void worker_trampoline(void* arg) {
     static_cast<AudioOut*>(arg)->worker_loop();
 }
 
+void AudioOut::attach_lifecycle() {
+    if (lifecycle_attached_) return;
+    aptHook(&apt_cookie_, apt_hook_cb, this);
+    lifecycle_attached_ = true;
+}
+
 bool AudioOut::init(Engine& engine) {
+    attach_lifecycle();
     engine_ = &engine;
     ui_focus_ = 0xffffffffu;
     ui_snapshots_.reset_quiescent();
@@ -83,7 +96,6 @@ bool AudioOut::init(Engine& engine) {
     LightEvent_Init(&wake_event_, RESET_ONESHOT);
     g_wake_for_cb   = &wake_event_;
     ndspSetCallback(ndsp_callback, nullptr);
-    aptHook(&apt_cookie_, apt_hook_cb, this);
 
     s32 main_prio = 0x30;
     svcGetThreadPriority(&main_prio, CUR_THREAD_HANDLE);
@@ -103,7 +115,7 @@ bool AudioOut::init(Engine& engine) {
     worker_handle_ = threadCreate(worker_trampoline, this, 0x6000, worker_prio, 1, false);
     if (!worker_handle_)   // old-3ds fallback: default core
         worker_handle_ = threadCreate(worker_trampoline, this, 0x6000, worker_prio, -1, false);
-    if (!worker_handle_) { thread_run_ = false; shutdown(); return false; }
+    if (!worker_handle_) { thread_run_ = false; shutdown(); attach_lifecycle(); return false; }
 
     return true;
 }
@@ -112,17 +124,39 @@ void AudioOut::interrupt_recording() {
     Guard guard(*this);
     if (engine_) {
         engine_->interrupt_recorders();
+        engine_->stop_bounce(); // preserve a partial/finalized take; wake never resumes a writer
+        // Cancel gesture-owned runtime layers, never musical gates/latch/HOLD,
+        // stored bases or step locks. No UI/controller access on the hook thread.
+        engine_->cancel_param_temp();
+        engine_->cancel_scratch_gesture();
+        engine_->cancel_relic_gesture();
+        engine_->cancel_sequence_audition();
+        engine_->cancel_rot_auditions(); // direct stopped A auditions, including silent preparation
+        engine_->release_transition_fx();
+        engine_->stop_play_preview(); // lifecycle-only private bus reset; normal lift retains its tail
+        engine_->stop_sample_preview();
+        engine_->stop_bounce_preview();
         // Audio may stop during sleep/suspend: a sample-count lease alone cannot
         // expire then. Cancel focused dry auditions under this existing guard;
         // wake restores the current mix with the normal short audio ramp.
-        for (auto& chain : engine_->chains) for (Unit* unit : chain.units)
+        for (auto& chain : engine_->chains) for (Unit* unit : chain.units) {
             if (unit && unit->kind == UnitKind::Chorus)
                 static_cast<ChorusUnit*>(unit)->set_dry_compare(false);
+            if (unit && unit->kind == UnitKind::Fract)
+                static_cast<FractUnit*>(unit)->set_manual_grab(false);
+            if (unit && unit == lifecycle_grain_ && unit->kind == UnitKind::Grain)
+                static_cast<GrainUnit*>(unit)->pad_end(lifecycle_grain_token_);
+        }
     }
+    lifecycle_grain_ = nullptr; lifecycle_grain_token_ = 0;
+    // Release publication follows guarded cancellation. UI observes it BEFORE
+    // polling dirty state, commands or any resumed HID/controller dispatch.
+    __atomic_add_fetch(&lifecycle_epoch_, 1u, __ATOMIC_RELEASE);
 }
 
 void AudioOut::shutdown() {
     if (!initialized_ && !worker_handle_) {
+        if (lifecycle_attached_) { aptUnhook(&apt_cookie_); lifecycle_attached_ = false; }
         // partial init cleanup
         for (int i = 0; i < NUM_BUFFERS; ++i)
             if (buf_data_[i]) { linearFree(buf_data_[i]); buf_data_[i] = nullptr; }
@@ -137,7 +171,7 @@ void AudioOut::shutdown() {
         worker_handle_ = nullptr;
     }
 
-    aptUnhook(&apt_cookie_);
+    if (lifecycle_attached_) { aptUnhook(&apt_cookie_); lifecycle_attached_ = false; }
     ndspSetCallback(nullptr, nullptr);
     g_wake_for_cb = nullptr;
 
@@ -168,6 +202,11 @@ void AudioOut::set_ui_focus(int chain, int slot, int sigil) {
     __atomic_store_n(&ui_focus_, packed, __ATOMIC_RELAXED);
 }
 
+void AudioOut::render_output(Engine& engine, int16_t* output, int frames) {
+    if (recovery_inhibited_) std::memset(output,0,size_t(frames)*2*sizeof(int16_t));
+    else engine.render(reinterpret_cast<q15*>(output),frames);
+}
+
 void AudioOut::worker_loop() {
     // Watchdog under one buffer period (16 ms): if the ndsp callback vanishes
     // (apt sleep/suspend edges), we still poll fast enough to keep the ~64 ms
@@ -177,13 +216,6 @@ void AudioOut::worker_loop() {
     while (thread_run_) {
         LightEvent_WaitTimeout(&wake_event_, WATCHDOG_NS);
         if (!thread_run_) break;
-
-        if (primed_) {
-            int done_count = 0;
-            for (int n = 0; n < num_buffers_; ++n)
-                if (wave_bufs_[n].status == NDSP_WBUF_DONE) ++done_count;
-            if (done_count == num_buffers_) ++xrun_count_;
-        }
 
         // NDSP consumes buffers in add order, so refill the completed prefix of
         // our ring strictly in sequence. Do not search for arbitrary DONE slots:
@@ -195,10 +227,21 @@ void AudioOut::worker_loop() {
             auto& wb = wave_bufs_[idx];
             if (wb.status != NDSP_WBUF_DONE) break;
 
+            // Diagnostic builds only: tick stamps splitting this block into guard
+            // wait, render, snapshot and hand-off. `if constexpr` leaves a normal
+            // build without the extra clock reads and without the shared feed.
+            // Deliberately not initialized: a diagnostic build assigns all four
+            // before the push below, and a normal build then compiles to exactly
+            // the code it had before the stamps existed.
+            [[maybe_unused]] u64 stamp[4];
+            // Same rule: transport/core, sounding cards and voices of this block.
+            [[maybe_unused]] uint8_t seen[3];
             {
                 const u64 started = svcGetSystemTick();
-                Guard _g(*this);
-                engine_->render(reinterpret_cast<q15*>(buf_data_[idx]), FRAMES_PER_BUF);
+                WorkerGuard _g(lock_);   // the same lock as AudioOut::Guard
+                if constexpr (audio_profile::Enabled) { stamp[0] = started; stamp[1] = svcGetSystemTick(); }
+                render_output(*engine_,buf_data_[idx],FRAMES_PER_BUF);
+                if constexpr (audio_profile::Enabled) stamp[2] = svcGetSystemTick();
 
                 auto& snapshot = ui_snapshots_.producer_buffer();
                 const uint32_t focus = __atomic_load_n(&ui_focus_, __ATOMIC_RELAXED);
@@ -214,7 +257,8 @@ void AudioOut::worker_loop() {
                 // render-only number hid telemetry overhead from the load meter.
                 // SYSCLOCK_ARM11 ticks -> microseconds without 64-bit division:
                 // us = ticks * 64 / (268123480 * 64 / 1e6) ~= ticks / 268.
-                const u64 elapsed_ticks = svcGetSystemTick() - started;
+                const u64 finished = svcGetSystemTick();
+                const u64 elapsed_ticks = finished - started;
                 const uint32_t elapsed_us = (uint32_t)(elapsed_ticks / (SYSCLOCK_ARM11 / 1000000u));
                 engine_->render_last_us = elapsed_us;
                 if (elapsed_us > engine_->render_peak_us) engine_->render_peak_us = elapsed_us;
@@ -226,11 +270,56 @@ void AudioOut::worker_loop() {
                 snapshot.render_peak_us = engine_->render_peak_us;
                 snapshot.dsp_load_permille = engine_->dsp_load_permille;
                 snapshot.xrun_count = xrun_count_;
+                if constexpr (audio_profile::Enabled) {
+                    // Still inside the guard and before the snapshot changes hands:
+                    // what this block published, and what its sources were computing.
+                    seen[0] = audio_profile::state(snapshot.transport_playing, snapshot.sequencer_enabled,
+                                                   svcGetProcessorID());
+                    unsigned units = 0, voices = 0;
+                    for (int c = 0; c < NUM_CHAINS; ++c) for (int s = 0; s < UNITS_PER_CHAIN; ++s) {
+                        if (snapshot.unit_kind[c][s] != (uint8_t)UnitKind::Empty && !snapshot.chain_mute[c] &&
+                            !((snapshot.unit_bypass[c] >> s) & 1u)) ++units;
+                        // A bypassed source is not processed and keeps its last count.
+                        const Unit* unit = engine_->chains[c].units[s];
+                        if (!unit || unit->bypass) continue;
+                        if (unit->kind == UnitKind::Grain)
+                            voices += static_cast<const GrainUnit*>(unit)->visual_active();
+                        else if (unit->kind == UnitKind::Rule) {
+                            const RuleUnit::Visual rule = static_cast<const RuleUnit*>(unit)->visual();   // scalar copy
+                            if (rule.active) voices += rule.voices;
+                        }
+                    }
+                    seen[1] = (uint8_t)units;
+                    seen[2] = (uint8_t)(voices > 255 ? 255 : voices);
+                }
                 ui_snapshots_.publish();
+                if constexpr (audio_profile::Enabled) stamp[3] = finished;
             }
 
             DSP_FlushDataCache(buf_data_[idx], FRAMES_PER_BUF * 2 * sizeof(int16_t));
+            // Underrun: every buffer NDSP was given has finished before this one
+            // reaches it, so it has been playing nothing. Counted here, where the
+            // block is handed over, once per gap. The former test (all buffers
+            // done when the worker wakes) could not fire while the worker was the
+            // late one: it always ran right after a hand-over, with that buffer
+            // still queued, so a render slower than real time or a guard held
+            // against the worker left gaps in the sound and the counter at zero.
+            // This buffer is done itself, so `held` counts the others.
+            int held = 0;
+            for (int n = 0; n < num_buffers_; ++n)
+                if (wave_bufs_[n].status != NDSP_WBUF_DONE) ++held;
+            if (primed_ && !held) ++xrun_count_;
             ndspChnWaveBufAdd(0, &wb);
+            // Lock-free hand-off to the overlay; a full queue refuses and counts.
+            if constexpr (audio_profile::Enabled) {
+                audio_profile::Block block = audio_profile::stages(stamp, svcGetSystemTick(), xrun_count_);
+                block.period = audio_profile::cadence.period(stamp[0]);
+                // The same count for the overlay: its minimum over the window is
+                // how close the queue came to empty, 0 = it was.
+                block.queue = audio_profile::queue(held, num_buffers_);
+                block.state = seen[0]; block.units = seen[1]; block.voices = seen[2];
+                audio_profile::feed.push(block);
+            }
             primed_ = true;
             next_buf_ = (idx + 1) % num_buffers_;
         }

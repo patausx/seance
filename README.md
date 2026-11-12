@@ -6,8 +6,9 @@ record sounds, reshape samples, draw modulation and build evolving rhythms.
 start with an oscillator, a WAV or the microphone; chain processors, sequence
 the result, then mix, morph and switch patterns while it plays.
 
-- **30 modules** for synthesis, sampling, live input, recording and effects, including
-  [scratch/hold](GUIDE.md#scrt) and [spectral stretching](GUIDE.md#paul).
+- **33 modules** for synthesis, sampling, live input, recording and effects, including
+  [five coupled oscillators](GUIDE.md#pent), [generative sample notes](GUIDE.md#rule),
+  [decaying tape loops](GUIDE.md#rot), [scratch/hold](GUIDE.md#scrt) and [spectral stretching](GUIDE.md#paul).
 - **four audio chains**, each with up to six modules to combine and reorder.
 - **eight LFOs (sigils)** with hand-drawn shapes, generated waveforms and tempo sync.
 - **four sequencer tracks**, up to 64 steps, eight banks, parameter locks and slices.
@@ -25,6 +26,11 @@ this source update keeps the alpha version; it is not a new binary release.
 
 **Old 3DS has not been tested. performance on older models is unknown.**
 New 3DS uses its CPU speedup; demanding patches can still exceed the audio budget.
+relic is temporarily removed after reported performance problems; its code is
+archived, not redesigned. projects containing relic refuse safely without changing
+their files.
+a binary release still needs the matching runtime/source review described in the
+[notices](THIRD_PARTY_NOTICES.md); this source update is not legal or device clearance.
 
 ## license
 

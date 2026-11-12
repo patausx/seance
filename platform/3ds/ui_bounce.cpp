@@ -49,6 +49,7 @@ struct Frame {
     uint8_t selected = 2, chain = 0;
     BounceSource source = BounceSource::Master;
     bool source_muted = false, source_empty = false, listening = false, can_send = false;
+    uint8_t channels = 2;
     bool occupied[4] = {};
     uint32_t preview_position = 0, duration_frames = 0;
     Modal modal = Modal::None;
@@ -98,6 +99,7 @@ const char* reason_text(BounceReason r) {
         case BounceReason::TempoChanged: return "tempo changed / partial audio only";
         case BounceReason::MeterChanged: return "meter changed / partial audio only";
         case BounceReason::SampleChanged: return "sample changed / discard this handle";
+        case BounceReason::ChannelsChanged: return "chain channels changed / partial audio";
         case BounceReason::Reset: return "transport reset / not a full loop";
         case BounceReason::Stopped: return "stopped early / not a full loop";
         default: return "";
@@ -169,6 +171,7 @@ bool save_take() {
     if (!take.take()) { tell("no completed audio to save"); return false; }
     if (take.saved) { tell(""); return true; }
     char path[192], temporary[200], source_suffix[12] = {}; bool found = false;
+    fileio::NewFileReservation reservation;
     if(take.source!=BounceSource::Master)std::snprintf(source_suffix,sizeof source_suffix,"_chain%u",unsigned(take.source));
     const unsigned bpm100 = unsigned((int64_t(take.bpm_q16)*100+32768)/65536);
     for (unsigned i=1;i<=9999;++i) {
@@ -176,13 +179,19 @@ bool save_take() {
             RECORDING_DIR,i,bpm100/100,bpm100%100,unsigned(take.bars),source_suffix,take.status==BounceStatus::Partial?"_partial":"");
         if (n<0 || n>=int(sizeof path)) break;
         std::snprintf(temporary,sizeof temporary,"%s.tmp",path);
-        if (unused_path(path) && unused_path(temporary)) { found=true;break; }
+        // Retain bounce's two-name ENOENT preflight, then reserve exclusively:
+        // a file arriving after the check can no longer be overwritten.
+        if (unused_path(path) && unused_path(temporary)) {
+            const auto result=reservation.reserve(path);
+            if(result==fileio::ReserveResult::Ok){found=true;break;}
+            if(result!=fileio::ReserveResult::Occupied)break;
+        }
     }
     if (!found) { tell("no free wav filename / sd error"); return false; }
     ExportContext c{g_eng,g_audio,take};
     int16_t scratch[1024*2]; // 4 KiB bounded copy; all SD writes are outside guard.
-    const auto result = trackr::synth::save_wav_stream(path,bounce_channels(take.source),take.frames,ENGINE_SR,
-        scratch,1024,export_read,&c);
+    const auto result = trackr::synth::save_wav_stream(path,bounce_channels(take),take.frames,ENGINE_SR,
+        scratch,1024,export_read,&c,&reservation);
     bool ok = result == trackr::synth::WavSaveResult::Ok;
     if (ok) {
         platform::AudioOut::Guard guard(*g_audio);
@@ -450,7 +459,7 @@ bool bounce_guard_project_change() {
         if(current().slot<0)return false;
     }
     if(g_view==View::Performance)performance_view_leave();
-    sequencer_view_cancel_input();g_seq_lock_armed=false;g_seq_lock_flash=0;
+    sequencer_view_cancel_input();g_seq_lock_flash=0;
     nav_close();g_view=View::Bounce;g_overlay=Overlay::None;g_drag=Drag::None;
     stop_listening();close_modal();tell("save wav or record again to release take");return true;
 }
@@ -465,6 +474,8 @@ void bounce_capture() {
         frame.transport=g_eng->transport_playing;frame.bpm_q16=g_eng->effective_bpm_q16();
         frame.listening=g_eng->bounce_preview_active();frame.preview_position=g_eng->bounce_preview_position();
         frame.source=frame.take.slot>=0?frame.take.source:selected_source;
+        frame.channels=frame.take.slot>=0?bounce_channels(frame.take):
+            frame.source==BounceSource::Master?2:g_eng->chain_audio_channels(int(frame.source)-1);
         for(int i=0;i<4;++i)frame.occupied[i]=occupied_chain(i);
         frame.source_muted=frame.source!=BounceSource::Master && g_eng->chains[int(frame.source)-1].mute;
         frame.source_empty=frame.source!=BounceSource::Master && !frame.occupied[int(frame.source)-1];
@@ -500,7 +511,8 @@ void bounce_draw_top() {
     const auto& t=frame.take;char text[64],number[12],seconds[20],tempo[20];
     const bool master=frame.source==BounceSource::Master;
     if(master)std::snprintf(text,sizeof text,"mix / stereo");
-    else std::snprintf(text,sizeof text,"chain %u / mono",unsigned(frame.source));
+    else std::snprintf(text,sizeof text,"chain %u / %s",unsigned(frame.source),
+        frame.channels==2?"stereo":frame.channels==1?"mono":"unsupported stereo");
     m::heading(24,20,"bounce",m::ink());right(376,25,text,m::ghost());
     const unsigned tenths=unsigned((int64_t(t.slot>=0?t.bpm_q16:frame.bpm_q16)*10+32768)/65536);
     if(tenths%10)std::snprintf(tempo,sizeof tempo,"%u.%u bpm",tenths/10,tenths%10);
@@ -557,7 +569,7 @@ void bounce_draw() {
                 const char* label=frame.occupied[i]?"used":"empty";
                 ui::text(CENTERS[i]-ui::text_w(label)/2,116,label,m::ghost());}
             centered(320,139,frame.occupied[frame.chain]?"replaces modules + rhythm in all 8 banks":"sets this chain's rhythm in all 8 banks",m::ink());
-            centered(320,155,frame.notice[0]?frame.notice:t.source==BounceSource::Master?"saved wav kept / play output is mono":"saved wav kept / song paused",frame.notice[0]?m::spot():m::ghost());
+            centered(320,155,frame.notice[0]?frame.notice:bounce_channels(t)==2?"saved stereo wav / play output is mono":"saved wav kept / song paused",frame.notice[0]?m::spot():m::ghost());
         } else {
             centered(320,85,"this take has not been saved.",m::ink());
             centered(320,112,"release it and set up a new recording?",m::ghost());

@@ -22,7 +22,7 @@ constexpr int X=18, EXTENT=284;
 constexpr int ORDER[3]={C::P_FEEDBACK,C::P_DAMP,C::P_MIX};
 constexpr const char* NAMES[C::P_COUNT]={"shift","feedback","mix","damp"};
 struct Frame {
-    bool valid=false, bypass=false, mute=false, lock=false, full=false, fine=false, lens=false;
+    bool valid=false, bypass=false, mute=false, fine=false, lens=false;
     int chain=0, slot=0, selected=0;
     q15 edit[C::P_COUNT]={};
     ParamInspector routes[C::P_COUNT]={};
@@ -37,28 +37,22 @@ bool fine=false; // Editor sensitivity only: never persisted or modulated.
 struct Gesture {
     uintptr_t unit=0;
     Engine* engine=nullptr;
-    int chain=-1, slot=-1, step=-1, lock_chain=-1, bank=-1, param=-1, x=0;
+    int chain=-1, slot=-1, param=-1, x=0;
     q15 value=0;
-    bool lock=false, fine=false;
+    bool fine=false;
 } gesture;
 bool context() {
     return g_eng && g_audio && g_overlay==Overlay::Editor &&
-        (g_view==View::Chains || (g_view==View::Sequencer && g_seq_lock_armed)) &&
+        g_view==View::Chains &&
         g_edit_chain>=0 && g_edit_chain<NUM_CHAINS && g_edit_slot>=0 && g_edit_slot<UNITS_PER_CHAIN;
 }
-bool lock_context() {
-    return g_seq_lock_armed && g_seq_lock_chain==g_edit_chain &&
-        g_seq_lock_step>=0 && g_seq_lock_step<SEQ_STEPS;
-}
 q15 edit_value(const C& u,int p) {
-    return lock_context()?seq_display_value(g_edit_slot,p,u.params[p].base):u.params[p].base;
+    return u.params[p].base;
 }
 bool owns(const C& u) {
     return gesture.engine==g_eng && gesture.unit==uintptr_t(&u) &&
         gesture.chain==g_edit_chain && gesture.slot==g_edit_slot &&
-        g_eng->chains[g_edit_chain].units[g_edit_slot]==&u && gesture.lock==g_seq_lock_armed &&
-        (!gesture.lock || (lock_context() && gesture.step==g_seq_lock_step &&
-            gesture.lock_chain==g_seq_lock_chain && gesture.bank==g_eng->active_pattern));
+        g_eng->chains[g_edit_chain].units[g_edit_slot]==&u;
 }
 int clamp(int v,int p) {return std::max(p==C::P_SHIFT?-32767:0,std::min(32767,v));}
 int position(int v,int p) {
@@ -84,8 +78,7 @@ void rail(int p,int y) {
 }
 void change(C& u,int p,q15 value) {
     if(value==edit_value(u,p))return;
-    if(g_seq_lock_armed) {if(lock_context())seq_record_lock(g_edit_slot,p,value);}
-    else {u.params[p].base=value;mark_project_mutated();}
+    u.params[p].base=value;mark_project_mutated();
 }
 void model() {
     // Four explicit reference tones, not measured audio. Return heights use the
@@ -115,25 +108,19 @@ bool shift_focus_touch_body(C& u,int tx,int ty) {
     platform::AudioOut::Guard guard(*g_audio);
     shift_focus_release();
     if(g_eng->chains[g_edit_chain].units[g_edit_slot]!=&u)return false;
-    if(g_seq_lock_armed && !lock_context())return true;
     if(ty<25) {
-        if(!g_seq_lock_armed && hit(tx,ty,252,0,60,25)){u.bypass=!u.bypass;mark_project_mutated();}
+        if(hit(tx,ty,252,0,60,25)){u.bypass=!u.bypass;mark_project_mutated();}
         return true;
     }
     if(hit(tx,ty,204,28,58,25)){fine=!fine;selected=C::P_SHIFT;return true;}
     if(hit(tx,ty,264,28,48,25)){selected=C::P_SHIFT;change(u,C::P_SHIFT,0);return true;}
-    int p=-1,label_y=35;
+    int p=-1;
     if(hit(tx,ty,8,28,304,101))p=C::P_SHIFT;
-    for(int i=0;i<3;++i)if(hit(tx,ty,8,132+i*28,304,28)){p=ORDER[i];label_y=137+i*28;break;}
+    for(int i=0;i<3;++i)if(hit(tx,ty,8,132+i*28,304,28)){p=ORDER[i];break;}
     if(p<0)return true;
     selected=p;
-    if(lock_context() && hit(tx,ty,X-4,label_y-3,ui::text_w(NAMES[p])+8,12)) {
-        if(g_eng->remove_step_lock(g_seq_lock_chain,g_seq_lock_step,g_edit_slot,p))mark_project_mutated();
-        return true;
-    }
     gesture.unit=uintptr_t(&u);gesture.engine=g_eng;gesture.chain=g_edit_chain;gesture.slot=g_edit_slot;
-    gesture.step=g_seq_lock_step;gesture.lock_chain=g_seq_lock_chain;gesture.bank=g_eng->active_pattern;
-    gesture.param=p;gesture.x=tx;gesture.value=edit_value(u,p);gesture.lock=g_seq_lock_armed;gesture.fine=fine;
+    gesture.param=p;gesture.x=tx;gesture.value=edit_value(u,p);gesture.fine=fine;
     g_drag=Drag::ShiftParam;
     return true;
 }
@@ -154,7 +141,6 @@ void shift_focus_capture() {
         const auto& u=*static_cast<const C*>(unit);
         if(gesture.unit && (!owns(u) || param_lens_is_open() || g_drag!=Drag::ShiftParam))shift_focus_release();
         frame.valid=true;frame.bypass=u.bypass;frame.mute=chain.mute;
-        frame.lock=lock_context();frame.full=frame.lock && g_seq_lock_flash>0;
         frame.fine=fine;frame.lens=false;
         frame.chain=g_edit_chain;frame.slot=g_edit_slot;frame.selected=selected;
         for(int p=0;p<C::P_COUNT;++p) {
@@ -172,7 +158,7 @@ void shift_focus_draw(const C&) {
     m::paper(320);if(!frame.valid)return;
     module_heading::header(UnitKind::Shift,m::spot());
     char text[32];std::snprintf(text,sizeof text,"ch%02d / %02d",frame.chain+1,frame.slot+1);
-    ui::text(70,m::kHeaderTextY,text,m::ghost());small_press::text(252,0,60,25,276,m::kHeaderTextY,"byp",frame.bypass?m::spot():m::ghost(),!frame.lock);
+    ui::text(70,m::kHeaderTextY,text,m::ghost());small_press::text(252,0,60,25,276,m::kHeaderTextY,"byp",frame.bypass?m::spot():m::ghost());
     if(frame.bypass)ui::line(276,m::kHeaderMarkY,293,m::kHeaderMarkY,m::spot());
     ui::text(X,35,"shift",frame.selected==C::P_SHIFT?m::spot():m::ink());source_tag(C::P_SHIFT,60,35);
     small_press::text(204,28,58,25,210,35,frame.fine?"fine /32":"wide",frame.fine?m::spot():m::ghost());
@@ -188,8 +174,7 @@ void shift_focus_draw(const C&) {
         right(302,y,frame.values[p],m::ink());rail(p,y+13);
     }
     ui::line(14,223,306,223,m::branch());
-    if(frame.lock)m::footer(320,frame.full?"lock full":"p-lock / name: remove","b back");
-    else m::footer(320,"b back","l: mod >");
+    m::footer(320,"b back","l: mod >");
 }
 bool shift_focus_draw_top() {
     if(!frame.valid)return false;
@@ -225,7 +210,7 @@ bool shift_focus_draw_top() {
     }
     ui::line(16,226,384,226,m::branch());
     ui::text(m::kLeft,m::kTextY,"reference tones / ideal loop",m::ghost());
-    const char* state=frame.full?"lock full":frame.bypass?"bypass / dry":frame.mute?"chain muted":frame.routes[C::P_MIX].effective==0?"dry mix":"zero != bypass";
+    const char* state=frame.bypass?"bypass / dry":frame.mute?"chain muted":frame.routes[C::P_MIX].effective==0?"dry mix":"zero != bypass";
     right(m::right_edge(400),m::kTextY,state,m::spot());
     return true;
 }

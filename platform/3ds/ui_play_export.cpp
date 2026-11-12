@@ -51,7 +51,7 @@ bool free_slot(const Engine& engine,int slot) {
         !sample_ownership::count(engine,slot,g_clip_unit) && engine.bounce_snapshot().slot!=slot;
 }
 bool ui_context() {
-    return g_eng && g_audio && !g_seq_lock_armed && g_view==View::Chains && g_overlay==Overlay::Editor &&
+    return g_eng && g_audio && g_view==View::Chains && g_overlay==Overlay::Editor &&
         g_edit_chain>=0 && g_edit_chain<NUM_CHAINS && g_edit_slot>=0 && g_edit_slot<UNITS_PER_CHAIN;
 }
 bool valid(const Context& c) {
@@ -112,20 +112,15 @@ bool processed(void* opaque,uint32_t first,uint32_t count,int16_t* output) {
     }
     return true;
 }
-// Reserve both final and writer temporary names exclusively. save_wav_stream's
-// replacement rename then replaces only OUR placeholder, never an existing WAV.
-bool reserve_path(char (&path)[192]) {
+// Preserve PLAY's exclusive final+fixed-temp placeholder policy, but carry the
+// descriptor/token into the writer instead of closing then reopening with wb.
+bool reserve_path(char (&path)[192], fileio::NewFileReservation& reservation) {
     for(unsigned sequence=1;sequence<=9999;++sequence) {
         const int n=std::snprintf(path,sizeof path,"%s/play_%04u.wav",RECORDING_DIR,sequence);
         if(n<0 || n>=(int)sizeof path)return false;
-        const int fd=::open(path,O_WRONLY|O_CREAT|O_EXCL,0666);
-        if(fd<0){if(errno==EEXIST)continue;return false;}
-        if(::close(fd)!=0){std::remove(path);return false;}
-        char temporary[196];std::snprintf(temporary,sizeof temporary,"%s.tmp",path);
-        const int temp=::open(temporary,O_WRONLY|O_CREAT|O_EXCL,0666);
-        if(temp<0){const int error=errno;std::remove(path);if(error==EEXIST)continue;return false;}
-        if(::close(temp)!=0){std::remove(temporary);std::remove(path);return false;}
-        return true;
+        const auto result=reservation.reserve(path);
+        if(result==fileio::ReserveResult::Ok)return true;
+        if(result!=fileio::ReserveResult::Occupied)return false;
     }
     return false;
 }
@@ -193,12 +188,11 @@ const char* play_export_copy(PlayUnit& play,const PlayExportOptions& options) {
         }
     }
     char path[192];
-    if(!reserve_path(path))return tell("sd error / no unused wav filename");
-    const auto result=trackr::synth::save_wav_stream(path,c.channels,count,ENGINE_SR,scratch,BLOCK,processed,&c);
+    fileio::NewFileReservation reservation;
+    if(!reserve_path(path,reservation))return tell("sd error / no unused wav filename");
+    const auto result=trackr::synth::save_wav_stream(path,c.channels,count,ENGINE_SR,scratch,BLOCK,processed,&c,&reservation);
     if(result!=trackr::synth::WavSaveResult::Ok) {
-        // Only our exclusively reserved placeholder/temporary files are removed.
-        char temporary[196];std::snprintf(temporary,sizeof temporary,"%s.tmp",path);
-        std::remove(temporary);std::remove(path);
+        reservation.discard(); // never gain cleanup authority from path spelling
         return tell(c.stale?"source changed / export cancelled":"sd write failed / edits unchanged");
     }
     // Successful WAV is retained even if a later decode/commit cannot proceed.

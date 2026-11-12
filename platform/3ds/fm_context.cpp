@@ -31,7 +31,7 @@ struct Frame : Plot {
     int8_t project=-1;
     q15 edit=0,values[12]={};
     Figure figure=Figure::Voice;
-    bool dirty=false,lock=false,drone=false,phase_reset=false;
+    bool dirty=false,drone=false,phase_reset=false;
     bool safe=false,mute=false,bypass=false,extended=false;
     Fm::Wave carrier_wave=Fm::Wave::Sine,mod_wave=Fm::Wave::Sine;
 };
@@ -73,13 +73,7 @@ void value(int p,q15 raw,char* out,size_t size) {
     default:std::snprintf(out,size,"%d",uni(raw)*99/32767);break;
     }
 }
-int edit_bank(){const int bank=sequencer_edit_bank();return bank>=0&&bank<NUM_PATTERNS?bank:g_eng->active_pattern;}
 q15 edit_value(const Fm& fm,int p) {
-    if(frame.lock){
-        const auto& step=g_eng->sequence_pattern(edit_bank()).steps[g_edit_chain][g_seq_lock_step];
-        for(int i=0;i<std::min(int(step.lock_count),SEQ_LOCKS);++i)
-            if(step.locks[i].slot==g_edit_slot&&step.locks[i].param==p)return step.locks[i].value;
-    }
     return fm.params[p].base;
 }
 uint32_t reference_increment(q15 pitch) {
@@ -152,9 +146,9 @@ void header() {
     ui::text(x,module_frame_layout::kRouteY,"out",m::ghost());
 }
 void hero() {
-    const auto& d=frame.detail;const q15 chosen=frame.lock?frame.edit:d.base;
+    const auto& d=frame.detail;const q15 chosen=d.base;
     char text[64],number[24],live[24],shown[24];
-    std::snprintf(text,sizeof text,"%s / %s",name(d.param),frame.lock?"edit lock":"base");m::caption(14,56,200,text,m::spot());
+    std::snprintf(text,sizeof text,"%s / base",name(d.param));m::caption(14,56,200,text,m::spot());
     value(d.param,chosen,number,sizeof number);value(d.param,d.effective,live,sizeof live);value(d.param,chosen,shown,sizeof shown);
     const char* suffix="";
     if(d.param==Fm::P_ATTACK||d.param==Fm::P_DECAY||d.param==Fm::P_PITCH_TIME){number[std::strlen(number)-2]='\0';suffix="ms";}
@@ -177,7 +171,6 @@ void hero() {
     else std::snprintf(text,sizeof text,"%s",frame.figure==Figure::Amplitude?"amp envelope":frame.figure==Figure::Index?"index envelope":frame.figure==Figure::Feedback?"feedback envelope":"pitch / next strike");
     m::caption(220,78,166,text,m::ink());
     if(dormant())std::snprintf(text,sizeof text,"held in drone");
-    else if(frame.lock){value(d.param,d.base,number,sizeof number);std::snprintf(text,sizeof text,"stored base %s",number);}
     else if(d.layer!=0){value(d.param,d.control,number,sizeof number);std::snprintf(text,sizeof text,"%s %s",layer(d.layer),number);}
     else std::snprintf(text,sizeof text,"%s",frame.figure==Figure::Operators?"stored shapes":frame.figure==Figure::Voice?"effective / reset":"effective / next strike");
     m::caption(220,93,166,text,m::ghost());
@@ -229,7 +222,7 @@ void footer() {
         std::snprintf(text,sizeof text,"range %s .. %s%s",low,high,d.clip_low||d.clip_high?" / clip":"");
         m::caption(14,218,372,text,m::ghost());
     }
-    const char* state=frame.bypass?"bypass / model":frame.mute?"muted / model":dormant()?"drone / held":frame.lock?"edit lock / model":frame.figure==Figure::Voice?"2 base cycles / reset":frame.figure==Figure::Operators?"operators":frame.figure==Figure::Amplitude?"decay: nominal ms":"next strike / model";
+    const char* state=frame.bypass?"bypass / model":frame.mute?"muted / model":dormant()?"drone / held":frame.figure==Figure::Voice?"2 base cycles / reset":frame.figure==Figure::Operators?"operators":frame.figure==Figure::Amplitude?"decay: nominal ms":"next strike / model";
     m::footer(400,state,route);
 }
 } // namespace
@@ -238,8 +231,10 @@ void fm_context_value_text(char* out,unsigned size,int param,q15 raw){if(out&&si
 void fm_context_capture(int selected) {
     frame={};
     if(!g_eng||!g_audio||g_overlay!=Overlay::Editor||selected<0||selected>=12||
-       (g_view!=View::Chains&&(g_view!=View::Sequencer||!g_seq_lock_armed))||
+       g_view!=View::Chains||
        g_edit_chain<0||g_edit_chain>=NUM_CHAINS||g_edit_slot<0||g_edit_slot>=UNITS_PER_CHAIN)return;
+    // Another module's editor: no guard entry. Chain slots are written only by this UI thread.
+    {const Unit* unit=g_eng->chains[g_edit_chain].units[g_edit_slot];if(!unit||unit->kind!=UnitKind::Fm)return;}
     {
         platform::AudioOut::Guard guard(*g_audio);
         const Chain& chain=g_eng->chains[g_edit_chain];const Unit* unit=chain.units[g_edit_slot];
@@ -250,9 +245,8 @@ void fm_context_capture(int selected) {
         const int active=project_active_slot();frame.project=active>=0&&active<8?int8_t(active):-1;frame.dirty=project_is_dirty();
         frame.drone=fm.drone;frame.phase_reset=fm.phase_reset;frame.safe=fm.alias_safe;frame.mute=chain.mute;frame.bypass=fm.bypass;
         frame.extended=fm.extended;frame.carrier_wave=fm.carrier_wave;frame.mod_wave=fm.mod_wave;
-        frame.lock=g_seq_lock_armed&&g_seq_lock_chain==g_edit_chain&&g_seq_lock_step>=0&&g_seq_lock_step<SEQ_STEPS;
         frame.edit=edit_value(fm,selected);
-        for(int p=0;p<unit->num_params;++p)frame.values[p]=frame.lock?edit_value(fm,p):fm.params[p].effective;
+        for(int p=0;p<unit->num_params;++p)frame.values[p]=fm.params[p].effective;
         frame.figure=page==2?Figure::Operators:!motion(selected)?Figure::Voice:
             selected==Fm::P_PITCH_ENV||selected==Fm::P_PITCH_TIME?Figure::Pitch:
             selected==Fm::P_INDEX_FALL?Figure::Index:selected==Fm::P_FEEDBACK_FALL?Figure::Feedback:Figure::Amplitude;

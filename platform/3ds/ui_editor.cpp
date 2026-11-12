@@ -7,6 +7,9 @@
 #include "ui_state.h"
 #include "ui_theme.h"
 #include "ui_module_focus_internal.h"
+#include "pent_ui.h"
+#include "rule_ui.h"
+#include "rot_ui.h"
 #include "small_button_motion.h"
 #include <cstdio>
 using namespace seance;
@@ -17,8 +20,7 @@ namespace seance::platform::ui3ds {
 namespace {
 uint64_t button_context() {
     return uint64_t(g_view) | (uint64_t(g_edit_chain) << 8) |
-        (uint64_t(g_edit_slot) << 12) | (uint64_t(g_seq_lock_armed) << 16) |
-        (uint64_t(g_seq_lock_armed ? g_seq_lock_step : 0) << 17) |
+        (uint64_t(g_edit_slot) << 12) |
         (uint64_t(g_eng ? g_eng->active_pattern : 0) << 24);
 }
 }
@@ -33,6 +35,9 @@ Unit* edited_unit() { return g_eng->chains[g_edit_chain].units[g_edit_slot]; }
 bool editor_back() {
     if (param_lens_is_open()) { param_lens_cancel(); return true; }
     Unit* unit = edited_unit();
+    if (unit && unit->kind == UnitKind::Rot) return rot_focus_back();
+    if (unit && unit->kind == UnitKind::Rule) return rule_focus_back();
+    if (unit && unit->kind == UnitKind::Pent) return pent_focus_back();
     if (unit && unit->kind == UnitKind::Paul) return paul_focus_back();
     if (unit && unit->kind == UnitKind::Scratch) return scratch_focus_back();
     if (unit && unit->kind == UnitKind::Recorder) return recorder_focus_back();
@@ -52,7 +57,7 @@ void editor_touch_down(int tx, int ty) {
     // existing controller. Do not open MOD on the press that only arms its label.
     if (!param_lens_is_open()) {
         Unit* candidate = edited_unit();
-        if (candidate && (candidate->kind == UnitKind::Inst || candidate->kind == UnitKind::Paul)) {
+        if (candidate && (candidate->kind == UnitKind::Rot || candidate->kind == UnitKind::Rule || candidate->kind == UnitKind::Pent || candidate->kind == UnitKind::Inst || candidate->kind == UnitKind::Paul)) {
             small_press::begin(tx, ty, osGetTime(), candidate, button_context());
             module_focus_touch_body(*candidate, tx, ty);
             return;
@@ -71,14 +76,6 @@ void editor_touch_down(int tx, int ty) {
     if (u->kind == UnitKind::Bird) { module_focus_touch_body(*u, tx, ty); return; }
     // SHIFT owns its complete lock-safe surface; never enter legacy shell hits.
     if (u->kind == UnitKind::Shift) { module_focus_touch_body(*u, tx, ty); return; }
-
-    // Lock mode exposes only semantic base gestures. Header topology/sample tools
-    // stay inert everywhere; legacy lower-right routing tethers remain guarded.
-    // FM owns an explicit two-page map and gates its routing/mode controls itself,
-    // so its formerly blocked gain/page region remains available for p-locks.
-    // OSC owns its complete header and lock-safe map; old shell hit regions must not intercept it.
-    if (g_seq_lock_armed && u->kind != UnitKind::Osc && u->kind != UnitKind::Grain && u->kind != UnitKind::SamplePlayer && u->kind != UnitKind::Reverb && u->kind != UnitKind::Chorus && u->kind != UnitKind::Vca && u->kind != UnitKind::Delay && u->kind != UnitKind::Filter && u->kind != UnitKind::Fold && u->kind != UnitKind::Bitcrush && u->kind != UnitKind::Tilt && u->kind != UnitKind::Ring && u->kind != UnitKind::Strain && u->kind != UnitKind::MicIn && u->kind != UnitKind::Recorder && u->kind != UnitKind::Noise &&
-        ((ty < 22 && u->kind != UnitKind::Fm && u->kind != UnitKind::Stranular) || (u->kind != UnitKind::Fm && u->kind != UnitKind::Stranular && tx >= 258 && ty >= 190))) return;
 
     if (module_focus_touch_header(*u, tx, ty)) return;
     if (u->kind != UnitKind::Osc && u->kind != UnitKind::Grain && u->kind != UnitKind::SamplePlayer &&
@@ -102,7 +99,13 @@ void editor_touch_drag(int tx, int ty) {
     if (param_lens_touch_drag(tx, ty)) return;
     Unit* unit = edited_unit();
     if (!unit) return;
-    if (unit->kind == UnitKind::Paul)
+    if (unit->kind == UnitKind::Rot)
+        rot_focus_drag(*static_cast<RotUnit*>(unit), tx, ty);
+    else if (unit->kind == UnitKind::Rule)
+        rule_focus_drag(*static_cast<RuleUnit*>(unit), tx, ty);
+    else if (unit->kind == UnitKind::Pent)
+        pent_focus_drag(*static_cast<PentUnit*>(unit), tx, ty);
+    else if (unit->kind == UnitKind::Paul)
         paul_focus_drag(*static_cast<PaulUnit*>(unit), tx, ty);
     else if (unit->kind == UnitKind::Scratch)
         scratch_focus_drag(*static_cast<ScratchUnit*>(unit), tx, ty);
@@ -167,6 +170,9 @@ void editor_touch_drag(int tx, int ty) {
 void editor_touch_release() {
     if (play_editor_word_release()) return;
     if (module_rand_touch_release()) return;
+    rot_focus_touch_release();
+    rule_focus_touch_release();
+    pent_focus_touch_release();
     paul_focus_touch_release();
     scratch_focus_touch_release();
     reverb_focus_touch_release();
@@ -209,6 +215,10 @@ void editor_touch_release() {
 void editor_cancel_input() {
     play_editor_word_cancel();
     module_rand_cancel();
+    relic_focus_release();
+    rot_focus_release();
+    rule_focus_release();
+    pent_focus_release();
     paul_focus_release();
     scratch_focus_release();
     reverb_focus_release(); inst_focus_release(); delay_focus_release();
@@ -226,6 +236,9 @@ void editor_cancel_input() {
 
 namespace {
 void draw_module_editor() {
+    if (rot_ui::draw_bottom()) return;
+    if (rule_ui::draw_bottom()) return;
+    if (pent_ui::draw_bottom()) return;
     if (stranular_focus_draw_bottom()) return;
     Unit* u = edited_unit();
     if (!u) return;
@@ -259,21 +272,11 @@ void draw_module_editor() {
         u->kind != UnitKind::Ring && u->kind != UnitKind::Ghost &&
         u->kind != UnitKind::MicIn && u->kind != UnitKind::Recorder &&
         u->kind != UnitKind::Bitcrush && u->kind != UnitKind::Strain && u->kind != UnitKind::Stranular) {
-        if (!g_seq_lock_armed) paper_footer(module_focus_footer(*u, smp_slot));
+        paper_footer(module_focus_footer(*u, smp_slot));
     }
     if (u->kind == UnitKind::Grain || u->kind == UnitKind::SamplePlayer || u->kind == UnitKind::Osc || u->kind == UnitKind::Fm || u->kind == UnitKind::Reverb || u->kind == UnitKind::Ghost || u->kind == UnitKind::Chorus || u->kind == UnitKind::Vca || u->kind == UnitKind::Delay || u->kind == UnitKind::Filter || u->kind == UnitKind::Fold || u->kind == UnitKind::Bitcrush || u->kind == UnitKind::Tilt || u->kind == UnitKind::Ring || u->kind == UnitKind::Strain || u->kind == UnitKind::Recorder || u->kind == UnitKind::Noise || u->kind == UnitKind::Motor || u->kind == UnitKind::MicIn) return; // module already drew the contextual plain footer.
-    if (!g_seq_lock_armed && g_view == View::Chains && u->kind != UnitKind::Recorder)
+    if (g_view == View::Chains && u->kind != UnitKind::Recorder)
         param_lens_draw_entry();
-    if (g_seq_lock_armed && u->kind == UnitKind::Reverb) {
-        paper_footer(g_seq_lock_flash > 0 ? "lock full / B back" : "p-lock / drag labelled controls / B back");
-    } else if (g_seq_lock_armed) {
-        char lock_help[64];
-        snprintf(lock_help, sizeof lock_help, g_seq_lock_flash > 0
-                 ? "lock full C%d:S%02d / tap param name to delete"
-                 : "locking C%d:S%02d / base gestures only / B return",
-                 g_seq_lock_chain + 1, g_seq_lock_step + 1);
-        paper_footer(lock_help);
-    }
 }
 } // namespace
 
@@ -281,7 +284,7 @@ void editor_draw() {
     // One ordinary module surface and one frozen modulation layer. Keeping the
     // existing facade avoids a duplicate module dispatch or cached screenshot.
     draw_module_editor();
-    if (!play_editor_word_modal()) module_rand_draw();
+    if (!play_editor_word_modal() && (!rot_ui::frozen().valid || !rot_ui::frozen().menu) && (!rule_ui::frozen().valid || !rule_ui::frozen().menu) && (!pent_ui::frozen().valid || pent_ui::frozen().menu==pent_ui::Menu::None)) module_rand_draw();
     recorder_focus_draw_return();
     if (param_lens_is_open()) param_lens_draw_bottom();
 }

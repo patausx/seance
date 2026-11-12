@@ -9,10 +9,16 @@ constexpr Box gran{12,181,142,41},play{166,181,142,41},back{8,216,304,24};
 constexpr Box row(int i){return {8,48+i*25,304,24};}
 inline void mask(int x,int baseline,int offset,int w,int h,int top,uint32_t colour){
     const int stride=(w+7)/8;
-    for(int y=0;y<h;++y){int run=-1;
-        for(int col=0;col<=w;++col){const bool on=col<w&&(rec_type::bitmap[offset+y*stride+col/8]&(0x80u>>(col&7)));
+    // Merge identical bitmap rows, preserving exact ink/clear pixels. Timer
+    // glyphs otherwise exceed the existing1024-primitive upper-screen ceiling.
+    for(int y=0;y<h;){int run=-1,end=y+1;
+        const auto* bits=rec_type::bitmap+offset+y*stride;
+        while(end<h&&!std::memcmp(bits,rec_type::bitmap+offset+end*stride,stride))++end;
+        for(int col=0;col<=w;++col){const bool on=col<w&&(bits[col/8]&(0x80u>>(col&7)));
             if(on&&run<0)run=col;
-            if(!on&&run>=0){ui::rect(x+run,baseline+top+y,col-run,1,colour);run=-1;}}}
+            if(!on&&run>=0){ui::rect(x+run,baseline+top+y,col-run,end-y,colour);run=-1;}}
+        y=end;
+    }
 }
 inline void word(int x,int baseline,const char* text,uint32_t colour,bool center=false){
     for(const auto&l:rec_type::labels)if(!std::strcmp(l.text,text)){

@@ -43,6 +43,23 @@ def kind_ids(source):
     return result
 
 
+# Explicit retirement is not an arbitrary metadata omission. Persisted IDs
+# remain contiguous; only these audited identities may be absent from active UI.
+RETIRED_KINDS = {'Relic': 31}
+
+
+def active_kind_ids(unit_source, catalogue_source):
+    persisted = kind_ids(unit_source)
+    retired = re.findall(r'^\s*PICKER_RETIRED\(\s*(\w+)\s*,\s*(\d+)\s*\)\s*$',
+                         stripped(catalogue_source), re.M)
+    require(len(retired) == len({k for k, _ in retired}), 'duplicate retired picker identity')
+    require({k: int(v) for k, v in retired} == RETIRED_KINDS,
+            'retired picker identities must be exactly Relic=31')
+    for kind, value in RETIRED_KINDS.items():
+        require(persisted.get(kind) == value, 'reserved persisted identity changed: '+kind)
+    return {kind: value for kind, value in persisted.items() if kind not in RETIRED_KINDS}
+
+
 def same_members(actual, expected, label):
     require(len(actual) == len(set(actual)), label+': duplicate entry')
     missing, extra = set(expected)-set(actual), set(actual)-set(expected)

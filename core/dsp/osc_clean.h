@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include "../engine/musical_scale.h"
 
 namespace seance { namespace osc_clean {
 constexpr int TAPS = 47;
@@ -30,18 +31,31 @@ inline const float* sine_table() {
     } table;
     return table.v;
 }
-inline float sine(uint32_t phase) {
+// sine_table() is a function-local static: each call pays the init guard. Sample
+// loops fetch the pointer once and use this overload; same table, same math.
+inline float sine(const float* t, uint32_t phase) {
     const unsigned i = phase >> 22;
     const float f = float(phase & 0x3fffffu) * (1.0f / 4194304.0f);
-    const float* t = sine_table();
     return t[i] + (t[i + 1] - t[i]) * f;
 }
-inline float pitch_hz(int raw, bool quantize) {
+inline float sine(uint32_t phase) { return sine(sine_table(), phase); }
+inline float pitch_hz(int raw, bool quantize, MusicalScale scale = {}) {
     float note = 24.0f + std::max(0, std::min(32767, raw)) * (72.0f / 32768.0f);
-    if (quantize) note = std::floor(note + .5f);
+    if (quantize) note = musical_scale::active(scale)
+        ? float(musical_scale::snap_cents(scale, 2400 + (std::max(0, std::min(32767, raw)) * 7200 >> 15), 24, 96))
+        : std::floor(note + .5f);
     return 440.0f * std::exp2((note - 69.0f) / 12.0f);
 }
 inline int floor_small(float x) { const int n = int(x); return n - (x < float(n)); }
+// std::floor without the floorf call. Bit-identical for every non-NaN float and
+// every quiet NaN (all 2^32 patterns checked by tests/test_pcm_exact_opt.py);
+// a signalling NaN comes back NaN but unquieted. |y|>=2^23 and inf are already
+// integral; below that the truncation-corrected floor_small is exact and
+// copysign restores floor(-0)=-0. Callers here never pass NaN (raw is clamped).
+inline float floor_exact(float y) {
+    if (!(std::fabs(y) < 8388608.0f)) return y;
+    return std::copysign(float(floor_small(y)), y);
+}
 inline float triangle(float phase) {
     return phase < .25f ? 4 * phase : (phase < .75f ? 2 - 4 * phase : 4 * phase - 4);
 }
@@ -68,17 +82,17 @@ inline void ramp_event(float a, float b, float slope_jump, float& previous, floa
     current += slope_jump * t * t * t * (1.0f / 6.0f);
 }
 inline float fold(float x) {
-    const float u = x - 4.0f * std::floor((x + 1.0f) * .25f);
+    const float u = x - 4.0f * floor_exact((x + 1.0f) * .25f);
     return u <= 1.0f ? u : 2.0f - u;
 }
 inline float fold_integral(float x) {
-    const float u = x - 4.0f * std::floor((x + 1.0f) * .25f);
+    const float u = x - 4.0f * floor_exact((x + 1.0f) * .25f);
     return u <= 1.0f ? .5f * u * u : 2.0f * u - .5f * u * u - 1.0f;
 }
 inline float fold_adaa(float x, float previous) {
     // Same linear segment gives an exact average without cancellation. Across
     // an extremely close corner use midpoint (error <= |dx|/2, <=.0005 FS).
-    if (std::floor((x + 1) * .5f) == std::floor((previous + 1) * .5f))
+    if (floor_exact((x + 1) * .5f) == floor_exact((previous + 1) * .5f))
         return .5f * (fold(x) + fold(previous));
     const float delta = x - previous;
     if (std::fabs(delta) < .001f) return fold(.5f * (x + previous));

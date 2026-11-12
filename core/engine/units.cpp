@@ -26,6 +26,9 @@
 #include "reverb_impl.inc"
 #include "scratch_impl.inc"
 #include "paul_impl.inc"
+#include "pent_impl.inc"
+#include "rule_impl.inc"
+#include "rot_impl.inc"
 
 namespace seance {
 
@@ -200,7 +203,7 @@ PlayWindow PlayUnit::projected_window(q15 start, q15 length, q15 slice) const {
     const auto& sample = SampleBank::instance().slot(sample_slot);
     if (pitch_mode_ != PitchMode::Legacy && sample.channels != 1 && sample.channels != 2) return {};
     PlayWindow window = play_edit_window(sample, params[P_SPEED].effective,
-        start, length, slice, pitch_quantize, modern_, edit_);
+        start, length, slice, pitch_quantize, modern_, edit_, pitch_mode_ == PitchMode::Legacy ? pitch_scale : MusicalScale{});
     if (pitch_mode_ != PitchMode::Legacy && params[P_SCRUB].effective <= 16383) {
         const bool reverse = window.slice && (sample.slice_reverse_mask & (1u << (window.slice - 1)));
         const uint16_t rate = window.slice ? Sample::cut_speed(sample.slice_speed_q8[window.slice - 1]) : 256;
@@ -239,7 +242,7 @@ void PlayUnit::control_tick() {
     if (preview_ || (modern_ && window_latched_)) {
         // Speed/gain remain live; lock release, modulation and trim/slice edits
         // must not move an accepted voice's boundary or reverse-slice identity.
-        window = play_window(s, params[P_SPEED].effective, 0, Q15_ONE, 0, pitch_quantize, modern_);
+        window = play_window(s, params[P_SPEED].effective, 0, Q15_ONE, 0, pitch_quantize, modern_, pitch_mode_ == PitchMode::Legacy ? pitch_scale : MusicalScale{});
         inc_q16_ = latched_reverse_ ? -window.increment : window.increment;
         const uint16_t rate = preview_ ? preview_speed_q8_ : latched_slice_ && modern_
             ? Sample::cut_speed(s.slice_speed_q8[latched_slice_ - 1]) : 256;
@@ -328,7 +331,7 @@ bool PlayUnit::preview_frames(uint32_t start, uint32_t end, bool repeat, uint32_
         speed_q8 < Sample::CUT_SPEED_MIN || speed_q8 > Sample::CUT_SPEED_MAX ||
         !play_part_pitch::valid(part_pitch)) return false;
     const Sample& sample = SampleBank::instance().slot(sample_slot);
-    PlayWindow window = play_window(sample, params[P_SPEED].effective, 0, Q15_ONE, 0, pitch_quantize, modern_);
+    PlayWindow window = play_window(sample, params[P_SPEED].effective, 0, Q15_ONE, 0, pitch_quantize, modern_, pitch_mode_ == PitchMode::Legacy ? pitch_scale : MusicalScale{});
     window.start = start; window.end = end; window.valid = true; window.edited = true;
     window.loop_start = start; window.loop_end = end;
     if (edit_.enabled) {
@@ -528,7 +531,20 @@ void PlayUnit::process_hold(q15* buf, int frames, const Sample& sample) {
     const int64_t target = scrub_target();
     const uint32_t period = std::min<uint32_t>(win_end_ - win_start_ - 1, ENGINE_SR / 20) << 16;
     const uint32_t half = period / 2;
+    // period=n<<16 with n>=1 (process_scrub validated win_start_+1<win_end_), so
+    // half=n<<15 and triangle*32768/half == triangle/n exactly: a 32-bit divide
+    // by a block constant instead of a 64-bit __aeabi_uldivmod per sample.
+    const uint32_t period_frames = period >> 16;
+    const int32_t iperiod = (int32_t)period;
     const int32_t rate = inc_q16_ < 0 ? -inc_q16_ : inc_q16_;
+    // Display-only cursor, published once from the final head (or at the release
+    // end) instead of per sample: identical last values, no 64-bit division here.
+    auto publish = [&]() {
+        visual_source_frame_ = (uint32_t)pos_;
+        visual_position_ = (uint16_t)((uint64_t)visual_source_frame_ * 32767u / (nf - 1));
+        visual_state_ = VisualPlaying | VisualLoop | (inc_q16_ < 0 ? VisualReverse : 0);
+        visual_speed_ = (int16_t)std::max<int32_t>(-32767, std::min<int32_t>(32767, inc_q16_ / 8));
+    };
     auto read = [&](int64_t phase) -> q15 {
         const uint32_t a = (uint32_t)(phase >> 16), b = std::min(a + 1, win_end_ - 1);
         q15 av, bv;
@@ -555,25 +571,25 @@ void PlayUnit::process_hold(q15* buf, int frames, const Sample& sample) {
         const int64_t window = std::max(begin, std::min(last - period, center - half));
         const uint32_t a = hold_phase_q16_, b = a < half ? a + half : a - half;
         const uint32_t triangle = a <= half ? a : period - a;
-        const int weight = (int)((uint64_t)triangle * 32768 / half);
+        const int weight = (int)(triangle / period_frames); // ==(uint64_t)triangle*32768/half
         const int value = ((int)read(window + a) * weight + (int)read(window + b) * (32768 - weight)) >> 15;
         if (amp_q15_ < Q15_ONE) amp_q15_ = (q15)std::min(32767, (int)amp_q15_ + 1024);
         q31 gain = ((q31)params[P_GAIN].effective * amp_q15_) >> 15;
         if (release_remaining_) gain = gain * release_remaining_ / 64;
         buf[i] = (q15)(value * gain >> 15);
-        int32_t next = ((int32_t)a + inc_q16_) % (int32_t)period;
-        if (next < 0) next += period;
+        // Same value as x%period (+period if negative) for EVERY x: one compare
+        // and add/subtract inside [-period,2*period), the original modulo beyond.
+        int32_t next = (int32_t)a + inc_q16_;
+        if (next >= iperiod) { next -= iperiod; if (next >= iperiod) next %= iperiod; }
+        else if (next < 0) { next += iperiod; if (next < 0) { next %= iperiod; if (next < 0) next += iperiod; } }
         hold_phase_q16_ = (uint32_t)next;
-        // Publish the smoothly followed cursor, not one arbitrary overlap head.
-        visual_source_frame_ = (uint32_t)pos_;
-        visual_position_ = (uint16_t)((uint64_t)visual_source_frame_ * 32767u / (nf - 1));
-        visual_state_ = VisualPlaying | VisualLoop | (inc_q16_ < 0 ? VisualReverse : 0);
-        visual_speed_ = (int16_t)std::max<int32_t>(-32767, std::min<int32_t>(32767, inc_q16_ / 8));
         if (release_remaining_ && !--release_remaining_) {
-            playing_ = false; visual_state_ = 0;
+            // Publish the smoothly followed cursor, not one arbitrary overlap head.
+            publish(); playing_ = false; visual_state_ = 0;
             std::memset(buf+i+1, 0, (size_t)(frames-i-1)*sizeof(q15)); return;
         }
     }
+    if (frames > 0) publish();
 }
 
 void PlayUnit::process(q15* buf, int frames) {
@@ -814,6 +830,21 @@ GrainUnit::GrainUnit() {
     add_param("PDEV",  0);             // per-grain random pitch spread, 0..12st
     add_param("VOX",   Q15_ONE);       // active voice ceiling, 1..8
     add_param("SCAN",  0, true);       // clean only: independent signed source scan
+}
+
+void GrainUnit::apply_new_card_start() {
+    // No DSP, config or file-format change: a saved new card is byte-identical
+    // to a constructor card whose knobs were turned to these values by hand.
+    // PTCH 8192 = 1x; SIZE 4880 frames (152 ms) over DENS 1376 frames (43 ms)
+    // = ~3.5 overlapping grains; JIT 30% of the period; ATK/REL 25% each.
+    static constexpr struct { uint8_t param; q15 value; } start[] = {
+        {P_SIZE, 8541}, {P_SPRAY, 1000}, {P_PITCH, 8192}, {P_DENS, 28261},
+        {P_JITTER, 9830}, {P_ATTACK, 16384}, {P_RELEASE, 16384},
+    };
+    for (const auto& knob : start) {
+        params[knob.param].base = knob.value;
+        params[knob.param].snap();
+    }
 }
 
 uint8_t GrainUnit::voice_limit(q15 value) {
@@ -1325,6 +1356,21 @@ void GrainUnit::process(q15* buf, int frames) {
     // diagnostics without two dynamic 64-bit divisions per head per sample.
     uint32_t last_position[MAX_GRAINS], last_age[MAX_GRAINS];
     uint16_t touched = 0;
+    // Visual bookkeeping is block-rate, not per grain per sample. A head
+    // rendered on a sample exactly when it is still active after that sample's
+    // head loop, and until its slot is respawned only that render's advance has
+    // moved it. Undoing the advance (frac is always below 65536) gives the
+    // coordinates it rendered at. A head's last render is noted when it ends,
+    // before a spawn may replace it, and after the block if it is still live.
+    const auto note_last_render = [&](int index) {
+        const Head& h = heads_[index];
+        const uint32_t frac = (h.frac - (uint32_t)h.inc_q16) & 0xFFFFu;
+        const int64_t advance = (int64_t)frac + h.inc_q16;
+        last_position[index] = (uint32_t)(h.pos - (advance >> 16));
+        last_age[index] = h.age - 1;
+        visual_pitch_offsets_[index] = h.pitch_offset;
+        touched |= (uint16_t)(1u << index);
+    };
     const int64_t scan_span = (int64_t)nf * 65536;
     int32_t scan_step = clean ? scan_inc_q16_ : 0;
     // Tiny sources cannot spawn, but their independent scan must still wrap safely.
@@ -1351,6 +1397,9 @@ void GrainUnit::process(q15* buf, int frames) {
         (pad_token_ || gate_deadline_ != UINT64_MAX);
     for (int i = 0; i < frames; ++i) {
         if (spawn_countdown_ == 0 && (free_flow || held_gate || pending_launches_)) {
+            // The spawn may replace any live head; each rendered one sample ago.
+            if (i) for (int index = 0; index < MAX_GRAINS; ++index)
+                if (heads_[index].active) note_last_render(index);
             spawn_grain(nf, limit);
             if (!free_flow && pending_launches_) --pending_launches_;
             int32_t next = (int32_t)interval + rand_signed(jitter_span);
@@ -1361,14 +1410,15 @@ void GrainUnit::process(q15* buf, int frames) {
         if (spawn_countdown_) --spawn_countdown_;
 
         q31 acc = 0;
-        uint16_t visual_mask = 0;
-        uint8_t active_count = 0;
 
         for (int index = 0; index < MAX_GRAINS; ++index) {
             Head& h = heads_[index];
             if (!h.active) continue;
             if (h.age >= h.length || h.pos < 0 || h.pos + 1 >= (int64_t)nf) {
                 h.active = false;
+                // It rendered one sample ago, unless that was the previous
+                // block (i == 0) or it was spawned on this sample (age == 0).
+                if (i && h.age) note_last_render(index);
                 continue;
             }
             const q15 sm = read_frame(h.pos, h.frac);
@@ -1376,13 +1426,6 @@ void GrainUnit::process(q15* buf, int frames) {
                                              h.attack_step, h.release_step, h.window_shift,
                                              h.shape, h.hann_step);
             acc += ((q31)sm * win) >> 15;
-
-            visual_mask |= (uint16_t)(1u << index);
-            ++active_count;
-            touched |= (uint16_t)(1u << index);
-            last_position[index] = (uint32_t)h.pos;
-            last_age[index] = h.age;
-            visual_pitch_offsets_[index] = h.pitch_offset;
 
             const int64_t advance = (int64_t)h.frac + h.inc_q16;
             h.pos += advance >> 16;
@@ -1416,8 +1459,6 @@ void GrainUnit::process(q15* buf, int frames) {
             if (--t.remaining == 0) h.active = false;
         }
 
-        visual_grains_ = visual_mask;
-        visual_active_ = active_count;
         // Fixed 1/8 headroom, no density-driven pumping. Sum and user gain precede
         // the only saturation; 8 full-scale heads fit, tails may still overload.
         buf[i] = clean ? sat_q15((q31)(((int64_t)acc * gain) >> 18)) :
@@ -1428,6 +1469,17 @@ void GrainUnit::process(q15* buf, int frames) {
             if (scan_offset_q16_ >= scan_span) scan_offset_q16_ -= scan_span;
         }
     }
+    // The heads still active are exactly those that rendered on the last sample.
+    uint16_t visual_mask = 0;
+    uint8_t active_count = 0;
+    for (int index = 0; index < MAX_GRAINS; ++index) {
+        if (!heads_[index].active) continue;
+        visual_mask |= (uint16_t)(1u << index);
+        ++active_count;
+        note_last_render(index);
+    }
+    visual_grains_ = visual_mask;
+    visual_active_ = active_count;
     for (int index = 0; index < MAX_GRAINS; ++index) if (touched & (1u << index)) {
         visual_positions_[index] = (uint8_t)((uint64_t)last_position[index] * 95u / (nf > 1 ? nf - 1 : 1));
         const uint32_t length = heads_[index].length;
@@ -1468,9 +1520,10 @@ OscUnit::Wave OscUnit::nearest_shape_anchor(q15 value) {
     return nearest;
 }
 
-static uint32_t pitch_phase_increment(q15 pitch, bool quantize) {
+static uint32_t pitch_phase_increment(q15 pitch, bool quantize, MusicalScale scale = {}) {
     int note100 = 2400 + (int)(((int64_t)(uint16_t)pitch * 7200) >> 15);
-    if (quantize) note100 = ((note100 + 50) / 100) * 100;
+    if (quantize) note100 = musical_scale::active(scale)
+        ? musical_scale::snap_cents(scale, note100, 24, 96) * 100 : ((note100 + 50) / 100) * 100;
     uint32_t semis = (uint32_t)(note100 / 100);
     static const uint32_t SEMI_Q16[12] = {
         65536, 69433, 73562, 77936, 82570, 87480,
@@ -1523,13 +1576,17 @@ static int32_t osc_shape_sample(q15 shape, uint32_t phase, uint32_t pw) {
     }
     const int32_t a = osc_wave_sample(left, phase, pw);
     const int32_t b = osc_wave_sample(right, phase, pw);
-    return a + (int32_t)(((int64_t)(b - a) * (value - start)) / span);
+    // Every osc_wave_sample is in [-32768, 32767] and value - start in [0, 10923], so
+    // |(b - a) * (value - start)| <= 65535 * 10923 < 2^30: the int32 product and its
+    // truncating quotient equal the int64 ones; literal divisors become multiply-shift.
+    const int32_t product = (b - a) * (value - start);
+    return a + (span == 10923 ? product / 10923 : product / 10922);
 }
 
 void OscUnit::control_tick() {
     if (clean) { clean_control_tick(); return; }
     set_visual_capture(false);
-    inc_ = arp_scale_increment(pitch_phase_increment(params[P_PITCH].effective, pitch_quantize));
+    inc_ = arp_scale_increment(pitch_phase_increment(params[P_PITCH].effective, pitch_quantize, pitch_scale));
 }
 
 void OscUnit::process(q15* buf, int frames) {
@@ -2039,6 +2096,8 @@ void FilterUnit::control_tick() {
     res_smooth_    = (q15)(res_smooth_    + ((int32_t)params[P_RES].effective    - res_smooth_)    / 4);
     svf_.type = type;
     svf_.set_params(cutoff_smooth_, res_smooth_);
+    right_svf_.type = type;
+    right_svf_.set_params(cutoff_smooth_, res_smooth_);
 }
 
 void FilterUnit::reset() {
@@ -2047,9 +2106,23 @@ void FilterUnit::reset() {
     svf_.type = type;
     svf_.set_params(cutoff_smooth_, res_smooth_);
     svf_.reset();
+    right_svf_ = svf_; right_active_ = false;
 }
 
 void FilterUnit::process(q15* buf, int frames) {
+    right_active_ = false;
+    process_channel(buf, frames, 1, svf_);
+}
+
+bool FilterUnit::process_stereo(q15* buf, int frames) {
+    if (!buf || frames <= 0) return false;
+    if (!right_active_) { right_svf_.reset(); right_active_ = true; }
+    process_channel(buf, frames, 2, svf_);
+    process_channel(buf + 1, frames, 2, right_svf_);
+    return true;
+}
+
+void FilterUnit::process_channel(q15* buf, int frames, int stride, trackr::dsp::Svf2& state) {
     // Filter type OFF is the enum's promised exact core bypass. Unit BYP remains
     // the graph-level bypass, but OFF must not leave DRIVE/MORPH secretly active.
     if (type == trackr::dsp::FilterType::Off) return;
@@ -2059,12 +2132,12 @@ void FilterUnit::process(q15* buf, int frames) {
         // DRIVE reaches 4x. Widen before multiply: q15 minimum * max gain
         // exceeds signed 32-bit even though the post-shift soft-clip input does not.
         q15 input = trackr::fx::soft_clip_q31(
-            (q31)(((int64_t)buf[i] * gain) >> 15));
-        const q15 filtered = svf_.step(input);
+            (q31)(((int64_t)buf[i * stride] * gain) >> 15));
+        const q15 filtered = state.step(input);
         const q31 inverse = (q31)input - filtered;
         // MORPH crossfades the selected SVF output toward its complementary
         // branch (input-filtered). The delta can be three q15 ranges wide.
-        buf[i] = sat_q15((q31)filtered +
+        buf[i * stride] = sat_q15((q31)filtered +
                          (q31)(((int64_t)(inverse - filtered) * morph) >> 15));
     }
 }
@@ -2416,9 +2489,14 @@ void VcaUnit::trigger() {
     visual_state_ = VisualActive | (rising_ ? VisualRising : 0);
 }
 
-void VcaUnit::process(q15* buf, int frames) {
+void VcaUnit::process(q15* buf, int frames) { process_channels(buf, frames, 1); }
+bool VcaUnit::process_stereo(q15* buf, int frames) {
+    if (!buf || frames <= 0) return false;
+    process_channels(buf, frames, 2); return true;
+}
+void VcaUnit::process_channels(q15* buf, int frames, int channels) {
     if (!buf || frames <= 0) return;
-    if (!flexible) { process_legacy(buf, frames); return; }
+    if (!flexible) { process_legacy(buf, frames, channels); return; }
     prepare_live();
     const bool run=modern_ && vca_timing::enabled(resolved(P_RUN));
     if(!run)cycle_armed_=false;
@@ -2456,8 +2534,12 @@ void VcaUnit::process(q15* buf, int frames) {
             --reset_blend_left_;
         }
         last_multiplier_=multiplier;
-        const int32_t product = (int32_t)buf[i] * multiplier;
-        buf[i] = (q15)((product + (product < 0 ? -16383 : 16383)) / 32767);
+        // One canonical envelope/ramp advance per FRAME, shared by both channels.
+        for (int ch = 0; ch < channels; ++ch) {
+            const int at = i * channels + ch;
+            const int32_t product = (int32_t)buf[at] * multiplier;
+            buf[at] = (q15)((product + (product < 0 ? -16383 : 16383)) / 32767);
+        }
     }
     for (int p = 0; p < P_COUNT; ++p) visual_effective_[p] = latched_[p];
     visual_effective_[P_GAIN] = actual_gain;
@@ -2472,13 +2554,13 @@ void VcaUnit::process(q15* buf, int frames) {
     visual_ready_ = true;
 }
 
-void VcaUnit::process_legacy(q15* buf, int frames) {
+void VcaUnit::process_legacy(q15* buf, int frames, int channels) {
     // Frozen historical arithmetic, including gain-only threshold and integer AD.
     const q15 gain = params[P_GAIN].effective;
     const bool env_on = params[P_ATTACK].effective >= 128 || params[P_DECAY].effective >= 128;
 
     if (!env_on) {
-        for (int i = 0; i < frames; ++i)
+        for (int i = 0; i < frames * channels; ++i)
             buf[i] = (q15)(((q31)buf[i] * gain) >> 15);
         visual_env_ = Q15_ONE;
         visual_state_ = VisualGainOnly;
@@ -2496,11 +2578,12 @@ void VcaUnit::process_legacy(q15* buf, int frames) {
     uint32_t dec_frames = (uint32_t)(((dv * dv) >> 15) * 32000 >> 15) + 1;
     q31 dec_step = (Q15_ONE + (q31)dec_frames - 1) / (q31)dec_frames;
     if (dec_step < 1) dec_step = 1;
+    const q31 atk_step = Q15_ONE / (q31)atk_frames; // loop-invariant, hoisted out of the samples
 
     for (int i = 0; i < frames; ++i) {
         if (env_active_) {
             if (rising_) {
-                env_ += Q15_ONE / (q31)atk_frames;
+                env_ += atk_step;
                 if (env_ >= Q15_ONE) { env_ = Q15_ONE; rising_ = false; }
             } else {
                 env_ -= dec_step;
@@ -2508,7 +2591,10 @@ void VcaUnit::process_legacy(q15* buf, int frames) {
             }
         }
         q31 g = ((q31)gain * env_) >> 15;
-        buf[i] = (q15)(((q31)buf[i] * g) >> 15);
+        for (int ch = 0; ch < channels; ++ch) {
+            const int at = i * channels + ch;
+            buf[at] = (q15)(((q31)buf[at] * g) >> 15);
+        }
     }
     visual_env_ = (uint16_t)(env_ < 0 ? 0 : env_ > Q15_ONE ? Q15_ONE : env_);
     visual_state_ = (env_active_ ? VisualActive : 0) | (rising_ ? VisualRising : 0);
@@ -2949,6 +3035,7 @@ static q15 rec_wave_pcm(const Sample& sample, uint32_t frame) {
     extern void rec_wave_cache_test_read(bool summary);
     rec_wave_cache_test_read(false);
 #endif
+    // Historical REC trace is the LEFT channel, including imported stereo.
     return sample.data[(size_t)frame * sample.channels];
 }
 
@@ -2972,7 +3059,7 @@ void RecUnit::bind_visual_wave(const Sample& sample) const {
     wave_.data = sample.data.data();
     wave_.elements = sample.data.size();
     wave_.channels = sample.channels;
-    wave_.streaming = wr_frames_ == 0 && sample.channels == 1;
+    wave_.streaming = wr_frames_ == 0 && (sample.channels == 1 || sample.channels == 2);
 }
 
 void RecUnit::copy_visual_wave(q15* out) const {
@@ -3105,17 +3192,23 @@ uint32_t RecUnit::required_capacity_frames() const {
     return max_len > MAX_REC_FRAMES ? MAX_REC_FRAMES : max_len;
 }
 
-trackr::synth::SampleEditResult RecUnit::stage_workspace(uint32_t frames, Sample& prepared) {
+trackr::synth::SampleEditResult RecUnit::stage_workspace(uint32_t frames, Sample& prepared, uint8_t channels) {
     using trackr::synth::SampleEditResult;
-    if (!frames || frames > MAX_REC_FRAMES) return SampleEditResult::InvalidSlot;
+    if (!frames || frames > MAX_REC_FRAMES || (channels != 1 && channels != 2) || prepared.has_storage())
+        return SampleEditResult::InvalidSlot;
     prepared = {};
-    prepared.channels = 1;
+    prepared.channels = channels;
     prepared.root_note = 60;
     prepared.loop_start = 0;
     prepared.loop_end = 0;
     prepared.reversed = false;
     prepared.logical_frames = 0;
-    prepared.data.resize(frames);
+#if defined(__cpp_exceptions)
+    try { prepared.data.resize((size_t)frames * channels); }
+    catch (const std::bad_alloc&) { return SampleEditResult::MemoryBudget; }
+#else
+    prepared.data.resize((size_t)frames * channels);
+#endif
     return SampleEditResult::Ok;
 }
 
@@ -3156,7 +3249,7 @@ void RecUnit::trigger() {
     if (!can_start_fresh()) return; // A/sequence cannot resume OR stop an open take
     if (sample_slot < 0 || sample_slot >= trackr::synth::SAMPLE_BANK_SIZE) return;
     Sample& s = SampleBank::instance().slot(sample_slot);
-    if (!s.has_storage() || s.channels != 1 || s.logical_frames != 0) {
+    if (!s.has_storage() || (s.channels != 1 && s.channels != 2) || s.logical_frames != 0) {
         recording_ = false;
         gate_started_ = false;
         return;
@@ -3183,6 +3276,7 @@ void RecUnit::trigger() {
     writer_generation_ = SampleBank::instance().generation(sample_slot);
     writer_capacity_ = s.num_frames();
     writer_data_ = s.data.data();
+    writer_channels_ = s.channels;
     recording_ = true;
     paused_ = false;
     gate_started_ = params[P_REC].effective > (Q15_ONE / 2);
@@ -3193,7 +3287,7 @@ bool RecUnit::writer_storage_matches() const {
         return false;
     const Sample& s = SampleBank::instance().slot(sample_slot);
     return SampleBank::instance().generation(sample_slot) == writer_generation_ &&
-        s.channels == 1 && s.data.data() == writer_data_ && s.num_frames() == writer_capacity_ &&
+        s.channels == writer_channels_ && s.data.data() == writer_data_ && s.num_frames() == writer_capacity_ &&
         s.logical_frames == wr_frames_;
 }
 
@@ -3286,37 +3380,43 @@ void RecUnit::adopt_take(uint32_t frames) {
     if (wr_frames_ > 0) s.chops[0] = 0;
 }
 
-void RecUnit::capture_input(const q15* buf, int frames) {
+void RecUnit::capture_input(const q15* buf, int frames) { capture_input_channels(buf, frames, 1); }
+void RecUnit::capture_input_channels(const q15* buf, int frames, uint8_t channels) {
     if (!buf || frames <= 0 || !recording_) return;
-    if (!writer_storage_matches()) { stop(); return; }
+    if (!writer_storage_matches() || channels != writer_channels_) { stop(); return; }
     Sample& sample = SampleBank::instance().slot(sample_slot);
     bind_visual_wave(sample);
     bool finish = false;
     for (int i = 0; i < frames; ++i) {
-        if (wr_frames_ >= target_frames_ || wr_frames_ >= sample.data.size()) {
+        if (wr_frames_ >= target_frames_ || wr_frames_ >= writer_capacity_) {
             finish = true; break;
         }
-        // One peak comparison per newly written sample, no PCM rescan/heap.
+        const q15* input = buf + (size_t)i * channels;
+        const q15 value = input[0]; // retained LEFT trace; PCM preserves both channels
         if (wave_.streaming && wave_.streamed_frames == wr_frames_ && wr_frames_ < MAX_REC_FRAMES) {
             q15& peak = wave_.blocks[wr_frames_ / WAVE_BLOCK];
-            if (wr_frames_ % WAVE_BLOCK == 0 || rec_wave_magnitude(buf[i]) > rec_wave_magnitude(peak))
-                peak = buf[i];
+            if (wr_frames_ % WAVE_BLOCK == 0 || rec_wave_magnitude(value) > rec_wave_magnitude(peak)) peak = value;
             ++wave_.streamed_frames;
         }
-        sample.data[wr_frames_++] = buf[i];
+        for (int ch = 0; ch < channels; ++ch) sample.data[(size_t)wr_frames_ * channels + ch] = input[ch];
+        ++wr_frames_;
     }
     sample.loop_start = 0;
     sample.loop_end = wr_frames_;
     sample.logical_frames = wr_frames_;
-    if (finish || wr_frames_ >= target_frames_ || wr_frames_ >= sample.data.size()) stop();
+    if (finish || wr_frames_ >= target_frames_ || wr_frames_ >= writer_capacity_) stop();
 }
 
 void RecUnit::process(q15* buf, int frames) {
-    // Capture is called explicitly by Engine before bypass/output semantics. This
-    // fallback keeps standalone/offline Unit callers correct.
     capture_input(buf, frames);
     if (params[P_MON].effective <= (Q15_ONE / 2))
         std::memset(buf, 0, (size_t)frames * sizeof(q15));
+}
+bool RecUnit::process_stereo(q15* buf, int frames) {
+    if (!buf || frames <= 0) return false;
+    capture_input_channels(buf, frames, 2);
+    if (params[P_MON].effective <= (Q15_ONE / 2)) std::memset(buf, 0, (size_t)frames * 2 * sizeof(q15));
+    return true;
 }
 
 // ============================ factory ============================
@@ -3840,6 +3940,49 @@ void GhostUnit::process(q15* buf, int frames) {
 
 // ============================ STRN live granular ============================
 
+// [DSP] STRN grain window reciprocal: floor(n / d) for every n < 2^31 as
+// ((n * m) >> 32) >> shift with m = ceil(2^(31+l) / d), l = ceil(log2 d), shift = l - 1.
+// Exact: e = m*d - 2^(31+l) < d, so n*e/2^(31+l) < d/2^l <= 1 never carries past the
+// remainder; m < 2^32 for d >= 2. m = 0 means no reciprocal (d < 2 or d > 65536).
+static inline void strn_window_reciprocal(uint32_t d, uint32_t& m, uint8_t& shift) {
+    if (d < 2u || d > 65536u) { m = 0; shift = 0; return; }
+    const uint32_t l = 32u - (uint32_t)__builtin_clz(d - 1u);
+    m = (uint32_t)((((uint64_t)1 << (31u + l)) + d - 1u) / d);
+    shift = (uint8_t)(l - 1u);
+}
+// ramp * 32767 / d, the original 64-bit expression, for every input. The reciprocal
+// path needs ramp <= 65536 (ramp * 32767 < 2^31); grain lengths are 128..65408.
+static inline uint64_t strn_window_quotient(uint32_t ramp, uint32_t d, uint32_t m, uint8_t shift) {
+    if (m && ramp <= 65536u)
+        return (uint32_t)(((uint64_t)(ramp * 32767u) * m) >> 32) >> shift;
+    return (uint64_t)ramp * 32767u / d;
+}
+// [DSP] STRN grain mix sum / active with literal divisors (multiply-shift, no idiv);
+// active is 1..MAX_GRAINS, anything else keeps the original division.
+static inline q31 strn_grain_mean(q31 sum, int active) {
+    switch (active) {
+    case 1: return sum / 1;
+    case 2: return sum / 2;
+    case 3: return sum / 3;
+    case 4: return sum / 4;
+    case 5: return sum / 5;
+    case 6: return sum / 6;
+    case 7: return sum / 7;
+    case 8: return sum / 8;
+    default: return sum / active;
+    }
+}
+// [DSP] STRN freeze wrap: relative % span made non-negative, by one compare and one
+// add/subtract for values within one span of [0, span); the original modulo beyond.
+static inline int64_t strn_freeze_wrap(int64_t relative, int64_t span_q16) {
+    if (relative >= span_q16) { relative -= span_q16; if (relative < span_q16) return relative; }
+    else if (relative < 0) { relative += span_q16; if (relative >= 0) return relative; }
+    else return relative;
+    relative %= span_q16;
+    if (relative < 0) relative += span_q16;
+    return relative;
+}
+
 StranularUnit::StranularUnit() {
     build_strn_pitch_lut();
     kind = UnitKind::Stranular;
@@ -3979,6 +4122,9 @@ void StranularUnit::process(q15* buf, int frames) {
     // retires or leaves the visible span mid-block. Normalize only once per head.
     uint32_t last_position[MAX_GRAINS], last_span[MAX_GRAINS];
     uint16_t visible_touched = 0, rendered = 0;
+    // Window divisor reciprocal per grain slot, valid for the length in window_length.
+    uint32_t window_length[MAX_GRAINS] = {}, window_m[MAX_GRAINS] = {};
+    uint8_t window_shift[MAX_GRAINS] = {};
     for (int i = 0; i < frames; ++i) {
         const q15 dry = buf[i];
         if (!frozen_) { buffer_[write_] = dry; write_ = (write_ + 1) & (BUFFER_SIZE - 1); if (filled_ < BUFFER_SIZE) ++filled_; }
@@ -4013,16 +4159,21 @@ void StranularUnit::process(q15* buf, int frames) {
             uint32_t index = grain_index, next = (index + 1) & (BUFFER_SIZE - 1);
             q15 sample = lerp_q15(buffer_[index], buffer_[next], (uint16_t)g.pos_q16);
             uint32_t half = g.length / 2, ramp = g.age < half ? g.age : g.length - g.age;
+            if (window_length[gi] != g.length) {
+                window_length[gi] = g.length;
+                strn_window_reciprocal(window_mode == 1 ? g.length : window_mode == 2 ? g.length / 8u : half,
+                                       window_m[gi], window_shift[gi]);
+            }
             q15 window;
             if (window_mode == 1) {
                 // Parabolic Hann approximation: 4*x*(1-x), no LUT/multiply-heavy trig.
-                uint32_t x = (uint32_t)((uint64_t)g.age * 32767u / g.length);
+                uint32_t x = (uint32_t)strn_window_quotient(g.age, g.length, window_m[gi], window_shift[gi]);
                 window = (q15)(((uint64_t)x * (32767u - x) * 4u) >> 15);
             } else if (window_mode == 2) {
                 uint32_t edge = g.length / 8u;
-                window = edge && ramp < edge ? (q15)((uint64_t)ramp * 32767u / edge) : Q15_ONE;
+                window = edge && ramp < edge ? (q15)strn_window_quotient(ramp, edge, window_m[gi], window_shift[gi]) : Q15_ONE;
             } else {
-                window = half ? (q15)((uint64_t)ramp * 32767u / half) : Q15_ONE;
+                window = half ? (q15)strn_window_quotient(ramp, half, window_m[gi], window_shift[gi]) : Q15_ONE;
             }
             sum += ((q31)sample * window) >> 15; ++active; g.pos_q16 += g.inc_q16;
             // Frozen grains wrap inside the captured scan window. The old code
@@ -4038,8 +4189,7 @@ void StranularUnit::process(q15* buf, int frames) {
                 // the end of the physical ring after wrap; recover the signed
                 // crossing before applying the captured-window modulo.
                 if (g.inc_q16 < 0 && relative >= span_q16) relative -= ring_q16;
-                relative %= span_q16;
-                if (relative < 0) relative += span_q16;
+                relative = strn_freeze_wrap(relative, span_q16);
                 g.pos_q16 = start_q16 + relative;
                 if (g.pos_q16 >= ring_q16) g.pos_q16 -= ring_q16;
             }
@@ -4047,7 +4197,7 @@ void StranularUnit::process(q15* buf, int frames) {
             if ((g.age & 3u) == 0) g.inc_q16 += g.pitch_delta_q16 * 4;
             if (++g.age >= g.length) g.active = false;
         }
-        q15 wet = active ? sat_q15(sum / active) : dry;
+        q15 wet = active ? sat_q15(strn_grain_mean(sum, active)) : dry;
         q31 effective_mix = freeze_mix_ == Q15_ONE ? Q15_ONE :
             mix + (((q31)freeze_mix_ * (32767 - mix)) >> 15);
         if (effective_mix > 32767) effective_mix = 32767;
@@ -4169,6 +4319,7 @@ void ShiftUnit::process(q15* buf, int frames) {
 }
 
 Unit* make_unit(UnitKind kind) {
+    if (!unit_kind_available(kind)) return nullptr;
     Unit* unit = nullptr;
     switch (kind) {
         case UnitKind::SamplePlayer: unit = new(std::nothrow) PlayUnit(); break;
@@ -4201,6 +4352,9 @@ Unit* make_unit(UnitKind kind) {
         case UnitKind::Inst:         unit = new(std::nothrow) InstUnit(); break;
         case UnitKind::Scratch:      unit = new(std::nothrow) ScratchUnit(); break;
         case UnitKind::Paul:         unit = new(std::nothrow) PaulUnit(); break;
+        case UnitKind::Pent:         unit = new(std::nothrow) PentUnit(); break;
+        case UnitKind::Rule:         unit = new(std::nothrow) RuleUnit(); break;
+        case UnitKind::Rot:          unit = new(std::nothrow) RotUnit(); break;
         default:                     return nullptr;
     }
     if (unit && !unit->ready()) { delete unit; unit = nullptr; }
@@ -4208,7 +4362,8 @@ Unit* make_unit(UnitKind kind) {
 }
 
 Unit* clone_unit(const Unit* source) {
-    if (!source) return nullptr;
+    if (!source || !unit_kind_available(source->kind)) return nullptr;
+    for (const Param& param : source->params) if (param.relic_source) return nullptr;
     Unit* clone = source->kind == UnitKind::Delay
         ? new(std::nothrow) DelayUnit(static_cast<const DelayUnit*>(source)->modern())
         : source->kind == UnitKind::Reverb
@@ -4243,6 +4398,24 @@ Unit* clone_unit(const Unit* source) {
     }
 
     switch (source->kind) {
+        case UnitKind::Rot: {
+            const auto* from=static_cast<const RotUnit*>(source);auto* to=static_cast<RotUnit*>(clone);
+            if(from->sample_slot<0 || from->sample_slot>=trackr::synth::SAMPLE_BANK_SIZE || !to->set_config(from->config())){delete clone;return nullptr;}
+            to->sample_slot=from->sample_slot;to->reset();to->control_tick();break;
+        }
+        case UnitKind::Rule: {
+            const auto* from=static_cast<const RuleUnit*>(source);auto* to=static_cast<RuleUnit*>(clone);
+            if(from->sample_slot<0 || from->sample_slot>=trackr::synth::SAMPLE_BANK_SIZE || !to->set_config(from->config())){delete clone;return nullptr;}
+            to->sample_slot=from->sample_slot;to->reset();to->control_tick();break;
+        }
+        case UnitKind::Pent: {
+            auto* to = static_cast<PentUnit*>(clone);
+            if (!to->set_width(static_cast<const PentUnit*>(source)->width)) {
+                delete clone; return nullptr;
+            }
+            to->reset(); // copied configuration; first process adopts it, never constructor coefficients
+            break;
+        }
         case UnitKind::Paul: {
             const auto* from=static_cast<const PaulUnit*>(source);
             auto* to=static_cast<PaulUnit*>(clone);

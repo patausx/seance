@@ -23,6 +23,8 @@ void chains_picker_begin();
 // visible chain origin is eligible. B calls back AFTER editor_back/subpage logic.
 void chains_editor_begin();
 bool chains_editor_back();
+// Revoke closing/entry input without completing a deferred page transition.
+void chains_editor_cancel_input();
 // Before main's input snapshot. Fresh opening input snaps without eating it;
 // closing owns local input and drains held tails. True means skip touch dispatch.
 bool chains_editor_input(u32& down, u32& held, u32& up);

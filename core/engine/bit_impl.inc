@@ -106,6 +106,7 @@ void BitUnit::modern_process(q15* buf,uint8_t* events,int frames){
     control_tick();bool any_drop=false;uint8_t period=visual_period_;
     const int drop=resolved_[P_DROPOUT],mix=resolved_[P_MIX];
     const uint64_t threshold=uint64_t(drop)*4294967296ull/32767u;
+    const float mix_scale=float(mix)/32767.f; // loop-invariant: the same division the loop made per sample
     for(int i=0;i<frames;++i){
         const q15 dry=buf[i];const float source=float(dry)*(1.f/32768.f);
         modern_phase_+=phase_inc_;
@@ -130,7 +131,7 @@ void BitUnit::modern_process(q15* buf,uint8_t* events,int frames){
         low_+=alpha_*(wet-low_);
         dc_output_=low_-dc_input_+.998430436f*dc_output_;dc_input_=low_;
         wet=(dropped?0.f:neutral_?source:dc_output_)*gain_;
-        q15 out=mix==0?dry:bit_detail::sample(mix==32767?wet:source+(wet-source)*(float(mix)/32767.f));
+        q15 out=mix==0?dry:bit_detail::sample(mix==32767?wet:source+(wet-source)*mix_scale);
         if(transition_left_){out=q15((int(transition_from_)*transition_left_+int(out)*(128-transition_left_))/128);--transition_left_;}
         buf[i]=last_out_=out;processed_=true;
     }
@@ -145,6 +146,11 @@ void BitUnit::legacy_process(q15* buf,uint8_t* events,int frames){
     const q15 comp=params[P_COMP].effective;
     bool dropped_in_block = false;
     uint8_t last_period = (uint8_t)hold;
+    // The compressor is a pure function of (held_, comp) and comp is fixed for the
+    // block, so its division runs only when the sample being used differs from
+    // the last one computed, instead of on every output sample. It is evaluated
+    // for exactly the held values the per-sample form used, never a stale one.
+    q31 crushed = 0, crushed_for = INT32_MIN; // INT32_MIN: no q15 held value
     for (int i=0;i<frames;++i) {
         const q15 dry=buf[i];
         rng_=rng_*1664525u+1013904223u;
@@ -164,10 +170,12 @@ void BitUnit::legacy_process(q15* buf,uint8_t* events,int frames){
             held_=dropped?0:(q15)((uint16_t)dry&mask);
             legacy_drop_=dropped;
         }
-        const q31 v=held_;
-        const q31 av=v<0?-v:v;
-        const q31 compressed=(v*(32767+(q31)comp))/(32767+((av*comp)>>15));
-        const q31 crushed=v+(((compressed-v)*comp)>>15);
+        if((q31)held_!=crushed_for){
+            const q31 v=held_;
+            const q31 av=v<0?-v:v;
+            const q31 compressed=(v*(32767+(q31)comp))/(32767+((av*comp)>>15));
+            crushed=v+(((compressed-v)*comp)>>15);crushed_for=v;
+        }
         buf[i]=sat_q15((q31)dry+(((crushed-dry)*mix)>>15));
         if(events)events[i]=uint8_t((captured?1:0)|(legacy_drop_?2:0));
     }

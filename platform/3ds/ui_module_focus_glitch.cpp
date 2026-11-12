@@ -18,7 +18,7 @@ using Op = G::Op;
 constexpr const char* NAMES[G::P_COUNT] = {"density","jump","repeat","drop","reverse","pitch","mix","keep"};
 constexpr int ORDER[G::P_COUNT] = {G::P_DENSITY,G::P_MIX,G::P_JUMP,G::P_REPEAT,G::P_DROP,G::P_REVERSE,G::P_PITCH,G::P_KEEP};
 struct Frame {
-    bool valid=false, bypass=false, mute=false, lock=false, full=false;
+    bool valid=false, bypass=false, mute=false;
     int chain=0, slot=0, selected=0, inspected=-1;
     G::Visual visual{};
     q15 edit[G::P_COUNT]={};
@@ -32,10 +32,9 @@ int selected=0, inspected=-1;
 struct Gesture {
     Engine* engine=nullptr;
     uintptr_t unit=0;
-    int chain=-1, slot=-1, step=-1, lock_chain=-1, bank=-1, param=-1, x=0;
+    int chain=-1, slot=-1, bank=-1, param=-1, x=0;
     View view=View::Chains;
     q15 value=0;
-    bool lock=false;
 } gesture;
 Engine* captured_engine=nullptr;
 uintptr_t captured_unit=0;
@@ -44,32 +43,27 @@ uint64_t accepted_at=0;
 int clamp(int v,int lo,int hi) {return std::max(lo,std::min(hi,v));}
 bool context() {
     return g_eng && g_audio && g_overlay==Overlay::Editor &&
-        (g_view==View::Chains || (g_view==View::Sequencer && g_seq_lock_armed)) &&
+        g_view==View::Chains &&
         g_edit_chain>=0 && g_edit_chain<NUM_CHAINS && g_edit_slot>=0 && g_edit_slot<UNITS_PER_CHAIN;
 }
-bool lock_context() {
-    return g_seq_lock_armed && g_seq_lock_chain==g_edit_chain && g_seq_lock_step>=0 && g_seq_lock_step<SEQ_STEPS;
-}
 q15 edit_value(const G& unit,int p) {
-    return lock_context()?seq_display_value(g_edit_slot,p,unit.params[p].base):unit.params[p].base;
+    return unit.params[p].base;
 }
 bool owns(const G& unit) {
     return gesture.engine==g_eng && gesture.unit==uintptr_t(&unit) && gesture.view==g_view &&
         gesture.chain==g_edit_chain && gesture.slot==g_edit_slot &&
-        g_eng->chains[g_edit_chain].units[g_edit_slot]==&unit && gesture.lock==g_seq_lock_armed &&
-        gesture.bank==g_eng->active_pattern && (!gesture.lock || (lock_context() &&
-        gesture.step==g_seq_lock_step && gesture.lock_chain==g_seq_lock_chain));
+        g_eng->chains[g_edit_chain].units[g_edit_slot]==&unit &&
+        gesture.bank==g_eng->active_pattern;
 }
 void remember(G& unit,int x,int p) {
     gesture.engine=g_eng;gesture.unit=uintptr_t(&unit);gesture.chain=g_edit_chain;gesture.slot=g_edit_slot;
-    gesture.step=g_seq_lock_step;gesture.lock_chain=g_seq_lock_chain;gesture.bank=g_eng->active_pattern;
+    gesture.bank=g_eng->active_pattern;
     gesture.param=p;gesture.x=x;gesture.value=p>=0?edit_value(unit,p):0;
-    gesture.lock=g_seq_lock_armed;gesture.view=g_view;
+    gesture.view=g_view;
 }
 void change(G& unit,int p,q15 value) {
     if(value==edit_value(unit,p))return;
-    if(g_seq_lock_armed) {if(lock_context())seq_record_lock(g_edit_slot,p,value);}
-    else {unit.params[p].base=value;mark_project_mutated();}
+    unit.params[p].base=value;mark_project_mutated();
 }
 void right(int x,int y,const char* text,u32 color) {ui::text(x-ui::text_w(text),y,text,color);}
 u32 blend(u32 a,u32 b,int n,int d) {
@@ -182,16 +176,15 @@ bool glitch_focus_touch_body(G& unit,int tx,int ty) {
     platform::AudioOut::Guard guard(*g_audio);
     glitch_focus_release();
     if(g_eng->chains[g_edit_chain].units[g_edit_slot]!=&unit)return false;
-    if(g_seq_lock_armed && !lock_context())return true;
     if(hit(tx,ty,262,5,50,29)) {
-        if(!g_seq_lock_armed) {unit.bypass=!unit.bypass;mark_project_mutated();}return true;
+        unit.bypass=!unit.bypass;mark_project_mutated();return true;
     }
     if(hit(tx,ty,193,5,66,29)) {
-        if(!g_seq_lock_armed && !unit.bypass && !g_eng->chains[g_edit_chain].mute) {
+        if(!unit.bypass && !g_eng->chains[g_edit_chain].mute) {
             unit.request_reroll();mark_project_mutated();
         }return true;
     }
-    if(hit(tx,ty,8,224,100,16)) {g_overlay=Overlay::None;g_seq_lock_armed=false;g_drag=Drag::None;return true;}
+    if(hit(tx,ty,8,224,100,16)) {g_overlay=Overlay::None;g_drag=Drag::None;return true;}
     const int cell=cell_at(tx,ty);
     if(cell>=0) {
         inspected=inspected==cell?-1:cell;selected=op_param(unit.visual().cells[cell].op);
@@ -201,10 +194,6 @@ bool glitch_focus_touch_body(G& unit,int tx,int ty) {
         const int x=14+156*(i%2),y=114+27*(i/2),p=ORDER[i];
         if(!hit(tx,ty,x-6,y-4,144,27))continue;
         selected=p;
-        if(lock_context() && hit(tx,ty,x-3,y-3,ui::text_w(NAMES[p])+6,12)) {
-            if(g_eng->remove_step_lock(g_seq_lock_chain,g_seq_lock_step,g_edit_slot,p))mark_project_mutated();
-            return true;
-        }
         if(p==G::P_KEEP) {change(unit,p,edit_value(unit,p)>16383?0:32767);return true;}
         remember(unit,tx,p);g_drag=Drag::GlitchParam;return true;
     }
@@ -232,8 +221,8 @@ void glitch_focus_capture() {
         const auto& glitch=*static_cast<const G*>(unit);identity=uintptr_t(unit);
         if(gesture.unit && (!owns(glitch) || param_lens_is_open() ||
             (g_drag!=Drag::GlitchParam && g_drag!=Drag::GlitchCell)))glitch_focus_release();
-        frame.valid=true;frame.bypass=unit->bypass;frame.mute=chain.mute;frame.lock=lock_context();
-        frame.full=frame.lock && g_seq_lock_flash>0;frame.chain=g_edit_chain;frame.slot=g_edit_slot;frame.selected=selected;
+        frame.valid=true;frame.bypass=unit->bypass;frame.mute=chain.mute;
+        frame.chain=g_edit_chain;frame.slot=g_edit_slot;frame.selected=selected;
         frame.visual=glitch.visual();
         for(int p=0;p<G::P_COUNT;++p) {
             frame.edit[p]=edit_value(glitch,p);
@@ -253,7 +242,7 @@ void glitch_focus_capture() {
 void glitch_focus_draw(const G&) {
     m::paper(320);if(!frame.valid)return;
     module_heading::header(UnitKind::Glitch,m::spot());ui::text(94,m::kHeaderTextY,"16 x 1/16",m::ghost());
-    ui::text(202,m::kHeaderTextY,frame.visual.pending?"queued":"reroll",frame.lock?m::ghost():m::spot());
+    ui::text(202,m::kHeaderTextY,frame.visual.pending?"queued":"reroll",m::spot());
     right(m::right_edge(320),m::kHeaderTextY,"byp",frame.bypass?m::spot():m::ghost());
     if(frame.bypass)ui::line(m::right_edge(320)-18,m::kHeaderMarkY,m::right_edge(320)-1,m::kHeaderMarkY,m::spot());
     for(int i=0;i<16;++i) {
@@ -284,14 +273,14 @@ void glitch_focus_draw(const G&) {
             ui::text(x,y+11,frame.visual.kept?"pattern fixed":"new each bar",m::ghost());
         } else rail(p,x,y+15);
     }
-    m::footer(320,frame.full?"lock full":frame.lock?"name: remove lock":"b back","l: mod >");
+    m::footer(320,"b back","l: mod >");
 }
 bool glitch_focus_draw_top() {
     if(!frame.valid)return false;
     m::paper(400);module_heading::header(UnitKind::Glitch,m::spot());
     char text[80];std::snprintf(text,sizeof text,"ch%02d / %02d / 16 x 1/16",frame.chain+1,frame.slot+1);right(m::right_edge(400),m::kHeaderTextY,text,m::ghost());
     ui::text(16,46,NAMES[frame.selected],m::spot());
-    std::snprintf(text,sizeof text,"%s %s / %s %s",frame.lock?"lock":"base",frame.values[frame.selected],
+    std::snprintf(text,sizeof text,"base %s / %s %s",frame.values[frame.selected],
         frame.selected==G::P_MIX?"target":frame.selected==G::P_KEEP?"live":"next",frame.resolved);
     right(384,46,text,m::ink());ui::text(16,62,frame.route,m::ghost());
     ui::text(16,82,"previous bar / source slices",m::ghost());

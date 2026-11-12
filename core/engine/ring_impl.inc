@@ -95,6 +95,7 @@ void RingUnit::modern_process(q15* buf,q15* carrier,int frames){
         last_out_=buf[frames-1];processed_=true;transition_left_=0;return;
     }
     const float mix=float(ring_detail::uni(resolved_[P_MIX]))/32767.f;
+    const float* const sine_lut=osc_clean::sine_table(); // one init-guard check per block
     for(int i=0;i<frames;++i){
         const q15 dry=buf[i];const float source=float(dry)/32768.f,magnitude=std::abs(source);
         modern_env_=magnitude>modern_env_?magnitude:magnitude+(modern_env_-magnitude)*release_;
@@ -116,7 +117,7 @@ void RingUnit::modern_process(q15* buf,q15* carrier,int frames){
             osc_clean::step_event(previous_phase,previous_phase+delta,2,previous_pulse,square);
             osc_clean::step_event(previous_phase-.5f,previous_phase+delta-.5f,-2,previous_pulse,square);
             triangle_=tri;pulse_=square;
-            const float raw=shape_==0?osc_clean::sine(old):shape_==1?previous_tri:previous_pulse;
+            const float raw=shape_==0?osc_clean::sine(sine_lut,old):shape_==1?previous_tri:previous_pulse;
             last_carrier_=std::max(-1.f,std::min(1.f,raw));
             const float driven=sub_input_*drive_+modern_feedback_*feedback_gain_;
             const float multiplier=driven*last_carrier_;

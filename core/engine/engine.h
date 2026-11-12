@@ -12,7 +12,10 @@
 // through the same RecursiveLock pattern as descry's mixer.
 #pragma once
 #include "unit.h"
+#include "musical_scale.h"
+#include "relic_routes.h"
 #include "units.h"
+#include "pent_unit.h"
 #include "sigil.h"
 #include "clock_mod.h"
 #include "transition_fx.h"
@@ -122,7 +125,10 @@ struct SampleSlotRefs {
     uint8_t play = 0, grain = 0, rec = 0, bounce = 0, external = 0;
     uint8_t scratch = 0; // appended: old aggregate field order retained
     uint8_t paul = 0; // append-only source alias counter
-    uint8_t total() const { return (uint8_t)(play + grain + rec + bounce + external + scratch + paul); }
+    uint8_t relic = 0;
+    uint8_t rule = 0;
+    uint8_t rot = 0;
+    uint8_t total() const { return (uint8_t)(play + grain + rec + bounce + external + scratch + paul + relic + rule + rot); }
 };
 
 struct RecWorkspacePlan {
@@ -138,6 +144,7 @@ struct RecWorkspacePlan {
     uint32_t original_logical_frames = 0, target_logical_frames = 0;
     int8_t chain = -1, unit_slot = -1;
     uint32_t frames = 0;
+    uint8_t channels = 1, original_channels = 0, target_channels = 0;
     bool needs_commit = false;
     // Controller consent for this exact take only; never marks audio as saved.
     bool discard_unsaved = false;
@@ -149,7 +156,9 @@ struct Chain {
     q15    volume = trackr::fx::Q15_ONE;
     q15    pan    = 0;                     // bipolar: -1 = left, 0 = center, +1 = right
     bool   mute   = false;
-    q15    scratch[CONTROL_INTERVAL];     // block buffer
+    q15    scratch[CONTROL_INTERVAL];     // historical mono buffer, never interleaved
+    q15    stereo[CONTROL_INTERVAL * 2] = {}; // explicit stereo post-module tap
+    uint8_t rendered_channels = 1;       // last fragment; 0 = unsupported topology
 };
 
 enum class LaunchQuantize : uint8_t { Immediate = 0, Sixteenth, Beat, Bar };
@@ -357,6 +366,7 @@ struct EngineUiSnapshot {
     uint32_t xrun_count = 0;
     q15 sigil_value[NUM_SIGILS] = {};
     uint32_t sigil_phase[NUM_SIGILS] = {};
+    MusicalScale project_scale{};
 };
 static_assert(sizeof(EngineUiSnapshot) <= 3840,
               "EngineUiSnapshot hot handoff grew beyond its bounded budget");
@@ -382,6 +392,8 @@ struct ParamInspector {
     uint8_t env_chain = 0;
     EnvResponse env_response = EnvResponse::Fast;
     q15 env_level = 0;
+    uint32_t relic_source=0; // occupied typed slot; source remains legacy None
+    uint8_t relic_port=0;    // pair with capture_relic_sources/Visual for exact bank epoch
 };
 static_assert(sizeof(ParamInspector) <= 64, "bounded controller parameter DTO");
 
@@ -465,6 +477,10 @@ public:
         return chain >= 0 && chain < NUM_CHAINS && (pending_rec_stop & (1u << chain));
     }
     void set_swing(int percent);
+    // Caller holds guard. Project-global vocabulary; never rewrites notes,
+    // bases, sigils, banks or clocks. Existing module qnt switches alone opt DSP in.
+    MusicalScale project_scale() const { return project_scale_; }
+    bool set_project_scale(MusicalScale scale);
     void request_pattern(int index, bool quantized = true);
     // Caller holds audio guard. No bank writes/launch/clock reset. Selects one
     // complete native endpoint event per chain/tick, not interpolated step data.
@@ -529,6 +545,10 @@ public:
     static constexpr uint32_t SEQUENCE_AUDITION_FRAMES = ENGINE_SR / 4;
     bool audition_sequence_step(int chain, int step, int bank = -1);
     void cancel_sequence_audition();
+    // Caller holds audio guard. Cancel installed ROT manual audition authority,
+    // including silent preparation; -1 selects all chains. No musical tape/HOLD,
+    // ordinary pause, config, parameter layers, routes or source PCM changes.
+    void cancel_rot_auditions(int chain = -1);
 
     // Caller holds the audio guard. One runtime-only parameter gesture, no
     // triggers/actions/sample changes. Refused on muted/bypassed cards or while
@@ -555,6 +575,37 @@ public:
     // Controller-only capture; hot EngineUiSnapshot budget stays unchanged.
     void capture_scratch_visual(int chain, int slot, ScratchUnit::Visual& out) const;
     void capture_paul_visual(int chain, int slot, PaulUnit::Visual& out) const;
+    void capture_rule_visual(int chain,int slot,RuleUnit::Visual& out) const;
+    void capture_rot_visual(int chain,int slot,RotUnit::Visual& out) const;
+    void capture_rot_artwork(int chain,int slot,RotUnit::Artwork& out) const;
+    // Caller holds the audio guard; copy only actual rendered PENT scalars.
+    // Audible is conservatively masked against the current and last render pipe.
+    void capture_pent_visual(int chain, int slot, PentUnit::Visual& out) const;
+
+    uint32_t begin_relic_gesture(int chain,int slot,int sx,int sy);
+    bool set_relic_gesture(uint32_t token,int dx_q7,int dy_q7,q15 depth);
+    void end_relic_gesture(uint32_t token);
+    void cancel_relic_gesture(uint32_t token=0);
+    bool relic_gesture_active(uint32_t token) const;
+    bool set_relic_hold(int chain,int slot,bool hold);
+    bool set_relic_audio_enabled(int chain,int slot,bool enabled);
+    bool retarget_relic_source(int chain,int slot,int sample_slot);
+    void capture_relic_visual(int chain,int slot,RelicUnit::Visual& out) const;
+    void retire_relic_sources_for_slot(int sample_slot);
+    void retire_relic_sources_all();
+    void hydrate_relic_sources();
+    // Runtime admission refuses unavailable kinds and retired typed sources.
+    bool can_install_unit(const Unit* unit,const Unit* replacing=nullptr) const;
+    bool relic_storage_valid() const;
+    static bool typed_mod_target_allowed(const Unit*,int param);
+    SourceRef param_source(int chain,int slot,int param) const;
+    bool connect_mod_route(int chain,int slot,int param,SourceRef,q15 depth,bool enabled=true);
+    bool replace_mod_route(int chain,int slot,int param,SourceRef,q15 depth,bool enabled=true);
+    bool remove_mod_route(int chain,int slot,int param);
+    int capture_relic_sources(RelicSourceInfo* out,int capacity) const;
+    int capture_mod_routes(ModRouteInfo* out,int capacity) const;
+    uint64_t relic_control_epoch() const {return relic_epoch_;}
+    q15 parameter_modulation_value(const Unit*,int param) const;
 
     void clear_step_locks(int chain, int step);
     void set_step_microtiming(int chain, int step, int amount);
@@ -657,7 +708,7 @@ public:
     void stop_bounce(BounceReason reason = BounceReason::Stopped);
     BounceResult discard_bounce(trackr::synth::Sample& retired);
     const trackr::synth::Sample* bounce_sample(const BounceSnapshot& token) const;
-    // Copies count packed frames: bounce_channels(token.source) q15 values/frame.
+    // Copies count packed frames: bounce_channels(token) q15 values/frame.
     bool read_bounce_frames(const BounceSnapshot& token, uint32_t first,
                             uint32_t count, q15* interleaved) const;
     bool mark_bounce_saved(const BounceSnapshot& token, const char* path);
@@ -774,6 +825,11 @@ public:
     // fire triggers (touch pads / sigil steps) into every unit of a chain
     void trigger_chain(int chain);
 
+    // Allocation-free topology admission. 0 means an unsupported stereo
+    // processor: the WHOLE chain is refused, never folded or silently bypassed.
+    // before_slot selects the input width at REC; default selects chain output.
+    uint8_t chain_audio_channels(int chain, int before_slot = UNITS_PER_CHAIN) const;
+
     // stereo interleaved render, frames arbitrary (chunked internally)
     void render(q15* out, int frames);
 
@@ -801,7 +857,25 @@ public:
 private:
     friend class ScratchUnit; // truthful sequence-deadline activity in controller visual()
     friend class PaulUnit;
+    friend class RuleUnit;
+    MusicalScale project_scale_{};
+    void bind_pitch_scale(Unit* unit);
+    RelicUnit* relic_at(int chain,int slot) const;
+    RelicUnit* relic_by_id(uint32_t id,int* chain=nullptr,int* slot=nullptr) const;
+    void cleanup_relic_routes(const Unit* source);
+    void prepare_relic_context();
+    void render_relic_fragments(uint32_t frames);
+    void publish_relic_bank();
+    struct RelicGesture {RelicUnit* unit=nullptr;int8_t chain=-1,slot=-1;uint32_t token=0,model_token=0;} relic_gesture_;
+    uint32_t relic_token_=0;
+    uint64_t relic_epoch_=0;
     PaulUnit* bind_paul(int chain,int slot);
+    RuleUnit* bind_rule(int chain,int slot);
+    void rebind_rules(int chain);
+    RotUnit* bind_rot(int chain,int slot);
+    void rebind_rots(int chain);
+    const Unit* pent_render_source_[NUM_CHAINS] = {};
+    uint8_t pent_render_width_[NUM_CHAINS] = {};
     BounceState bounce_;
     BounceSnapshot bounce_preview_take_;
     uint32_t bounce_preview_frame_ = 0;
@@ -999,13 +1073,14 @@ private:
     bool sample_preview_active_ = false;
 
     // Master-bus performance FX (post-mix, pre-limiter). Targets are set by
-    // apply_global_fx; currents slew toward them each block to avoid zipper
+    // apply_global_fx; currents slew on an independent 32-sample clock to avoid zipper
     // noise. Only Cutoff/Resonance/Crush/Drive live here; the rest stay as
     // unit-param takeovers.
     void process_master_fx(q15* out, int frames);
     TransitionFx transition_fx_; // once-allocated independent stereo bus history
     q15 master_fx_target_[(int)GlobalFxTarget::Count] = {};
     q15 master_fx_current_[(int)GlobalFxTarget::Count] = {};
+    int master_fx_countdown_ = 0;
     trackr::dsp::Svf2 master_svf_l_, master_svf_r_;
     int master_crush_hold_ = 0;
     q15 master_crush_l_ = 0, master_crush_r_ = 0;

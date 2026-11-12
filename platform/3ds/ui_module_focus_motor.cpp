@@ -39,7 +39,7 @@ struct Frame {
     uint8_t kinds[UNITS_PER_CHAIN]={};bool bypassed[UNITS_PER_CHAIN]={};
     int32_t nominal=0,window_ms10=0;
     int8_t chain=0,slot=0,selected=M::P_RPM,arp_offset=0,arp_owner=-1;
-    bool valid=false,modern=false,bypass=false,mute=false,locked=false,full=false;
+    bool valid=false,modern=false,bypass=false,mute=false;
     bool audible=false,sync_limited=false,arp_gate=false;
 } frame;
 static_assert(sizeof(Frame)<2048 && std::is_trivially_copyable<Frame>::value,
@@ -47,8 +47,8 @@ static_assert(sizeof(Frame)<2048 && std::is_trivially_copyable<Frame>::value,
 struct Gesture {
     Engine* engine=nullptr; uintptr_t unit=0;
     View view=View::Chains;
-    int chain=-1,slot=-1,bank=-1,step=-1,lock_chain=-1,param=-1,start=0;
-    q15 value=0;bool locked=false,modern=false,note=false;
+    int chain=-1,slot=-1,bank=-1,param=-1,start=0;
+    q15 value=0;bool modern=false,note=false;
 } gesture;
 struct Key { q15 values[M::P_COUNT]={};int8_t arp_offset=0,arp_owner=-1;bool modern=false,arp_gate=false; };
 Key cached_key={}; bool cache_valid=false;
@@ -71,57 +71,34 @@ void prepare_fft(){if(fft_ready)return;
 int clamp(int v,int lo=0,int hi=32767){return std::max(lo,std::min(hi,v));}
 bool hit(int x,int y,int px,int py,int w,int h){return x>=px&&x<px+w&&y>=py&&y<py+h;}
 int source_index(q15 value){return std::min(2,(clamp(value)*3)>>15);}
-int bank(){const int b=sequencer_edit_bank();return b>=0&&b<NUM_PATTERNS?b:g_eng->active_pattern;}
-int gesture_bank(){return g_seq_lock_armed?bank():g_eng->active_pattern;}
 bool context(){return g_eng&&g_audio&&g_overlay==Overlay::Editor&&
-    (g_view==View::Chains||(g_view==View::Sequencer&&g_seq_lock_armed))&&
+    g_view==View::Chains&&
     g_edit_chain>=0&&g_edit_chain<NUM_CHAINS&&g_edit_slot>=0&&g_edit_slot<UNITS_PER_CHAIN;}
-bool lock_context(){return g_seq_lock_armed&&g_seq_lock_chain==g_edit_chain&&
-    g_seq_lock_step>=0&&g_seq_lock_step<SEQ_STEPS;}
 void release(){gesture={};if(g_drag==Drag::MotorRpm)g_drag=Drag::None;}
 void bind(const M& u){if(bound_chain!=g_edit_chain||bound_slot!=g_edit_slot||bound_unit!=uintptr_t(&u)||bound_modern!=u.modern()){
     release();selected=M::P_RPM;bound_chain=g_edit_chain;bound_slot=g_edit_slot;
     bound_unit=uintptr_t(&u);bound_modern=u.modern();cache_valid=false;
 }}
 q15 edit_value(const M& u,int p){
-    if(lock_context()){
-        const auto& step=g_eng->sequence_pattern(bank()).steps[g_edit_chain][g_seq_lock_step];
-        for(int i=0;i<std::min(int(step.lock_count),SEQ_LOCKS);++i)
-            if(step.locks[i].slot==g_edit_slot&&step.locks[i].param==p)return step.locks[i].value;
-    }
     return u.params[p].base;
 }
-void set_value(M& u,int p,q15 v){ // caller holds guard; full bank never falls back to base
-    if((g_seq_lock_armed&&!lock_context())||p<0||p>=u.num_params||edit_value(u,p)==v)return;
-    if(g_seq_lock_armed){
-        auto& step=g_eng->sequence_pattern(bank()).steps[g_edit_chain][g_seq_lock_step];
-        const int count=std::min(int(step.lock_count),SEQ_LOCKS);int found=-1;
-        for(int i=0;i<count;++i)if(step.locks[i].slot==g_edit_slot&&step.locks[i].param==p){found=i;break;}
-        if(found>=0)step.locks[found].value=v;
-        else {if(count>=SEQ_LOCKS){g_seq_lock_flash=90;return;}
-            step.locks[count]={uint8_t(g_edit_slot),uint8_t(p),v};step.lock_count=uint8_t(count+1);}
-    }else u.params[p].base=v;
+void set_value(M& u,int p,q15 v){ // caller holds guard
+    if(p<0||p>=u.num_params||edit_value(u,p)==v)return;
+    u.params[p].base=v;
     mark_project_mutated();cache_valid=false;
 }
-bool clear_label(int x,int y,int w,int tx,int ty,int p){
-    if(!lock_context()||!hit(tx,ty,x-3,y-4,w+6,15))return false;
-    if(g_eng->remove_step_lock(g_seq_lock_chain,g_seq_lock_step,g_edit_slot,p,bank()))mark_project_mutated();
-    cache_valid=false;return true;
-}
 void begin(M& u,int p,int x){
-    if(g_seq_lock_armed&&!lock_context())return;
     selected=p;gesture={};gesture.engine=g_eng;gesture.unit=uintptr_t(&u);
     gesture.view=g_view;gesture.chain=g_edit_chain;gesture.slot=g_edit_slot;
-    gesture.bank=gesture_bank();gesture.step=g_seq_lock_step;gesture.lock_chain=g_seq_lock_chain;
-    gesture.param=p;gesture.start=x;gesture.value=edit_value(u,p);gesture.locked=g_seq_lock_armed;
+    gesture.bank=g_eng->active_pattern;
+    gesture.param=p;gesture.start=x;gesture.value=edit_value(u,p);
     gesture.modern=u.modern();gesture.note=edit_value(u,M::P_MODE)>=16384;g_drag=Drag::MotorRpm;g_drag_param=p;
 }
 bool owns(const M& u){return gesture.engine==g_eng&&gesture.unit==uintptr_t(&u)&&
     gesture.view==g_view&&gesture.chain==g_edit_chain&&gesture.slot==g_edit_slot&&
-    gesture.bank==gesture_bank()&&gesture.param==selected&&gesture.locked==g_seq_lock_armed&&
+    gesture.bank==g_eng->active_pattern&&gesture.param==selected&&
     gesture.modern==u.modern()&&gesture.note==(edit_value(u,M::P_MODE)>=16384)&&
-    g_eng->chains[g_edit_chain].units[g_edit_slot]==&u&&
-    (!gesture.locked||(lock_context()&&gesture.step==g_seq_lock_step&&gesture.lock_chain==g_seq_lock_chain));}
+    g_eng->chains[g_edit_chain].units[g_edit_slot]==&u;}
 void right(int x,int y,const char* s,u32 color){ui::text(x-ui::text_w(s),y,s,color);}
 int ordinate(q15 sample){return clamp(int(sample)*30/32768,-30,30);}
 void value(char* out,size_t n,int p,q15 v,bool note){
@@ -228,10 +205,9 @@ bool motor_focus_touch_body(M& u,int tx,int ty){
     platform::AudioOut::Guard guard(*g_audio);release();
     if(g_eng->chains[g_edit_chain].units[g_edit_slot]!=&u)return false;
     bind(u);
-    if(ty<26){if(!g_seq_lock_armed&&hit(tx,ty,246,0,38,25)){u.bypass=!u.bypass;mark_project_mutated();}return true;}
-    if(g_seq_lock_armed&&!lock_context())return true;
+    if(ty<26){if(hit(tx,ty,246,0,38,25)){u.bypass=!u.bypass;mark_project_mutated();}return true;}
     if(!u.modern()&&hit(tx,ty,184,27,48,33)){
-        if(!g_seq_lock_armed){M defaults;for(int p=M::P_WIDTH;p<M::P_COUNT;++p)u.params[p]=defaults.params[p];
+        {M defaults;for(int p=M::P_WIDTH;p<M::P_COUNT;++p)u.params[p]=defaults.params[p];
             // Legacy scene padding is not authored PWM/note data. Initialize the
             // appended values on explicit conversion, preserving all six old ones.
             for(auto& scene:g_eng->scenes[g_edit_chain])if(scene.kind[g_edit_slot]==UnitKind::Motor)
@@ -239,7 +215,7 @@ bool motor_focus_touch_body(M& u,int tx,int ty){
             u.set_modern(true);mark_project_mutated();bind(u);}return true;}
     if(hit(tx,ty,8,29,175,31)){
         for(int i=0;i<3;++i)if(hit(tx,ty,source_left[i],29,source_right[i]-source_left[i],31)){
-            selected=M::P_SOURCE; // choice buttons write locks; they are not removal labels
+            selected=M::P_SOURCE; // choice buttons write the stored base
             static constexpr q15 pick[3]={0,16384,32767};set_value(u,selected,pick[i]);return true;}
         return true;
     }
@@ -247,12 +223,11 @@ bool motor_focus_touch_body(M& u,int tx,int ty){
         selected=M::P_MODE; // tapping free must not reveal a stored note-mode base
         set_value(u,selected,tx<269?0:32767);return true;}
     for(int row=0;row<4;++row)for(int col=0;col<2;++col){
-        const int x=col?l::kRight:l::kLeft,y=l::kLabelY[row],p=params[row][col];
+        const int x=col?l::kRight:l::kLeft,p=params[row][col];
         if(!hit(tx,ty,x-6,l::kHitY[row],146,40))continue;
         selected=(p==M::P_RPM&&u.modern()&&edit_value(u,M::P_MODE)>=16384)?M::P_NOTE:p;
         if((!u.modern()&&(p==M::P_SYNC||p==M::P_WIDTH||p==M::P_JITTER_SPEED))||
            (p==M::P_WIDTH&&source_index(edit_value(u,M::P_SOURCE))==0))return true;
-        if(clear_label(x,y,ui::text_w(names[row][col]),tx,ty,selected))return true;
         begin(u,selected,tx);return true;
     }
     return true;
@@ -278,18 +253,17 @@ void motor_focus_capture(){
         bind(u);if(gesture.param>=0&&!owns(u))release();
         frame.valid=true;frame.chain=g_edit_chain;frame.slot=g_edit_slot;frame.selected=selected;
         frame.modern=u.modern();frame.bypass=u.bypass;frame.mute=chain.mute;
-        frame.locked=lock_context();frame.full=frame.locked&&g_seq_lock_flash>0;
         frame.links=focus_mod_links(u);
         for(int i=0;i<UNITS_PER_CHAIN;++i){frame.kinds[i]=chain.units[i]?uint8_t(chain.units[i]->kind):uint8_t(UnitKind::Empty);
             frame.bypassed[i]=chain.units[i]&&chain.units[i]->bypass;}
         for(int p=0;p<M::P_COUNT;++p){if(p<u.num_params){frame.edit[p]=edit_value(u,p);
             frame.live[p]=p==M::P_NOTE?u.params[p].target:u.params[p].effective;frame.base[p]=u.params[p].base;}
-            key.values[p]=frame.locked?frame.edit[p]:frame.live[p];}
+            key.values[p]=frame.live[p];}
         // The mode switch is decided by the actual target, not the slewed continuous value.
-        if(u.modern()&&!frame.locked){key.values[M::P_MODE]=u.params[M::P_MODE].target;
+        if(u.modern()){key.values[M::P_MODE]=u.params[M::P_MODE].target;
             key.values[M::P_NOTE]=u.params[M::P_NOTE].target;}
         key.modern=frame.modern;
-        if(!frame.locked&&u.note_mode()&&u.arp_voice.owner>=0){key.arp_owner=u.arp_voice.owner;
+        if(u.note_mode()&&u.arp_voice.owner>=0){key.arp_owner=u.arp_voice.owner;
             key.arp_offset=u.arp_voice.semitones;key.arp_gate=u.arp_voice.gate;}
         frame.arp_offset=key.arp_offset;frame.arp_owner=key.arp_owner;frame.arp_gate=key.arp_gate;
         const bool tele=g_ui_snapshot.effect_focus_valid&&g_ui_snapshot.effect_focus_kind==uint8_t(UnitKind::Motor)&&
@@ -297,7 +271,7 @@ void motor_focus_capture(){
         frame.audible=tele&&g_ui_snapshot.effect_focus_audible&&!u.bypass&&!chain.mute;
         frame.energy=frame.audible?g_ui_snapshot.generator_energy:0;
     }
-    const bool note=frame.modern&&(frame.locked?frame.edit[M::P_MODE]:key.values[M::P_MODE])>=16384;
+    const bool note=frame.modern&&key.values[M::P_MODE]>=16384;
     for(int p=0;p<M::P_COUNT;++p)value(frame.values[p],sizeof frame.values[p],p,frame.edit[p],note);
     if(!cache_valid||key.modern!=cached_key.modern||key.arp_owner!=cached_key.arp_owner||
        key.arp_offset!=cached_key.arp_offset||key.arp_gate!=cached_key.arp_gate||
@@ -317,7 +291,7 @@ void motor_focus_draw(const M&){
     if(frame.modern){const bool note=frame.edit[M::P_MODE]>=16384;
         ui::text(224,38,"free",note?m::ghost():m::spot());ui::text(276,38,"note",note?m::spot():m::ghost());
         ui::rect(note?276:224,52,note?25:25,1,m::spot());}
-    else ui::text(184,38,"extend",frame.locked?m::ghost():m::spot());
+    else ui::text(184,38,"extend",m::spot());
     const bool note=frame.modern&&frame.edit[M::P_MODE]>=16384;
     for(int row=0;row<4;++row)for(int col=0;col<2;++col){
         const int x=col?l::kRight:l::kLeft,y=l::kLabelY[row],p=params[row][col];
@@ -333,8 +307,7 @@ void motor_focus_draw(const M&){
         module_fader::horizontal(x,x+l::kRailLength,l::kRailY[row],edit,live,
             {bool(frame.links&(1u<<shown)),disabled,frame.bypass||frame.mute});
     }
-    if(frame.locked)m::footer(320,frame.full?"lock full":"p-lock / name: remove","b back");
-    else if(frame.arp_owner>=0&&note){std::snprintf(text,sizeof text,"arp %+dst",int(frame.arp_offset));
+    if(frame.arp_owner>=0&&note){std::snprintf(text,sizeof text,"arp %+dst",int(frame.arp_offset));
         m::footer(320,text,"l: mod >");}
     else m::footer(320,frame.mute?"muted":frame.bypass?"bypassed":"outline base / fill live","l: mod >");
 }
@@ -354,7 +327,7 @@ bool motor_focus_draw_top(){
     }
     ui::line(32,58,42,58,m::ghost());ui::text(47,54,"raw",m::ghost());
     ui::line(94,58,104,58,m::spot());ui::text(110,54,"out",m::spot());
-    const uint32_t sync=M::sync_ratio_q16(frame.locked?frame.edit[M::P_SYNC]:frame.live[M::P_SYNC]);
+    const uint32_t sync=M::sync_ratio_q16(frame.live[M::P_SYNC]);
     if(frame.modern&&sync>65536){const uint32_t centi=uint32_t((uint64_t(sync)*100+32768)/65536);
         std::snprintf(text,sizeof text,"sync %u.%02ux%s",unsigned(centi/100),unsigned(centi%100),
             frame.sync_limited?" limited":"");}
@@ -390,7 +363,7 @@ bool motor_focus_draw_top(){
     const char* label=p==M::P_NOTE?"note":p==M::P_SYNC?"sync":p==M::P_JITTER_SPEED?"jitter hz":
         p==M::P_WIDTH?"width":p==M::P_MODE?"mode":p==M::P_SOURCE?"source":
         p==M::P_RPM?"rate":p==M::P_JITTER?"jitter":p==M::P_RESONANCE?"res":p==M::P_GAIN?"gain":"load";
-    std::snprintf(text,sizeof text,"%s / %s %s",frame.locked?"lock model":"reset model",label,frame.values[p]);
+    std::snprintf(text,sizeof text,"reset model / %s %s",label,frame.values[p]);
     ui::text(m::kLeft,m::kTextY,text,m::ghost());
     if(frame.nominal_note[0])std::snprintf(text,sizeof text,"%s / %u.%uhz nominal",frame.nominal_note,
         unsigned(frame.nominal/1000),unsigned((frame.nominal%1000)/100));

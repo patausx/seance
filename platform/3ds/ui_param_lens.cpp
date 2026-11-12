@@ -9,7 +9,10 @@
 #include "editor_style.h"
 #include "fm_context.h"
 #include "module_inspector.h"
+#include "mod_route_ui.h"
+#include "ui_patchbay.h"
 #include "play_readout.h"
+#include "osc_readout.h"
 #include "../../core/engine/tilt_eq.h"
 #include "../../core/ui/draw.h"
 #include <cstdio>
@@ -24,6 +27,9 @@ uintptr_t opened_unit = 0;
 enum class Touch { None, Base, Depth };
 Touch touch = Touch::None;
 ParamInspector detail;
+bool relic_choices=false;
+char typed_route[40]={};
+bool typed_contributing=false;
 int count = 0;
 constexpr int X = 24, W = 272;
 // Every module shares a no-jump lens gesture. Musical units/neutral values stay
@@ -33,6 +39,8 @@ bool fine_held = false, drawn_fine = false, base_busy = false;
 struct EditLaw { int fine_divisor=8; q15 neutral=0; const char* label="min"; } drawn_law;
 bool modern_tilt = true, legacy_tilt_zero = false;
 bool modern_play = true, quantize_play = false;
+MusicalScale drawn_scale{};
+bool osc_clean = true, osc_quantize = false;
 PlayUnit::PitchMode play_pitch_mode=PlayUnit::PitchMode::Legacy;
 bool modern_reverb = true; // frozen with detail; old projects keep feedback readouts
 int relative_x = 0, relative_last_x = 0, relative_param = -1, relative_divisor = 1;
@@ -41,7 +49,7 @@ uintptr_t relative_unit = 0;
 
 bool context() {
     return g_eng && g_audio && g_view == View::Chains &&
-           g_overlay == Overlay::Editor && !g_seq_lock_armed &&
+           g_overlay == Overlay::Editor &&
            g_edit_chain >= 0 && g_edit_chain < NUM_CHAINS &&
            g_edit_slot >= 0 && g_edit_slot < UNITS_PER_CHAIN;
 }
@@ -52,6 +60,7 @@ int visible_count(const Unit& u) {
     return u.kind==UnitKind::Grain && !static_cast<const GrainUnit&>(u).clean ? GrainUnit::P_SCAN : u.num_params;
 }
 bool lens_param_available(const Unit& u,int p) {
+    if(u.kind==UnitKind::Rule&&p==RuleUnit::P_RULE)return !static_cast<const RuleUnit&>(u).config().phrase;
     return u.kind!=UnitKind::Scratch || ScratchUnit::parameter_available(static_cast<const ScratchUnit&>(u).mode,p);
 }
 int next_param(const Unit& u,int delta) {
@@ -63,7 +72,7 @@ int next_param(const Unit& u,int delta) {
     return selected;
 }
 bool recorder_busy(const Unit& u) {
-    if(u.kind==UnitKind::Paul)return g_eng->recording_active_or_pending();
+    if(u.kind==UnitKind::Rot||u.kind==UnitKind::Rule||u.kind==UnitKind::Pent||u.kind==UnitKind::Paul)return g_eng->recording_active_or_pending();
     return u.kind==UnitKind::Recorder && (static_cast<const RecUnit&>(u).writer_open() ||
         g_eng->recorder_record_pending(g_edit_chain,g_edit_slot) ||
         g_eng->chain_record_pending_start(g_edit_chain) || g_eng->chain_record_pending_stop(g_edit_chain));
@@ -105,6 +114,10 @@ EditLaw edit_law(const Unit& u,int p) {
        (p==RingUnit::P_NOTE||p==RingUnit::P_FINE))law.fine_divisor=16;
     if(u.kind==UnitKind::Paul){if(p==PaulUnit::P_PITCH)law.fine_divisor=16;
         if(p==PaulUnit::P_GAIN){law.neutral=32767;law.label="unity";}}
+    if(u.kind==UnitKind::Rot){if(p==RotUnit::P_PITCH)law.fine_divisor=16;
+        if(p==RotUnit::P_LEVEL){law.neutral=32767;law.label="unity";}}
+    if(u.kind==UnitKind::Pent){if(p==PentUnit::P_ROOT||p>=PentUnit::P_RATIO_A)law.fine_divisor=16;
+        if(p==PentUnit::P_GAIN){law.neutral=32767;law.label="unity";}}
     if(u.kind==UnitKind::Scratch && p==ScratchUnit::P_GAIN){law.neutral=32767;law.label="unity";}
     if(u.kind==UnitKind::Shift && p==ShiftUnit::P_SHIFT)law.fine_divisor=32;
     if((u.kind==UnitKind::SamplePlayer && p==PlayUnit::P_SPEED) ||
@@ -164,8 +177,9 @@ void change_value(int x) {
         const q15 next = u->kind==UnitKind::SamplePlayer&&selected==PlayUnit::P_NOTE && raw!=relative_value ?
             musical_note::encode(musical_note::decode(raw)) : raw;
         if (p.base != next) {
-            p.base = next;
-            mark_project_mutated();
+            if(u->kind==UnitKind::Rule&&selected==RuleUnit::P_RULE){
+                if(!static_cast<RuleUnit*>(u)->config().phrase && static_cast<RuleUnit*>(u)->edit_rule(RuleUnit::rule_number(next)))mark_project_mutated();
+            }else {p.base = next;mark_project_mutated();}
         }
     } else if (touch == Touch::Depth) {
         const q15 next = value_at(true);
@@ -199,6 +213,10 @@ bool open_selected(bool held) {
     if(u->kind==UnitKind::Recorder && selected!=RecUnit::P_LEN && selected!=RecUnit::P_MON) selected=RecUnit::P_LEN;
     select_module(*u,selected);
     // Opening never edits a parameter or converts a legacy module.
+    relic_focus_release();
+    rot_focus_release();
+    rule_focus_release();
+    pent_focus_release();
     paul_focus_release();
     scratch_focus_release();
     play_focus_release(); osc_focus_release(); fm_focus_release(); vca_focus_release();
@@ -355,7 +373,7 @@ bool param_lens_input(u32& down, u32 held, u32 up, bool blocked) {
 void param_lens_capture() {
     // Validate/synchronize selection before ANY ordinary module capture. The
     // layer no longer substitutes a diagnostic page for those frozen surfaces.
-    detail = {}; count = 0;
+    detail = {}; count = 0;relic_choices=false;typed_route[0]=0;typed_contributing=false;
     if (opened) {
         if (!context() || chain != g_edit_chain || slot != g_edit_slot) {
             param_lens_cancel();
@@ -375,11 +393,17 @@ void param_lens_capture() {
                     play_pitch_mode=u->kind==UnitKind::SamplePlayer?static_cast<const PlayUnit*>(u)->pitch_mode():PlayUnit::PitchMode::Legacy;
                     modern_reverb=u->kind!=UnitKind::Reverb || static_cast<const ReverbUnit*>(u)->modern();
                     quantize_play=u->kind==UnitKind::SamplePlayer && static_cast<const PlayUnit*>(u)->pitch_quantize;
+                    drawn_scale=g_eng->project_scale();
+                    osc_clean=u->kind!=UnitKind::Osc || static_cast<const OscUnit*>(u)->clean;
+                    osc_quantize=u->kind==UnitKind::Osc && static_cast<const OscUnit*>(u)->pitch_quantize;
                     if (selected < 0 || selected >= count || !lens_param_available(*u,selected)) selected = 0;
                     if(u->kind==UnitKind::Recorder && selected!=RecUnit::P_LEN && selected!=RecUnit::P_MON)selected=RecUnit::P_LEN;
                     drawn_law=edit_law(*u,selected);
                     select_module(*u,selected);
                     g_eng->capture_param_inspector(chain,slot,selected,detail);
+                    // Typed wire tags may survive in historical records, but
+                    // the retired module never offers/captures live material ports.
+                    if(detail.relic_source)mod_route_tag(typed_route,sizeof typed_route,detail);
                 }
             }
             if(invalid)param_lens_cancel();
@@ -388,11 +412,15 @@ void param_lens_capture() {
     // Each display capture owns its existing guard; response/model work stays
     // outside the lens guard. These are the same ordinary module DTOs, not an
     // extra screenshot/cache/texture or a second engine snapshot.
-    random_capture();
-    reverb_focus_capture();
-    ghost_focus_capture();
-    chorus_focus_capture();
-    delay_focus_capture();
+    // With an editor open these five share one entry (module_capture_runs); without
+    // one none of them enters the guard. random_capture has no kind of its own.
+    static constexpr ModuleCapture captures[] = {
+        {UnitKind::Count, random_capture}, {UnitKind::Reverb, reverb_focus_capture},
+        {UnitKind::Ghost, ghost_focus_capture}, {UnitKind::Chorus, chorus_focus_capture},
+        {UnitKind::Delay, delay_focus_capture},
+    };
+    if (module_capture_visible_kind() != UnitKind::Empty) module_capture_runs(captures, sizeof captures / sizeof captures[0]);
+    else for (const auto& c : captures) c.capture();
     module_inspector_capture();
 }
 
@@ -404,7 +432,7 @@ bool param_lens_touch_down(int x, int y) {
         if (context()) {
             platform::AudioOut::Guard guard(*g_audio);
             const Unit* u = unit();
-            if (u && (u->kind == UnitKind::SamplePlayer || u->kind == UnitKind::Comp || u->kind == UnitKind::Paul || u->kind == UnitKind::Scratch)) return false;
+            if (u && (u->kind == UnitKind::SamplePlayer || u->kind == UnitKind::Comp || u->kind == UnitKind::Paul || u->kind == UnitKind::Scratch || u->kind == UnitKind::Pent)) return false;
         }
         return open_selected(false);
     }
@@ -429,9 +457,12 @@ bool param_lens_touch_down(int x, int y) {
         }
         return true;
     }
+    if(y>=202&&y<226&&x>=14&&x<214&&relic_choices&&u->params[selected].src!=ModSource::EnvFollow){
+        const int c=g_edit_chain,s=g_edit_slot,p=selected;param_lens_cancel();relic_focus_release();patchbay_enter_target(c,s,p);return true;
+    }
     Param& p = u->params[selected];
     if (hit(x,y,260,46,46,28)) {
-        if(p.src!=ModSource::None){p.mod_enabled=!p.mod_enabled;mark_project_mutated();}
+        if(p.src!=ModSource::None||p.relic_source){p.mod_enabled=!p.mod_enabled;mark_project_mutated();}
         return true;
     }
     auto start = [&](Touch which) {
@@ -445,7 +476,13 @@ bool param_lens_touch_down(int x, int y) {
     if (hit(x,y,14,119,292,47)) { start(Touch::Depth); return true; }
     if (x >= 8 && x < 318 && y >= 177 && y < 201) {
         const ModSource next = lens_source((x - 8) / 31);
-        if (p.src != next || !p.mod_enabled) { p.src = next; p.mod_enabled=true; mark_project_mutated(); }
+        if (p.src != next || p.relic_source || !p.mod_enabled) {
+            const q15 depth=p.mod_depth;
+            if(g_eng->replace_mod_route(g_edit_chain,g_edit_slot,selected,SourceRef::from_legacy(next),depth,true)){
+                if(next==ModSource::None)p.mod_depth=depth; // retained historical lens off amount
+                mark_project_mutated();
+            }
+        }
     } else if (p.src == ModSource::EnvFollow && x >= 84 && x < 212 && y >= 201 && y < 226) {
         if (g_eng->set_env_follow_source((x - 84) / 32)) mark_project_mutated();
     } else if (p.src == ModSource::EnvFollow && x >= 224 && x < 314 && y >= 201 && y < 226) {
@@ -483,9 +520,9 @@ void param_lens_draw_bottom() {
     if(random_target && random_frame.valid){random_draw_panel();return;}
     namespace m = menu_style;
     const UnitKind kind=UnitKind(detail.kind);
-    const bool route_on=detail.source!=ModSource::None && detail.mod_enabled;
+    const bool route_on=(detail.source!=ModSource::None || detail.relic_source) && detail.mod_enabled;
     const bool env=detail.source==ModSource::EnvFollow;
-    const int bottom=env?226:205;
+    const int bottom=env||relic_choices||detail.relic_source?226:205;
     // Select the lower paper coordinate space without painting it. The editor
     // has already drawn its ordinary frozen body. Disjoint veils avoid applying
     // both alphas to the panel; native paper/gradient and theme fades stay exact.
@@ -498,10 +535,13 @@ void param_lens_draw_bottom() {
     const u32 link_ink=route_on?m::spot():m::ghost();
     label(218,55,"rand",m::ghost());
     label(272,55,"link",link_ink);
-    if(detail.source!=ModSource::None)ui::rect(272,66,22,1,link_ink);
+    if(detail.source!=ModSource::None||detail.relic_source)ui::rect(272,66,22,1,link_ink);
 
     char value[24];
-    if(kind==UnitKind::Osc)osc_focus_value_text(value,sizeof value,selected,detail.base);
+    if(kind==UnitKind::Osc){
+        if(!osc_readout::value_text(value,sizeof value,selected,detail.base,osc_clean,osc_quantize,drawn_scale))
+            module_inspector_value_text(value,sizeof value,kind,selected,detail.base);
+    }
     else if(kind==UnitKind::Fm) {
         char number[20];fm_context_value_text(number,sizeof number,selected,detail.base);
         std::snprintf(value,sizeof value,"%s%s",number,
@@ -510,11 +550,11 @@ void param_lens_draw_bottom() {
     else if(kind==UnitKind::Ghost)ghost_focus_value_text(value,sizeof value,selected,detail.base);
     else if(kind==UnitKind::Vca)vca_focus_value_text(value,sizeof value,selected,detail.base);
     else if(kind==UnitKind::Stranular)stranular_focus_value_text(value,sizeof value,selected,detail.base);
-    else if(kind==UnitKind::SamplePlayer)play_readout::value_text(value,sizeof value,selected,detail.base,modern_play,quantize_play,play_pitch_mode);
+    else if(kind==UnitKind::SamplePlayer)play_readout::value_text(value,sizeof value,selected,detail.base,modern_play,quantize_play,play_pitch_mode,drawn_scale);
     else if(kind==UnitKind::Tilt)tilt_focus_value_text(value,sizeof value,selected,detail.base,2);
     else module_inspector_value_text(value,sizeof value,kind,selected,detail.base,
         kind!=UnitKind::Vca||vca_focus_flexible(),kind==UnitKind::Delay&&delay_focus_modern(),
-        modern_tilt,legacy_tilt_zero,modern_play,quantize_play);
+        modern_tilt,legacy_tilt_zero,modern_play,quantize_play,drawn_scale);
     label(X,80,base_busy?"base / busy":"base",!base_busy&&drawn_fine?m::spot():m::ghost());
     label(296-ui::text_w(value),80,value,base_busy?m::ghost():m::ink());
     module_fader::horizontal(X,X+W-1,102,position(detail.base,detail.bipolar,X,W),
@@ -532,7 +572,11 @@ void param_lens_draw_bottom() {
         if(on)ui::rect(left,y+h-2,std::max(1,ui::text_w(text)-2),1,color);
     };
     static const char* sources[]={"off","a","b","c","d","e","f","g","h","env"};
-    for(int i=0;i<10;++i)word(8+i*31,177,29,23,sources[i],detail.source==lens_source(i));
+    for(int i=0;i<10;++i)word(8+i*31,177,29,23,sources[i],!detail.relic_source&&detail.source==lens_source(i));
+    if(!env&&(relic_choices||detail.relic_source)){
+        char tag[64];std::snprintf(tag,sizeof tag,"%s%s >",detail.relic_source?typed_route:"relic ports",detail.relic_source?(!detail.mod_enabled?" / muted":typed_contributing?"":" / suspended"):"");
+        label(24,208,tag,detail.relic_source&&route_on&&typed_contributing?m::spot():m::ghost());
+    }
     if(env) {
         label(24,208,"env all",m::ghost()); // the existing global follower, not per-route chains
         for(int i=0;i<4;++i){char n[2]={(char)('1'+i),0};word(84+i*32,201,30,24,n,detail.env_chain==i);}
@@ -544,7 +588,13 @@ bool param_lens_draw_top() {
     if (!opened || !detail.valid) return false;
     // Compatibility entry for existing callers/captures. The ordinary selected
     // module owns the upper surface; there is no second modulation dashboard.
-    return fm_context_draw_top() || module_inspector_draw_top() ||
+    const bool drawn=fm_context_draw_top() || module_inspector_draw_top() ||
         stranular_focus_draw_top() || reverb_focus_draw_top() || ghost_focus_draw_top();
+    if(drawn&&detail.relic_source){namespace m=editor_style;char text[64];
+        m::paper_rect(0,m::kTextY,400,12);
+        std::snprintf(text,sizeof text,"%.25s > live %d / depth %+d%%%s",typed_route,int(detail.effective),int(detail.depth)*100/32767,!detail.mod_enabled?" muted":typed_contributing?"":" suspended");
+        m::caption(m::kLeft,m::kTextY,372,text,detail.mod_enabled&&typed_contributing?m::spot():m::ghost());
+    }
+    return drawn;
 }
 }

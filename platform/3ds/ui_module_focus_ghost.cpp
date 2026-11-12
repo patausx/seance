@@ -32,9 +32,8 @@ constexpr const char* descriptions[8]={"nominal first well","memory feedback","c
 
 int selected=G::P_TONE;
 bool note_steps=true; // input preference only; toggle never retunes
-int origin_x=0,origin_y=0,last_x=0,last_y=0,bound_chain=-1,bound_slot=-1,origin_step=-1,origin_lock_chain=-1;
+int origin_x=0,origin_y=0,last_x=0,last_y=0,bound_chain=-1,bound_slot=-1;
 int origin_bank=-1,origin_param=-1;
-bool origin_locked=false;
 View origin_view=View::Chains;
 Drag origin_drag=Drag::None;
 Engine* bound_engine=nullptr;
@@ -44,7 +43,7 @@ q15 origin_value=0;
 
 struct Frame {
     bool mute=false;
-    bool valid=false,bypass=false,long_tail=false,note_steps=true,held=false,locked=false,lock_full=false;
+    bool valid=false,bypass=false,long_tail=false,note_steps=true,held=false;
     int8_t chain=-1,slot=-1,selected=0;
     q15 base[8]={},edit[8]={},live[8]={};
     ModSource source[8]={};
@@ -65,13 +64,13 @@ int ux(q15 v,int a,int b){return a+(uint32_t)(uint16_t)v*(b-a)/32767;}
 int uy(q15 v,int a,int b){return b-(uint32_t)(uint16_t)v*(b-a)/32767;}
 bool context(const G& u) {
     return g_eng&&g_audio&&!param_lens_is_open()&&g_overlay==Overlay::Editor&&
-        (g_view==View::Chains||(g_view==View::Sequencer&&g_seq_lock_armed))&&
+        g_view==View::Chains&&
         g_edit_chain>=0&&g_edit_chain<NUM_CHAINS&&g_edit_slot>=0&&g_edit_slot<UNITS_PER_CHAIN&&
         g_eng->chains[g_edit_chain].units[g_edit_slot]==&u;
 }
 bool capture_context() {
     return g_eng&&g_audio&&g_overlay==Overlay::Editor&&
-        (g_view==View::Chains||(g_view==View::Sequencer&&g_seq_lock_armed))&&
+        g_view==View::Chains&&
         g_edit_chain>=0&&g_edit_chain<NUM_CHAINS&&g_edit_slot>=0&&g_edit_slot<UNITS_PER_CHAIN;
 }
 bool ours(){return g_drag>=Drag::GhostTone&&g_drag<=Drag::GhostRate;}
@@ -85,12 +84,10 @@ void bind(const G& u){
         bound_chain=g_edit_chain;bound_slot=g_edit_slot;
     }
 }
-bool lock_context(){return g_seq_lock_armed && g_seq_lock_chain==g_edit_chain && g_seq_lock_step>=0 && g_seq_lock_step<SEQ_STEPS;}
-q15 edit_value(const G&u,int p){return lock_context()?seq_display_value(g_edit_slot,p,u.params[p].base):u.params[p].base;}
+q15 edit_value(const G&u,int p){return u.params[p].base;}
 void set_param(G&u,int p,q15 v){
     if(edit_value(u,p)==v)return;
-    if(g_seq_lock_armed){if(lock_context())seq_record_lock(g_edit_slot,p,v);}
-    else{u.params[p].base=v;mark_project_mutated();}
+    u.params[p].base=v;mark_project_mutated();
 }
 bool frozen(const G&u){
     // Current guarded owner, never another unit's stale slot-only UI snapshot.
@@ -99,8 +96,7 @@ bool frozen(const G&u){
 bool owns(const G&u){
     return context(u) && origin_engine==g_eng && origin_unit==uintptr_t(&u) && origin_view==g_view &&
         bound_chain==g_edit_chain && bound_slot==g_edit_slot && origin_bank==g_eng->active_pattern &&
-        origin_locked==g_seq_lock_armed && selected==origin_param && g_drag==origin_drag &&
-        (!origin_locked || (lock_context() && origin_step==g_seq_lock_step && origin_lock_chain==g_seq_lock_chain));
+        selected==origin_param && g_drag==origin_drag;
 }
 bool dormant(const G&u,int p){return frozen(u)&&p!=G::P_FREEZE&&p!=G::P_MIX;}
 int root_note(q15 tone){return(int)std::lround(69+12*std::log2(G::root_millihz(tone,0)/440000.0));}
@@ -113,7 +109,6 @@ const char* route_name(ModSource s){static const char* names[]={"a","b","c","d",
 void target_value(int p,q15 v,int&x,int&y){switch(p){case G::P_TONE:x=ux(v,TONE_X0,TONE_X1);y=TONE_Y;break;case G::P_DECAY:x=DECAY_X;y=uy(v,DECAY_Y0,DECAY_Y1);break;case G::P_SMEAR:x=ux(v,SMEAR_X0,SMEAR_X1);y=SMEAR_Y;break;case G::P_DRIFT:x=DRIFT_X;y=uy(v,DRIFT_Y0,DRIFT_Y1);break;case G::P_FREEZE:x=FREEZE_X;y=FREEZE_Y;break;case G::P_MIX:x=MIX_X;y=uy(v,MIX_Y0,MIX_Y1);break;case G::P_FINE:x=150+(int32_t)v*60/32767;y=76;break;case G::P_RATE:x=ux(v,64,250);y=220;break;default:x=160;y=117;}}
 void begin_drag(G&u,int p,Drag d,int x,int y){
     origin_x=last_x=x;origin_y=last_y=y;origin_value=edit_value(u,p);
-    origin_step=g_seq_lock_step;origin_lock_chain=g_seq_lock_chain;origin_locked=g_seq_lock_armed;
     origin_engine=g_eng;origin_unit=uintptr_t(&u);origin_view=g_view;origin_bank=g_eng->active_pattern;
     origin_param=p;origin_drag=g_drag=d;
 }
@@ -222,8 +217,7 @@ void draw_bottom_frame(const Frame&f){
     const char* freeze=f.freeze==32767&&f.held?"held":f.freeze>0?(f.held?"seal":"exit"):f.held?"on":"off";
     ui::text(160-ui::text_w(freeze)/2,122,freeze,f.held?m::spot():m::ghost());
     if(f.freeze==32767 && f.held)ui::line(145,135,175,135,m::spot());
-    if(f.locked)ui::text(m::kLeft,m::kTextY,f.lock_full?"lock full / b back":"p-lock / b back",m::spot());
-    else {ui::text(m::kLeft,m::kTextY,"b back",m::ghost());right(m::right_edge(320),m::kTextY,"l: mod >",m::spot());}
+    ui::text(m::kLeft,m::kTextY,"b back",m::ghost());right(m::right_edge(320),m::kTextY,"l: mod >",m::spot());
 }
 void draw_top_frame(const Frame&f){
     m::paper(400);module_heading::header(UnitKind::Ghost,m::spot());int x=14;
@@ -241,7 +235,7 @@ void draw_top_frame(const Frame&f){
     m::heading(14,module_heading::kDetailY,names[f.selected],m::spot());ui::text(14,79,descriptions[f.selected],m::ghost());
     const bool dormant=f.held && f.selected!=G::P_MIX && f.selected!=G::P_FREEZE;
     frame_value_text(value,sizeof value,f,f.edit[f.selected],f.edit[G::P_FINE]);hero_value(value,dormant);
-    std::snprintf(label,sizeof label,"%s / %s",dormant?"held":f.locked?"lock":"base",f.long_tail?"long":"old");
+    std::snprintf(label,sizeof label,"%s / %s",dormant?"held":"base",f.long_tail?"long":"old");
     ui::text(14,146,label,m::ghost());
     const auto& p=f.param;
     if(p.source==ModSource::None)std::snprintf(label,sizeof label,"mod off");
@@ -285,7 +279,6 @@ void ghost_focus_capture(){
         frame.valid=true;frame.chain=g_edit_chain;frame.slot=g_edit_slot;frame.selected=selected;
         frame.bypass=u.bypass;frame.mute=g_eng->chains[g_edit_chain].mute;
         frame.long_tail=u.long_tail;frame.note_steps=note_steps;
-        frame.locked=g_seq_lock_armed;frame.lock_full=g_seq_lock_flash>0;
         // Capture one guarded unit instant, including a just-replaced unit.
         // A stale slot-only mailbox must not lend it the previous unit's memory.
         for(int p=0;p<8;++p){
@@ -310,10 +303,9 @@ void ghost_focus_capture(){
 
 bool ghost_focus_touch_body(G&u,int tx,int ty){
     release();if(!context(u))return false;platform::AudioOut::Guard guard(*g_audio);bind(u);
-    if(g_seq_lock_armed && !lock_context())return true;
     if(ty<22&&hit(tx,ty,200,3,40,18)){u.bypass=!u.bypass;mark_project_mutated();return true;}
     if(hit(tx,ty,126,0,61,22)){note_steps=!note_steps;return true;}
-    if(hit(tx,ty,243,0,38,22)){g_drag=Drag::None;if(g_seq_lock_armed||frozen(u))return true;if(u.visual_freeze()>0||u.params[G::P_FREEZE].base>16384||u.params[G::P_FREEZE].effective>16384)return true;u.long_tail=!u.long_tail;mark_project_mutated();return true;}
+    if(hit(tx,ty,243,0,38,22)){g_drag=Drag::None;if(frozen(u))return true;if(u.visual_freeze()>0||u.params[G::P_FREEZE].base>16384||u.params[G::P_FREEZE].effective>16384)return true;u.long_tail=!u.long_tail;mark_project_mutated();return true;}
     if(hit(tx,ty,82,24,150,18)){selected=G::P_TONE;if(!dormant(u,G::P_TONE))set_param(u,G::P_TONE,note_tone(root_note(edit_value(u,0))+(tx<157?-1:1)));return true;}
     if(hit(tx,ty,213,62,27,22)){selected=G::P_FINE;if(!dormant(u,G::P_FINE))set_param(u,G::P_FINE,0);return true;}
     for(const auto& c:CORRIDORS)if(hit(tx,ty,c.x,c.y,c.w,c.h)){

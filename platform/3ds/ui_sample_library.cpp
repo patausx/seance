@@ -14,6 +14,7 @@
 #include "../../core/synth/wav_writer.h"
 #include "../../core/ui/draw.h"
 #include <cstdio>
+#include <cerrno>
 #include <cstring>
 #include <utility>
 #include <type_traits>
@@ -30,7 +31,10 @@ int sample_slot_for_unit(const Unit* unit) {
 
 void set_sample_slot_for_unit(Unit* unit, int slot) {
     if (!unit || unit->kind == UnitKind::Recorder || (g_eng && g_eng->recording_active_or_pending())) return;
-    if (unit->kind == UnitKind::Paul && g_seq_lock_armed) return;
+    if (unit->kind == UnitKind::Rot) for(int p=0;p<unit->num_params;++p) {
+        const auto& value=unit->params[p];
+        if(value.temp_override || value.performance_override || value.audition_override || value.step_lock_override) return;
+    }
     const int previous = sample_slot_for_unit(unit);
     if (slot < 0) slot = trackr::synth::SAMPLE_BANK_SIZE - 1;
     if (slot >= trackr::synth::SAMPLE_BANK_SIZE) slot = 0;
@@ -49,6 +53,25 @@ void set_sample_slot_for_unit(Unit* unit, int slot) {
         auto* paul = static_cast<PaulUnit*>(unit);
         paul->sample_slot = slot;
         paul->reset(); // also clears an old consumed FFT after source hydration
+    }
+    else if (unit->kind == UnitKind::Rot) {
+        rot_focus_release();
+        auto* rot = static_cast<RotUnit*>(unit);
+        rot->sample_slot = slot;
+        rot->reset(); // same-slot hydration also discards the old private tape
+    }
+    else if (unit->kind == UnitKind::Rule) {
+        rule_focus_release();
+        auto* rule = static_cast<RuleUnit*>(unit);
+        rule->sample_slot = slot;
+        const int known = trackr::synth::SampleBank::instance().slot(slot).root_note;
+        auto config = rule->config();
+        if (known >= 0 && known <= 120 && config.source_root != known) {
+            config.source_root = uint8_t(known);
+            mark_project_mutated();
+        }
+        rule->set_config(config);
+        rule->reset(); // same-slot hydration also retires old readers/queued row
     }
     else if (unit->kind == UnitKind::Scratch) {
         if (g_eng) g_eng->cancel_scratch_gesture();
@@ -282,14 +305,18 @@ static void scan_sample_file_page_metadata() {
             g_sample_file_info[i] = read_wav_duration(browser_entries[i].path);
 }
 
-static bool unique_recording_path(int patch, int chain, int unit, char* out, size_t size) {
+static bool unique_recording_path(int patch, int chain, int unit, char* out, size_t size,
+                                  fileio::NewFileReservation& reservation) {
     for (unsigned sequence = 1; sequence <= 9999; ++sequence) {
         const int n = snprintf(out, size, "%s/p%02d_c%d_u%d_%03u.wav",
                                RECORDING_DIR, patch, chain, unit, sequence);
         if (n < 0 || n >= (int)size) return false;
         FILE* existing = fopen(out, "rb");
-        if (!existing) return true;
-        fclose(existing);
+        if (existing) { if (fclose(existing) != 0) return false; continue; }
+        if (errno != ENOENT) return false; // EIO/EACCES is not absence
+        const auto result = reservation.reserve(out);
+        if (result == fileio::ReserveResult::Ok) return true;
+        if (result != fileio::ReserveResult::Occupied) return false;
     }
     return false;
 }
@@ -368,7 +395,8 @@ void export_current_sample() {
     }
 
     char path[192];
-    if (!unique_recording_path(g_patch_slot, g_edit_chain, g_edit_slot, path, sizeof path)) {
+    fileio::NewFileReservation reservation;
+    if (!unique_recording_path(g_patch_slot, g_edit_chain, g_edit_slot, path, sizeof path, reservation)) {
         g_export_is_load = false; g_export_ok = false; g_export_flash = 120; return;
     }
     g_export_is_load = false;
@@ -377,7 +405,7 @@ void export_current_sample() {
     int16_t scratch[2048 * 2];
     g_export_ok = trackr::synth::save_wav_stream(
         path, context.channels, context.frames, ENGINE_SR, scratch, 2048,
-        read_export_frames, &context) == trackr::synth::WavSaveResult::Ok;
+        read_export_frames, &context, &reservation) == trackr::synth::WavSaveResult::Ok;
     if (g_export_ok) {
         platform::AudioOut::Guard g(*g_audio);
         if (!export_owner_current(context) ||
@@ -403,11 +431,31 @@ struct SampleCommitToken {
     bool target_clipboard = false;
     uint32_t take_generation = 0;
     uint64_t session_token = 0, state_token = 0;
+    // ROT's two-phase load must not cross Engine/audio/lifecycle/physical source
+    // ownership, even when a replacement happens to reuse slot generations.
+    Engine* rot_engine = nullptr;
+    platform::AudioOut* rot_audio = nullptr;
+    uint32_t rot_epoch = 0, rot_original_generation = 0;
+    uintptr_t rot_original_pcm = 0, rot_target_pcm = 0;
+    size_t rot_original_elements = 0, rot_target_elements = 0;
+    uint32_t rot_original_frames = 0, rot_target_frames = 0;
+    uint8_t rot_original_channels = 0, rot_target_channels = 0;
+    int rot_chain = -1, rot_slot = -1;
 };
+
+static bool rot_browser_available(const Unit& unit) {
+    if (unit.kind != UnitKind::Rot) return true;
+    if (!g_audio || g_eng->recording_active_or_pending()) return false;
+    for (int p=0; p<unit.num_params; ++p) {
+        const auto& value=unit.params[p];
+        if(value.temp_override || value.performance_override || value.audition_override || value.step_lock_override) return false;
+    }
+    return true;
+}
 
 static bool same_refs(const SampleSlotRefs& a, const SampleSlotRefs& b) {
     return a.play == b.play && a.grain == b.grain && a.scratch == b.scratch && a.paul == b.paul &&
-        a.rec == b.rec && a.bounce == b.bounce && a.external == b.external;
+        a.relic == b.relic && a.rule == b.rule && a.rot == b.rot && a.rec == b.rec && a.bounce == b.bounce && a.external == b.external;
 }
 
 static bool capture_sample_token(Unit* owner, int target_slot, SampleCommitToken& token) {
@@ -416,6 +464,7 @@ static bool capture_sample_token(Unit* owner, int target_slot, SampleCommitToken
     const int original = sample_slot_for_unit(owner);
     if (original < 0) return false;
     if (g_eng->play_editor_busy()) return false;
+    if (!rot_browser_available(*owner)) return false;
     if (owner->kind == UnitKind::Recorder && static_cast<RecUnit*>(owner)->writer_open()) return false;
     token = {};
     token.owner = owner;
@@ -426,6 +475,17 @@ static bool capture_sample_token(Unit* owner, int target_slot, SampleCommitToken
     token.target_generation = bank.generation(target_slot);
     token.target_refs = g_eng->sample_slot_refs(target_slot, owner);
     token.target_clipboard = sample_ownership::clipboard_holds(target_slot, g_clip_unit);
+    if(owner->kind == UnitKind::Rot) {
+        if(unsigned(original)>=trackr::synth::SAMPLE_BANK_SIZE) return false;
+        const auto& from=bank.slot(original);const auto& target=bank.slot(target_slot);
+        token.rot_engine=g_eng;token.rot_audio=g_audio;token.rot_epoch=g_audio->lifecycle_epoch();
+        token.rot_chain=g_edit_chain;token.rot_slot=g_edit_slot;
+        token.rot_original_generation=bank.generation(original);
+        token.rot_original_pcm=uintptr_t(from.data.data());token.rot_target_pcm=uintptr_t(target.data.data());
+        token.rot_original_elements=from.data.size();token.rot_target_elements=target.data.size();
+        token.rot_original_frames=from.playable_frames();token.rot_target_frames=target.playable_frames();
+        token.rot_original_channels=from.channels;token.rot_target_channels=target.channels;
+    }
     if (owner->kind == UnitKind::Recorder) {
         const auto* rec=static_cast<const RecUnit*>(owner);
         token.take_generation=rec->take_generation();token.session_token=rec->session_token();token.state_token=rec->state_token();
@@ -434,6 +494,8 @@ static bool capture_sample_token(Unit* owner, int target_slot, SampleCommitToken
 }
 
 static bool token_is_current(const SampleCommitToken& token) {
+    if(token.kind == UnitKind::Rot && (g_eng!=token.rot_engine || g_audio!=token.rot_audio || !g_audio ||
+        g_audio->lifecycle_epoch()!=token.rot_epoch || g_edit_chain!=token.rot_chain || g_edit_slot!=token.rot_slot)) return false;
     if (!token.owner || edited_unit() != token.owner || token.owner->kind != token.kind ||
         sample_slot_for_unit(token.owner) != token.original_slot) return false;
     auto& bank = trackr::synth::SampleBank::instance();
@@ -441,6 +503,14 @@ static bool token_is_current(const SampleCommitToken& token) {
         sample_ownership::clipboard_holds(token.target_slot, g_clip_unit) != token.target_clipboard ||
         !same_refs(g_eng->sample_slot_refs(token.target_slot, token.owner), token.target_refs)) return false;
     if (g_eng->play_editor_busy()) return false;
+    if (!rot_browser_available(*token.owner)) return false;
+    if(token.kind == UnitKind::Rot) {
+        const auto& from=bank.slot(token.original_slot);const auto& target=bank.slot(token.target_slot);
+        if(bank.generation(token.original_slot)!=token.rot_original_generation || uintptr_t(from.data.data())!=token.rot_original_pcm ||
+            uintptr_t(target.data.data())!=token.rot_target_pcm || from.data.size()!=token.rot_original_elements || target.data.size()!=token.rot_target_elements ||
+            from.playable_frames()!=token.rot_original_frames || target.playable_frames()!=token.rot_target_frames ||
+            from.channels!=token.rot_original_channels || target.channels!=token.rot_target_channels) return false;
+    }
     if (token.kind == UnitKind::Recorder) {
         const auto* rec = static_cast<const RecUnit*>(token.owner);
         if (rec->writer_open() || rec->take_generation() != token.take_generation ||
@@ -644,6 +714,8 @@ static bool delete_sample_slot_for_owner(int slot, Unit* owner, const SampleComm
         const bool safe_owner_only = owner_uses_slot && owner->kind != UnitKind::Recorder && references == 1;
         if ((!safe_owner_only && references != 0) ||
             trackr::synth::SampleBank::instance().slot(slot).empty()) return false;
+        relic_focus_release();
+        g_eng->retire_relic_sources_for_slot(slot);
         trackr::synth::SampleBank::instance().swap_sample_unchecked(
             slot, retired, trackr::synth::SampleOrigin::Runtime, "");
     }
@@ -741,7 +813,10 @@ static bool load_sample_file_to_slot(int file_index, Unit* owner) {
     }
     const auto origin = owner->kind == UnitKind::Recorder ? trackr::synth::SampleOrigin::Recording
                                                           : trackr::synth::SampleOrigin::SdWav;
-    const auto result = bank.replace_sample(slot, std::move(loaded), origin, path);
+    relic_focus_release();
+    g_eng->retire_relic_sources_for_slot(slot);
+    bank.swap_sample_unchecked(slot, loaded, origin, path); // loaded retires old PCM after guard
+    const auto result = trackr::synth::SampleEditResult::Ok;
     if (result != trackr::synth::SampleEditResult::Ok) {
         browser_edit_notice(result);
         return false;

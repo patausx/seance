@@ -21,7 +21,7 @@ inline int parameter_x(q15 v,bool bipolar,int left,int travel) {
     return left+(std::clamp(int(v),bipolar?-32767:0,32767)+(bipolar?32767:0))*travel/(bipolar?65534:32767);
 }
 struct Frame {
-    bool valid=false,loaded=false,bypass=false,mute=false,lock=false,lens=false,busy=false,direction_disabled=true;
+    bool valid=false,loaded=false,bypass=false,mute=false,lens=false,busy=false,direction_disabled=true;
     uint8_t mode=0,direction=0,page=0,selected=0;int chain=0,slot=0,sample_slot=-1;
     uint32_t generation=0,frames=0;
     PaulUnit::Visual visual{};

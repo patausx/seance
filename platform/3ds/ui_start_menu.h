@@ -17,9 +17,11 @@ struct StartMenuData {
     int recent_slots[kStartRecentCount] = {-1, -1, -1, -1, -1};
     int recent_count = 0;
     bool show_menu = true, menu_sound = true; // wordmark motion is always enabled
+    bool recovery_offer = false; // explicit pre-home choice; cancel retains records
     theme_config::Settings theme;
 };
-enum class StartMenuAction { None, NewProject, LoadProject, PreferencesChanged, Exit };
+enum class StartMenuAction { None, NewProject, LoadProject, PreferencesChanged, Exit,
+                             RecoverProject, CancelRecovery };
 struct StartMenuResult {
     StartMenuAction action = StartMenuAction::None;
     int slot = -1;
@@ -35,6 +37,8 @@ void start_menu_open(const StartMenuData& data);
 // Strings are sanitized and recent slots deduplicated/filtered to valid projects.
 // A palette-modal refresh cancels its draft and returns to the settings panel.
 void start_menu_set_data(const StartMenuData& data);
+// Global lifecycle quarantine owns stale HID tails; cancel without eating a fresh down.
+void start_menu_cancel_lifecycle();
 void start_menu_error(const char* text);
 // Theme edits are draft-only. Save emits PreferencesChanged once iff changed;
 // B/cancel and unchanged Save return to settings without a persistence action.

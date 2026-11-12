@@ -21,6 +21,7 @@ void OscUnit::set_visual_capture(bool enabled) {
     visual_ = Visual{};
     visual_.generation = generation;
     visual_work_ = Visual{};
+    visual_pitch_pending_ = 0;
     visual_cycle_started_ = false;
     visual_cycle_samples_ = visual_history_clock_ = 0;
     visual_warmup_ = CLEAN_TAPS + 2;
@@ -44,9 +45,9 @@ void OscUnit::reset() {
 }
 void OscUnit::clean_control_tick() {
     const float inv = 1.0f / 32767.0f;
-    clean_target_[P_PITCH] = osc_clean::pitch_hz(params[P_PITCH].effective, pitch_quantize);
+    clean_target_[P_PITCH] = osc_clean::pitch_hz(params[P_PITCH].effective, pitch_quantize, pitch_scale);
     if (arp_voice.semitones) clean_target_[P_PITCH] = std::min(14000.f, clean_target_[P_PITCH] * arp_pitch_ratio());
-    clean_nominal_hz_ = osc_clean::pitch_hz(params[P_PITCH].base, pitch_quantize);
+    clean_nominal_hz_ = osc_clean::pitch_hz(params[P_PITCH].base, pitch_quantize, pitch_scale);
     clean_target_[P_PW] = .25f + .5f * std::max(0, int(params[P_PW].effective)) * inv;
     clean_target_[P_GAIN] = std::max(0, int(params[P_GAIN].effective)) * inv;
     clean_target_[P_FOLD] = 1 + 6 * std::max(0, int(params[P_FOLD].effective)) * inv;
@@ -72,9 +73,10 @@ void OscUnit::collect_visual(uint32_t phase, q15 pre, q15 out, float frequency) 
     visual_.frequency_millihz = uint32_t(frequency * 1000.0f + .5f);
     if (++visual_history_clock_ >= ENGINE_SR / 100) {
         visual_history_clock_ = 0;
-        const float cents = 1200.0f * std::log2(frequency / clean_nominal_hz_);
-        visual_.pitch_cents[visual_.pitch_head] = int16_t(std::max(-32767.0f,
-            std::min(32767.0f, std::round(cents))));
+        // Keep the actual original float division at its 100Hz timestamp.
+        // A bounded private ring defers only conversion, never audio/clock work.
+        visual_pitch_ratio_[visual_.pitch_head] = frequency / clean_nominal_hz_;
+        visual_pitch_pending_ |= uint64_t(1) << visual_.pitch_head;
         visual_.pitch_head = uint8_t((visual_.pitch_head + 1) % Visual::HISTORY);
         if (visual_.pitch_count < Visual::HISTORY) ++visual_.pitch_count;
     }
@@ -109,10 +111,20 @@ void OscUnit::collect_visual(uint32_t phase, q15 pre, q15 out, float frequency) 
         visual_work_.out_max[bin] = std::max(visual_work_.out_max[bin], out);
     }
 }
+void OscUnit::flush_visual_pitch() {
+    if (!visual_pitch_pending_) return;
+    for (int slot = 0; slot < Visual::HISTORY; ++slot) {
+        if (visual_pitch_pending_ & (uint64_t(1) << slot))
+            visual_.pitch_cents[slot] = int16_t(std::max(-32767.f, std::min(32767.f,
+                std::round(1200.f * std::log2(visual_pitch_ratio_[slot])))));
+    }
+    visual_pitch_pending_ = 0;
+}
 void OscUnit::clean_process(q15* buf, int frames) {
     if (bypass) { set_visual_capture(false); return; }
     if (!clean_ready_) clean_control_tick();
     static_assert(CLEAN_TAPS == osc_clean::TAPS, "clean FIR state size");
+    const float* const sine_lut = osc_clean::sine_table(); // one init-guard check per block
     for (int i = 0; i < frames; ++i) {
         // Independent full-precision random walk, not integer delta/4096. The
         // walk continues at depth zero, but multiplying by *target* zero removes
@@ -167,14 +179,14 @@ void OscUnit::clean_process(q15* buf, int frames) {
             // its fundamental aligned with sine/triangle/falling-saw for any PW.
             previous_pulse = (previous_pulse - (2 * previous_width - 1)) /
                 (2 * std::max(previous_width, 1 - previous_width));
-            const float anchors[4] = {osc_clean::sine(main_phase), previous_tri, previous_saw, previous_pulse};
+            const float anchors[4] = {osc_clean::sine(sine_lut, main_phase), previous_tri, previous_saw, previous_pulse};
             const float shape = clean_previous_[P_SHAPE];
             const int anchor = std::min(2, int(shape));
             const float raw = std::max(-1.0f, std::min(1.0f,
                 anchors[anchor] + (anchors[anchor + 1] - anchors[anchor]) * (shape - anchor)));
             const float driven = raw * clean_previous_[P_FOLD];
             const float folded = osc_clean::fold_adaa(driven, clean_previous_fold_);
-            const float sub = osc_clean::sine(previous_phase);
+            const float sub = osc_clean::sine(sine_lut, previous_phase);
             const float aligned_sub = .5f * (sub + clean_previous_sub_);
             const float mix = clean_previous_[P_SUB], gain = clean_previous_[P_GAIN];
             newest = clean_fir_head_;
@@ -200,5 +212,10 @@ void OscUnit::clean_process(q15* buf, int frames) {
             collect_visual(phase, osc_clean::q15(osc_clean::decimate(clean_pre_fir_, newest)), buf[i], frequency);
         }
     }
+    // Eager block-boundary flush preserves live const Visual& semantics: even
+    // a reference retained before process sees a fully coherent payload after
+    // return. Under the same audio guard, <=48 exact conversions, no heap;
+    // repeated visual() reads do no work. Overwritten slots need no conversion.
+    flush_visual_pitch();
 }
 } // namespace seance

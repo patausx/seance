@@ -1,5 +1,21 @@
 // patch_io - binary save/load of the whole patch state.
-// versioned SNC7..SNCI chunk container with 12-parameter banks.
+// versioned SNC7..SNCM chunk container with 12-parameter banks.
+// Actual/scene-only ROT34 selects SNCM22; sparse ROTSv1 entries:
+// {u8 chain,slot,u32 seed,u16 passes,u8 mode} while every law is 0, else ROTSv2
+// with a trailing u8 law (0..1) per entry. Required per actual card,
+// never empty/orphan for scene-only. Source=CORE.extra0..63,flags0.
+// Private tapes/masks/RNG/readers/artwork never serialize or clone.
+// Actual/scene-only RULE33 requires SNCL21. Required sparse RULEv1 actual-card
+// records: {u8 chain,slot,u32 seed,u16 seed_row,u8 phrase,source_root}, count1..24.
+// Source slot uses CORE.extra (<64), flags0; no DSP/RNG/voice/visual persistence.
+// No-RULE documents retain their former exact container and bytes.
+// Actual or scene-only PENT32 requires SNCK20. PENTv1 is required per actual
+// card: u8 version1/count1..24, then {chain,slot,width0..1}; extra/flags=0.
+// Twelve bases/routes/cable disables use CORE/USIG. Runtime DSP/visual state
+// never persists. Retained scene kinds count even when scene.valid is false.
+// Relic31 remains reserved but unavailable. Actual/scene-only retired kinds or
+// nonempty RELC/RLMO data refuse before factories/sample/live patch mutation.
+// Existing files are untouched; no fallback. Non-Relic saves keep exact bytes.
 // Nondefault clean GRAN reading/percentage requires SNCI18 + GRNX v1 and
 // matching UNIT bit4; default SignedPitch/50 keeps former container bytes.
 // PAUL requires SNCH17: all-forward v1 remains exact; any reverse/ping-pong
@@ -13,12 +29,15 @@
 #pragma once
 #include "../synth/sampler.h"
 #include "workspace_layout.h"
+#include <cstdio>
 
 namespace seance {
 
 class Engine;
 
 namespace patchio {
+
+enum class SaveFailure : uint8_t { None, Invalid, Create, Write, Publish };
 
 // Heap-backed immutable save DTO. Construct it before taking the platform audio
 // guard, capture the small persistent state while excluded, then perform all
@@ -34,7 +53,9 @@ public:
 private:
     Impl* impl_ = nullptr;
     friend bool capture(const Engine&, PatchDocument&, const WorkspaceLayout*);
+    friend bool write_document(const PatchDocument&, FILE*);
     friend bool save(const PatchDocument&, const char*);
+    friend bool save(const PatchDocument&, const char*, SaveFailure*);
 };
 
 struct SampleManifest {
@@ -73,8 +94,16 @@ struct RestoredSamples {
 // capture() performs no allocation and no file I/O. The destination must have
 // been successfully constructed before entering the audio guard.
 bool capture(const Engine& eng, PatchDocument& out, const WorkspaceLayout* workspace = nullptr);
-// Writes an already captured document atomically through path.tmp.
+// Writes an already captured document through an exclusive temporary sibling.
+// Existing .tmp recovery files are retained; rename refusal leaves the target.
+// Atomic publication is not an fsync/power-cut guarantee.
 bool save(const PatchDocument& document, const char* path);
+// Same, reporting which step refused. An existing project moves to `<path>.bak`
+// before the new file takes its name (the SD card refuses rename-over-existing).
+bool save(const PatchDocument& document, const char* path, SaveFailure* failure);
+// Same exact SNC serializer, on a caller-owned seekable stream positioned at 0.
+// Does not close, flush or publish. Recovery adds its envelope after these bytes.
+bool write_document(const PatchDocument& document, FILE* stream);
 // Convenience for single-threaded/offline callers. Realtime controllers should
 // use capture() + save(PatchDocument, path) so I/O never runs under their guard.
 bool save(const Engine& eng, const char* path);
@@ -89,7 +118,7 @@ int decode_samples(SampleManifest& manifest, int target_sr, int max_frames, Rest
 // missing sources become empty rather than borrowing PCM from a previous patch.
 // PLAY's pending metadata remains available for a safe later resave.
 bool commit_restored_samples(const SampleManifest& manifest, RestoredSamples& decoded,
-                             Engine* hydrated = nullptr);
+                             Engine* hydrated = nullptr, Engine* live_before_swap = nullptr);
 // Convenience for single-threaded/offline users.
 int restore_samples(SampleManifest& manifest, int target_sr, int max_frames,
                     Engine* hydrated = nullptr);

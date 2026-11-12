@@ -47,6 +47,7 @@ struct Document {
     PlayEditState edit{};pe::Cuts cuts{};q15 bases[C::P_COUNT]={};uint32_t routing=0;
     bool modern=false,quantize=false,bypass=false;
     C::PitchMode pitch_mode=C::PitchMode::Legacy;
+    MusicalScale scale{};
 };
 bool same_edit(const PlayEditState&a,const PlayEditState&b){
     return a.enabled==b.enabled&&a.source_frames==b.source_frames&&a.start==b.start&&a.end==b.end&&
@@ -54,7 +55,7 @@ bool same_edit(const PlayEditState&a,const PlayEditState&b){
         a.crossfade==b.crossfade&&a.anchor_start==b.anchor_start&&a.anchor_length==b.anchor_length;
 }
 bool same(const Document&a,const Document&b){return same_edit(a.edit,b.edit)&&a.cuts==b.cuts&&
-    !std::memcmp(a.bases,b.bases,sizeof a.bases)&&a.routing==b.routing&&a.modern==b.modern&&a.quantize==b.quantize&&a.bypass==b.bypass&&a.pitch_mode==b.pitch_mode;}
+    !std::memcmp(a.bases,b.bases,sizeof a.bases)&&a.routing==b.routing&&a.modern==b.modern&&a.quantize==b.quantize&&a.bypass==b.bypass&&a.pitch_mode==b.pitch_mode&&musical_scale::equal(a.scale,b.scale);}
 struct Context{uintptr_t unit=0,pcm=0;int chain=-1,slot=-1,sample=-1;uint32_t generation=0,frames=0;uint8_t channels=0;} ctx;
 struct Options {
     Page page=Page::Trim,selection_page=Page::Trim;Handle handle=Handle::In;int selected=C::P_START,cut=-1;
@@ -92,13 +93,13 @@ struct Frame {
 } frame;
 static_assert(sizeof(Frame)<3072&&std::is_trivially_copyable<Frame>::value,"bounded PLAY editor frame");
 int clamp(int64_t v,int lo=0,int hi=32767){return int(std::max<int64_t>(lo,std::min<int64_t>(hi,v)));}
-bool context(){return g_eng&&g_audio&&!nav_is_open()&&g_view==View::Chains&&g_overlay==Overlay::Editor&&!g_seq_lock_armed&&
+bool context(){return g_eng&&g_audio&&!nav_is_open()&&g_view==View::Chains&&g_overlay==Overlay::Editor&&
     g_edit_chain>=0&&g_edit_chain<NUM_CHAINS&&g_edit_slot>=0&&g_edit_slot<UNITS_PER_CHAIN;}
 C* current(){if(!context())return nullptr;Unit*u=g_eng->chains[g_edit_chain].units[g_edit_slot];
     if(view.from_seq){int last=-1;for(int s=0;s<UNITS_PER_CHAIN;++s){const Unit* at=g_eng->chains[g_edit_chain].units[s];if(at&&!at->bypass&&at->sequencer_properties().source)last=s;}
         if(last!=g_edit_slot&&!(u&&u->bypass&&last<g_edit_slot))return nullptr;}
     return u&&u->kind==UnitKind::SamplePlayer?static_cast<C*>(u):nullptr;}
-Document document(const C&u){Document d;d.edit=u.edit_state();d.modern=u.modern();d.quantize=u.pitch_quantize;d.bypass=u.bypass;d.pitch_mode=u.pitch_mode();
+Document document(const C&u){Document d;d.edit=u.edit_state();d.modern=u.modern();d.quantize=u.pitch_quantize;d.bypass=u.bypass;d.pitch_mode=u.pitch_mode();d.scale=g_eng->project_scale();
     for(int p=0;p<C::P_COUNT;++p){d.bases[p]=u.params[p].base;d.routing=(d.routing*16777619u)^uint32_t(uint16_t(u.params[p].mod_depth))^(uint32_t(u.params[p].src)<<16);}
     const auto&s=Bank::instance().slot(u.sample_slot);std::copy(s.chops,s.chops+16,d.cuts.at);d.cuts.reverse=s.slice_reverse_mask;
     std::copy(s.slice_speed_q8,s.slice_speed_q8+16,d.cuts.speed_q8);
@@ -497,7 +498,8 @@ void precision_top(const Frame&f=frame){
 #include "play_inline_impl.inc"
 } // namespace
 void play_editor_capture(){
-    frame={};if(!context()){words_cancel(true);if(g_eng&&g_audio){platform::AudioOut::Guard guard(*g_audio);stop_locked();}ctx={};stroke={};
+    // Outside the editor stop_locked() reaches the engine only for a live preview token.
+    frame={};if(!context()){words_cancel(true);if(g_eng&&g_audio){if(stroke.audio_token||view.token){platform::AudioOut::Guard guard(*g_audio);stop_locked();}else stop_locked();}ctx={};stroke={};
         if(g_overlay!=Overlay::SampleBrowser)view.from_seq=false;
         return;}
     {platform::AudioOut::Guard guard(*g_audio);C*u=current();if(!u||!identify(*u)){stop_locked();stroke={};
@@ -587,7 +589,7 @@ void play_editor_open_cuts(int chain,int slot,bool from_sequencer){
     if(!g_eng||!g_audio||chain<0||chain>=NUM_CHAINS||slot<0||slot>=UNITS_PER_CHAIN)return;
     platform::AudioOut::Guard guard(*g_audio);Unit*u=g_eng->chains[chain].units[slot];if(!u||u->kind!=UnitKind::SamplePlayer)return;
     stop_locked();finish();g_edit_chain=g_sel_chain=chain;g_edit_slot=g_sel_slot=slot;g_view=View::Chains;g_overlay=Overlay::Editor;g_drag=Drag::None;
-    g_seq_lock_armed=false;view.from_seq=from_sequencer;
+    view.from_seq=from_sequencer;
     if(identify(*static_cast<C*>(u))){view.page=view.selection_page=Page::Cuts;view.live=view.add=false;view.selected=C::P_SLICE;auto c=document(*static_cast<C*>(u)).cuts;
         view.sound=false;view.owner=Owner::Second;view.cut_end=false;view.move=false;
         view.cut=c.select(0,ctx.frames);if(view.cut<0)for(int i=0;i<16;++i)if(c.valid(i,ctx.frames)){view.cut=i;break;}}

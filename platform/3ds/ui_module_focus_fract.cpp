@@ -23,7 +23,7 @@ constexpr const char* NAMES[F::P_COUNT] = {
 };
 struct Frame {
     uint16_t mod_links=0;
-    bool valid=false, bypass=false, mute=false, lock=false, lock_full=false, lens=false, manual_owned=false;
+    bool valid=false, bypass=false, mute=false, lens=false, manual_owned=false;
     int8_t chain=0, slot=0, selected=0;
     int32_t bpm=120*65536;
     q15 edit[F::P_COUNT]={}, live[F::P_COUNT]={};
@@ -36,8 +36,7 @@ struct Frame {
 static_assert(sizeof(Frame)<=1024 && std::is_trivially_copyable<Frame>::value,
               "FRACT frozen bounded frame, no live engine/PCM in draw");
 int selected=0, drag_param=-1, origin_x=0;
-int origin_chain=-1, origin_slot=-1, origin_step=-1, origin_lock_chain=-1;
-bool origin_locked=false;
+int origin_chain=-1, origin_slot=-1;
 int origin_view=-1, origin_bank=-1;
 platform::AudioOut* origin_audio=nullptr;
 uintptr_t origin_unit=0, manual_unit=0;
@@ -48,15 +47,11 @@ bool window_moved=false;
 
 bool context() {
     return g_eng && g_audio && g_overlay==Overlay::Editor &&
-        (g_view==View::Chains || (g_view==View::Sequencer && g_seq_lock_armed)) &&
+        g_view==View::Chains &&
         g_edit_chain>=0 && g_edit_chain<NUM_CHAINS && g_edit_slot>=0 && g_edit_slot<UNITS_PER_CHAIN;
 }
-bool lock_context() {
-    return g_seq_lock_armed && g_seq_lock_chain==g_edit_chain &&
-        g_seq_lock_step>=0 && g_seq_lock_step<SEQ_STEPS;
-}
 q15 edit_value(const F& u,int p) {
-    return lock_context()?seq_display_value(g_edit_slot,p,u.params[p].base):u.params[p].base;
+    return u.params[p].base;
 }
 int clamp(int v,int p) { return std::max(p==F::P_SPEED?-32767:0,std::min(32767,v)); }
 void release_locked() {
@@ -78,19 +73,16 @@ bool owns(const F& u) {
     return g_eng==origin_engine && g_audio==origin_audio && origin_unit==uintptr_t(&u) &&
         origin_view==int(g_view) && origin_bank==g_eng->active_pattern &&
         origin_chain==g_edit_chain && origin_slot==g_edit_slot &&
-        g_eng->chains[g_edit_chain].units[g_edit_slot]==&u && origin_locked==g_seq_lock_armed &&
-        (!origin_locked || (lock_context() && origin_step==g_seq_lock_step && origin_lock_chain==g_seq_lock_chain));
+        g_eng->chains[g_edit_chain].units[g_edit_slot]==&u;
 }
 void remember(F& u,int tx,int p) {
     drag_param=p;origin_x=tx;origin_value=edit_value(u,p);origin_unit=uintptr_t(&u);origin_engine=g_eng;
-    origin_chain=g_edit_chain;origin_slot=g_edit_slot;origin_locked=g_seq_lock_armed;
-    origin_step=g_seq_lock_step;origin_lock_chain=g_seq_lock_chain;
+    origin_chain=g_edit_chain;origin_slot=g_edit_slot;
     origin_view=int(g_view);origin_bank=g_eng->active_pattern;origin_audio=g_audio;
 }
 void change(F& u,int p,q15 value) {
     if(value==edit_value(u,p))return;
-    if(g_seq_lock_armed) { if(lock_context())seq_record_lock(g_edit_slot,p,value); }
-    else {u.params[p].base=value;mark_project_mutated();}
+    u.params[p].base=value;mark_project_mutated();
 }
 void format(char* out,size_t size,int p,q15 value,bool sync,int32_t bpm) {
     if(!out || !size)return;
@@ -153,7 +145,6 @@ const char* status() {
     const auto& v=frame.visual;
     if(frame.bypass)return "bypassed / dry";
     if(frame.mute)return "chain muted";
-    if(frame.lock)return "p-lock / grab disabled";
     if(!v.reader_frames && (v.manual || v.held))return "waiting for capture";
     if(!v.history_frames)return "waiting for audio";
     if(!reader_active())return "live / dry";
@@ -185,7 +176,7 @@ void format_labels(Labels& labels) {
     format(control,sizeof control,p,frame.detail.temp?frame.detail.control:frame.edit[p],frame.edit[F::P_SYNC]>16383,frame.bpm);
     format(live,sizeof live,p,frame.live[p],frame.live[F::P_SYNC]>16383,frame.bpm);
     std::snprintf(labels.selected_info,sizeof labels.selected_info,"%s %s %s / live %s",NAMES[p],
-        frame.lock?"lock":frame.detail.temp?"temp":"base",control,live);
+        frame.detail.temp?"temp":"base",control,live);
     const auto& d=frame.detail;
     if(d.source==ModSource::None)std::snprintf(labels.mod_info,sizeof labels.mod_info,"mod off");
     else if(d.source==ModSource::EnvFollow)std::snprintf(labels.mod_info,sizeof labels.mod_info,"env ch%d / %s%+d%%",
@@ -208,7 +199,7 @@ void window_wave() {
             ui::rect(end-2,72,5,11,m::spot());ui::rect(end-1,74,3,7,palette::inverse());
         }
     } else ui::text(160-ui::text_w(frame.status)/2,71,frame.status,m::ghost());
-    const char* label=frame.lock?"p-lock / grab off":frame.bypass?"bypassed / dry":frame.mute?"chain muted":
+    const char* label=frame.bypass?"bypassed / dry":frame.mute?"chain muted":
         !v.reader_frames && (v.manual || v.held)?"waiting for capture":"window";
     ui::text(14,w::kLabelY,label,m::ghost());
     char hold[32];std::snprintf(hold,sizeof hold,"hold %s",frame.values[F::P_HOLD]);
@@ -240,9 +231,8 @@ bool fract_focus_touch_body(F& u,int tx,int ty) {
     platform::AudioOut::Guard guard(*g_audio);
     release_locked();
     if(g_eng->chains[g_edit_chain].units[g_edit_slot]!=&u)return false;
-    if(g_seq_lock_armed && !lock_context())return true;
     if(hit(tx,ty,254,0,60,25)) {
-        if(!g_seq_lock_armed){u.bypass=!u.bypass;mark_project_mutated();}
+        u.bypass=!u.bypass;mark_project_mutated();
         return true;
     }
     if(hit(tx,ty,178,0,64,25)) {
@@ -252,21 +242,17 @@ bool fract_focus_touch_body(F& u,int tx,int ty) {
         selected=F::P_HOLD;change(u,selected,edit_value(u,selected)>16383?0:32767);return true;
     }
     if(hit(tx,ty,w::kTouch.x,w::kTouch.y,w::kTouch.w,w::kTouch.h)) {
-        if(!g_seq_lock_armed && !u.bypass && !g_eng->chains[g_edit_chain].mute) {
+        if(!u.bypass && !g_eng->chains[g_edit_chain].mute) {
             selected=F::P_SIZE;remember(u,tx,F::P_SIZE);
             u.set_manual_grab(true);u.set_grab_window(32767);
             manual_unit=uintptr_t(&u);manual_engine=g_eng;g_drag=Drag::FractGrab;
         }
-        return true; // waveform is inert while p-lock is armed
+        return true; // waveform is inert while bypassed or muted
     }
     for(int p=0;p<6;++p) {
         const int x=(p&1)?166:14,y=139+(p/2)*27;
         if(!hit(tx,ty,x-5,y-3,146,27))continue;
         selected=p;
-        if(lock_context() && hit(tx,ty,x-4,y-3,ui::text_w(NAMES[p])+8,13)) {
-            if(g_eng->remove_step_lock(g_seq_lock_chain,g_seq_lock_step,g_edit_slot,p))mark_project_mutated();
-            return true;
-        }
         remember(u,tx,p);g_drag=Drag::FractParam;return true;
     }
     return true;
@@ -276,7 +262,7 @@ void fract_focus_drag(F& u,int tx,int) {
     platform::AudioOut::Guard guard(*g_audio);
     if(drag_param<0 || !owns(u)){cancel_locked();return;}
     if(g_drag==Drag::FractGrab) {
-        if(manual_unit!=uintptr_t(&u) || manual_engine!=g_eng || g_seq_lock_armed ||
+        if(manual_unit!=uintptr_t(&u) || manual_engine!=g_eng ||
            u.bypass || g_eng->chains[g_edit_chain].mute){cancel_locked();return;}
         if(std::abs(tx-origin_x)>w::kDeadzone)window_moved=true;
         const uint32_t span=u.underlying_loop_frames();
@@ -300,13 +286,13 @@ void fract_focus_capture() {
             if(origin_unit && (!owns(u) || param_lens_is_open() || nav_is_open() ||
                (g_drag!=Drag::FractParam && g_drag!=Drag::FractGrab) ||
                (g_drag==Drag::FractGrab && (u.bypass || chain.mute))))cancel_locked();
-            frame.valid=true;frame.bypass=u.bypass;frame.mute=chain.mute;frame.lock=lock_context();
-            frame.lock_full=frame.lock && g_seq_lock_flash>0;frame.lens=param_lens_is_open();
+            frame.valid=true;frame.bypass=u.bypass;frame.mute=chain.mute;
+            frame.lens=param_lens_is_open();
             frame.chain=g_edit_chain;frame.slot=g_edit_slot;frame.selected=selected;
             frame.mod_links=focus_mod_links(u);
             frame.bpm=u.transport_bpm_q16();frame.visual=u.visual();frame.stored_damage=u.params[F::P_DAMAGE].base;
             frame.manual_owned=g_drag==Drag::FractGrab && manual_unit==uintptr_t(&u) && manual_engine==g_eng && owns(u) &&
-                frame.visual.manual && !g_seq_lock_armed && !u.bypass && !chain.mute && !frame.lens && !nav_is_open();
+                frame.visual.manual && !u.bypass && !chain.mute && !frame.lens && !nav_is_open();
             for(int p=0;p<F::P_COUNT;++p){frame.edit[p]=edit_value(u,p);frame.live[p]=u.params[p].effective;}
             g_eng->capture_param_inspector(g_edit_chain,g_edit_slot,selected,frame.detail);
         }
@@ -334,7 +320,7 @@ void fract_focus_draw(const F&) {
             p==F::P_SPEED?rail_x(8192,p,x,133):-1);
     }
     ui::line(14,221,306,221,m::branch());
-    m::footer(320,frame.lock?(frame.lock_full?"lock full":"p-lock / name: remove"):"b back",frame.lock?"b back":"l: mod >");
+    m::footer(320,"b back","l: mod >");
 }
 bool fract_focus_draw_top() {
     if(!frame.valid)return false;

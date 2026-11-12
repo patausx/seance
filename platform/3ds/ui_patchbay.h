@@ -2,6 +2,7 @@
 #include <3ds.h>
 namespace seance::platform::ui3ds {
 void patchbay_enter();
+void patchbay_enter_target(int chain,int slot,int param); // lens: real target, project-local ports, return to editor
 void patchbay_enter_sigil(int sigil); // reveal a-h from the universal editor
 void patchbay_forget(); // successful new/load: same Engine address may now hold a new project
 void patchbay_cancel_input();

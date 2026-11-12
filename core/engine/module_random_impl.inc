@@ -11,7 +11,7 @@ enum Domain : uint8_t {
     Skip, Continuous, Note, SpeedNote, Voices, Bits16, Bits13, MicCut,
     DelayDivision, DelayFeel, VcaDivision, VcaHold, CompRelease,
     ArpRate, ArpGate, ArpOrder, ArpOctaves, ArpNote, PlayGate, InstNote, FractDivision,
-    Colour4, Wave3, Toggle, TiltClearRange, TiltLegacyRange, BitLegacyRate
+    Colour4, Wave3, Toggle, TiltClearRange, TiltLegacyRange, BitLegacyRate, PentNote
 };
 struct Policy {
     Domain domain[PARAM_BANK_SIZE] = {};
@@ -165,6 +165,33 @@ static Policy policy(const Unit& u) {
             if (ArpUnit::note_semitones(u.params[n].base)!=ArpUnit::NOTE_OFF) p.domain[n]=ArpNote;
         break;
     case UnitKind::Glitch:p.range(0,GlitchUnit::P_KEEP);break; // pattern/RNG/KEEP preserved
+    case UnitKind::Rot: {
+        const auto& v=static_cast<const RotUnit&>(u);const auto c=v.config();
+        if(!RotUnit::valid_config(c))break;
+        mode=uint32_t(uint8_t(v.sample_slot)) | (uint32_t(c.mode)<<8) | (uint32_t(c.passes)<<16);
+        p.range(RotUnit::P_LEVEL,RotUnit::P_START);
+        p.identity=uint64_t(c.seed)*0x9e3779b97f4a7c15ull;
+        break; // window/pitch/source/mode/seed/pass configuration stays prepared
+    }
+    case UnitKind::Rule: {
+        const auto& v=static_cast<const RuleUnit&>(u);const auto c=v.config();
+        mode=uint32_t(uint8_t(v.sample_slot)) | (uint32_t(c.phrase)<<8) | (uint32_t(c.source_root)<<16);
+        // RULE/SCALE/MUT/RATE are prepared score law; randomize timbre only.
+        p.range(RuleUnit::P_ATTACK,RuleUnit::P_MUTATE);
+        p.domain[RuleUnit::P_SPREAD]=p.domain[RuleUnit::P_LEVEL]=Continuous;
+        p.identity=uint64_t(c.seed)*0x9e3779b97f4a7c15ull ^ uint64_t(c.seed_row)*0xbf58476d1ce4e5b9ull;
+        break;
+    }
+    case UnitKind::Pent: {
+        const auto& v = static_cast<const PentUnit&>(u);
+        mode = uint32_t(v.width);
+        if (mode > 1) break; // invalid config is not an opt-in randomized card
+        p.range(0, PentUnit::P_COUNT);
+        p.domain[PentUnit::P_ROOT] = PentNote; // independent MIDI0..120 q15 domain
+        // Ratios and continuous timbre use their bounded unipolar parameter law;
+        // no width, phase, feedback, clock, source, route or DSP RNG is touched.
+        break;
+    }
     case UnitKind::Paul: {
         const auto& v=static_cast<const PaulUnit&>(u);
         mode=uint32_t(v.mode) | (uint32_t(uint8_t(v.sample_slot))<<8) | (uint32_t(v.direction)<<16);
@@ -195,7 +222,7 @@ static Policy policy(const Unit& u) {
     }
     // Stable context key for undo. All bases are compared separately. Runtime
     // phase, effective values and modulation/override state never affect policy.
-    p.identity=(uint64_t(uint8_t(u.kind))<<56) | (uint64_t(uint8_t(u.num_params))<<48) | mode;
+    p.identity^=(uint64_t(uint8_t(u.kind))<<56) | (uint64_t(uint8_t(u.num_params))<<48) | mode;
     if (u.kind == UnitKind::Grain) {
         const auto& v = static_cast<const GrainUnit&>(u);
         // Separate 32..47 bits: no collision with GRAN mode/source bits0..23,
@@ -217,6 +244,7 @@ static int pick(uint32_t r,int count) {return int((uint64_t(r)*uint32_t(count))>
 static q15 value(Domain d,const Param& param,uint32_t r) {
     switch(d) {
     case Note:return musical_note::encode(36+pick(r,49));
+    case PentNote:return PentUnit::root_value(36+pick(r,49));
     case SpeedNote:return q15(musical_note::ratio_q16(pick(r,25)-12)/8);
     case Voices:return q15((pick(r,GrainUnit::MAX_GRAINS)*32767+3)/7);
     case Bits16:return q15(pick(r,16)*2048+1024);
@@ -290,7 +318,7 @@ bool Engine::set_module_random_source(int chain,int slot,ModSource source) {
     if (!module_random_detail::address(chain,slot) ||
         (source!=ModSource::None && mod_source_sigil(source)<0) || recording_active_or_pending()) return false;
     Unit* unit=chains[chain].units[slot];
-    if (!unit || unit->random_source==source) return false;
+    if (!unit || unit->random_source==source || (unit->kind==UnitKind::Relic && source!=ModSource::None)) return false;
     unit->random_source=unit->module_random_.observed_source=source;
     unit->module_random_.armed=false;
     return true;

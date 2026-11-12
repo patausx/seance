@@ -87,55 +87,65 @@ WavLoadResult load_wav_to_sample(const char* path, Sample& dst,
 
     // === scan chunks: look for 'fmt ' and 'data' ===
     uint16_t format = 0, channels = 0, bits = 0;
+    bool seen_fmt = false;
     uint32_t sample_rate = 0;
     long data_offset = -1;
     uint32_t data_size = 0;
-    std::vector<uint32_t> cue_src_offsets;
+    uint32_t cue_src_offsets[Sample::MAX_CHOPS] = {};
+    uint32_t cue_count = 0;
 
     char id[5];
     uint32_t csize;
-    while (read_chunk_header(f, id, csize)) {
+    while (true) {
+        const long at = std::ftell(f);
+        if (at == file_end) break;
+        if (at < 0 || at > file_end || file_end - at < 8 || !read_chunk_header(f, id, csize)) {
+            std::fclose(f); return WavLoadResult::InvalidChunks;
+        }
         const long chunk_start = std::ftell(f);
-        if (chunk_start < 0 || (uint64_t)(unsigned long)chunk_start + csize > (uint64_t)(unsigned long)file_end)
-            break;
+        const uint64_t extent = uint64_t(csize) + (csize & 1u);
+        if (chunk_start < 0 || chunk_start > file_end || extent > uint64_t(file_end - chunk_start)) {
+            std::fclose(f); return WavLoadResult::InvalidChunks;
+        }
+        // Physical bounds prove the addition/narrowing fits long, also on ARM.
+        const long chunk_end = chunk_start + long(extent);
         if (std::memcmp(id, "fmt ", 4) == 0) {
-            // fmt chunk: min. 16 bytes
-            if (csize < 16) { std::fclose(f); return WavLoadResult::NoFmtChunk; }
+            if (seen_fmt || csize < 16) { std::fclose(f); return WavLoadResult::InvalidChunks; }
+            seen_fmt = true;
             uint8_t fmt_buf[40] = {};
-            uint32_t to_read = csize > 40 ? 40 : csize;
-            if (std::fread(fmt_buf, 1, to_read, f) != to_read) break;
+            const uint32_t to_read = csize > 40 ? 40 : csize;
+            if (std::fread(fmt_buf, 1, to_read, f) != to_read) {
+                std::fclose(f); return WavLoadResult::InvalidChunks;
+            }
             format       = read_u16_le(fmt_buf + 0);
             channels     = read_u16_le(fmt_buf + 2);
             sample_rate  = read_u32_le(fmt_buf + 4);
-            // byte_rate at +8, block_align at +12
             bits         = read_u16_le(fmt_buf + 14);
-            // skip the rest of the chunk (in case there was WAVEFORMATEX extra)
-            if (csize > to_read) std::fseek(f, csize - to_read, SEEK_CUR);
-            // align to an even byte (RIFF padding)
-            if (csize & 1) std::fseek(f, 1, SEEK_CUR);
         } else if (std::memcmp(id, "data", 4) == 0) {
-            data_offset = std::ftell(f);
-            data_size   = csize;
-            // don't read the body now - after fully decoding fmt
-            std::fseek(f, csize, SEEK_CUR);
-            if (csize & 1) std::fseek(f, 1, SEEK_CUR);
+            if (data_offset >= 0) { std::fclose(f); return WavLoadResult::InvalidChunks; }
+            data_offset = chunk_start;
+            data_size = csize;
         } else if (std::memcmp(id, "cue ", 4) == 0) {
-            // Only the first MAX_CHOPS cue records are useful; never allocate from
-            // an untrusted chunk size.
             uint8_t count_buf[4];
-            if (csize < 4 || std::fread(count_buf, 1, 4, f) != 4) break;
-            uint32_t ncue = read_u32_le(count_buf);
-            if (ncue > Sample::MAX_CHOPS) ncue = Sample::MAX_CHOPS;
+            if (csize < 4 || std::fread(count_buf, 1, 4, f) != 4) {
+                std::fclose(f); return WavLoadResult::InvalidChunks;
+            }
+            const uint32_t declared = read_u32_le(count_buf);
+            if (uint64_t(declared) * 24u + 4u > csize) {
+                std::fclose(f); return WavLoadResult::InvalidChunks;
+            }
+            uint32_t ncue = Sample::MAX_CHOPS - cue_count;
+            if (ncue > declared) ncue = declared;
             for (uint32_t i = 0; i < ncue; ++i) {
                 uint8_t cue[24];
-                if (4u + (i + 1u) * 24u > csize || std::fread(cue, 1, sizeof cue, f) != sizeof cue) break;
-                cue_src_offsets.push_back(read_u32_le(cue + 20));
+                if (std::fread(cue, 1, sizeof cue, f) != sizeof cue) {
+                    std::fclose(f); return WavLoadResult::InvalidChunks;
+                }
+                cue_src_offsets[cue_count++] = read_u32_le(cue + 20);
             }
-            if (std::fseek(f, chunk_start + (long)csize + (csize & 1u), SEEK_SET) != 0) break;
-        } else {
-            // skip unknown chunk
-            std::fseek(f, csize, SEEK_CUR);
-            if (csize & 1) std::fseek(f, 1, SEEK_CUR);
+        } // Fully present unknown chunks (and excess cues) remain skippable.
+        if (std::fseek(f, chunk_end, SEEK_SET) != 0) {
+            std::fclose(f); return WavLoadResult::InvalidChunks;
         }
     }
 
@@ -286,7 +296,8 @@ WavLoadResult load_wav_to_sample(const char* path, Sample& dst,
             src_pos += ratio;
         }
     }
-    std::fclose(f);
+    if (std::ferror(f)) { std::fclose(f); return WavLoadResult::NoDataChunk; }
+    if (std::fclose(f) != 0) return WavLoadResult::NoDataChunk;
 
     // === fill in the Sample's metadata ===
     decoded.channels   = (uint8_t)channels;
@@ -299,10 +310,17 @@ WavLoadResult load_wav_to_sample(const char* path, Sample& dst,
     decoded.exact_native_endpoint = limits.preserve_native_endpoint;
     for (int i = 0; i < Sample::MAX_CHOPS; ++i) decoded.chops[i] = 0xFFFFFFFFu;
     int chop_n = 0;
-    for (uint32_t src_off : cue_src_offsets) {
-        if (chop_n >= Sample::MAX_CHOPS) break;
-        uint32_t out_off = (uint32_t)((double)src_off / ratio);
-        if (out_off < out_frames_expected) decoded.chops[chop_n++] = out_off;
+    for (uint32_t i = 0; i < cue_count; ++i) {
+        const uint32_t src_off = cue_src_offsets[i];
+        if (src_off >= total_src_frames) continue; // validate BEFORE scaling/narrowing
+        uint64_t out_off = (uint64_t(src_off) * uint32_t(target_sr)) / sample_rate;
+        // Preserve the former double-ratio division's floor at exact-rate
+        // boundaries (it can lie one ulp either side of the rational integer).
+        // No float is narrowed; all accepted offsets fit the <=INT_MAX output.
+        const double historical = double(src_off) / ratio;
+        if (historical < double(out_off) && out_off) --out_off;
+        else if (historical >= double(out_off + 1u)) ++out_off;
+        if (out_off < out_frames_expected) decoded.chops[chop_n++] = uint32_t(out_off);
     }
     // sort imported cue markers and drop duplicates/out-of-range sentinels
     for (int i = 1; i < chop_n; ++i) {

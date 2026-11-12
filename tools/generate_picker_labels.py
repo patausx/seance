@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 import re
 import textwrap
+from module_catalogue import active_kind_ids, same_members
 try:
     from PIL import Image, ImageDraw, ImageFont
 except ModuleNotFoundError:
@@ -31,7 +32,8 @@ def entries():
         assert match, line
         kind, short, name, group, description = match.groups()
         result.append((kind, json.loads(short), json.loads(name), group, json.loads(description)))
-    assert len(result) == len({e[0] for e in result})
+    kinds = active_kind_ids((ROOT / 'core/engine/unit.h').read_text(), META.read_text())
+    same_members([e[0] for e in result], kinds, 'picker generator catalogue')
     return result
 
 
@@ -52,6 +54,19 @@ def fit(text, size, width):
         text = text[:-1]
     assert text
     return text.rstrip() + '...'
+
+
+def completion():
+    return '\n'.join([
+        'inline constexpr int count = sizeof entries / sizeof entries[0];',
+        'static_assert(int(UnitKind::Relic)==31 && !unit_kind_available(UnitKind::Relic), "reserved retired identity");',
+        'static_assert(count == int(UnitKind::Count)-2, "all active builtin metadata; one reserved retired id");',
+        'constexpr bool complete() {',
+        '    for (int k=1; k<int(UnitKind::Count); ++k) { int seen=0;',
+        '        for (const auto& e:entries) if (int(e.kind)==k) ++seen;',
+        '        if (seen != int(unit_kind_available(UnitKind(k)))) return false; } return true;',
+        '}', 'static_assert(complete(), "unique complete active picker catalogue; reserved kinds have none");',
+        '} // namespace seance::platform::ui3ds::picker_catalogue', ''])
 
 
 def generate():
@@ -103,14 +118,7 @@ def generate():
         'struct Entry { UnitKind kind; const char* short_name; const char* name; Group group;',
         '    const char* description[2]; Label row, title; };',
         'inline constexpr Entry entries[] = {', *(rows[e[0]] for e in records), '};',
-        'inline constexpr int count = sizeof entries / sizeof entries[0];',
-        'static_assert(count == int(UnitKind::Count)-1, "every builtin needs picker metadata");',
-        'constexpr bool complete() {',
-        '    for (int k=1; k<int(UnitKind::Count); ++k) { int seen=0;',
-        '        for (const auto& e:entries) if (int(e.kind)==k) ++seen;',
-        '        if (seen!=1) return false; } return true;',
-        '}', 'static_assert(complete(), "unique and complete builtin picker catalogue");',
-        '} // namespace seance::platform::ui3ds::picker_catalogue', '']
+        completion()]
     return '\n'.join(lines)
 
 

@@ -1,8 +1,12 @@
 #include "start_menu_store.h"
+#include "../../core/io/file_publication.h"
 #include <cstdio>
 #include <cstring>
 #include <sys/stat.h>
 #include <cerrno>
+#ifdef __3DS__
+#include <3ds.h>
+#endif
 
 namespace seance::platform::ui3ds {
 static_assert(PROJECT_SLOTS == 128, "SNMU v4 slot/provenance packing requires 128 slots");
@@ -101,42 +105,214 @@ bool start_store_load(const char* path, StartMenuStore& out) {
 bool start_store_save(const char* path, const StartMenuStore& store) {
     uint8_t bytes[START_STORE_BYTES];
     if (!path || !start_store_encode(store, bytes)) return false;
-    char temp[256], backup[256];
-    if (std::snprintf(temp, sizeof temp, "%s.tmp", path) >= (int)sizeof temp ||
-        std::snprintf(backup, sizeof backup, "%s.bak", path) >= (int)sizeof backup) return false;
-    FILE* f = std::fopen(temp, "wb");
-    if (!f) return false;
-    bool ok = std::fwrite(bytes, 1, sizeof bytes, f) == sizeof bytes;
-    if (std::fflush(f) != 0) ok = false;
-    if (std::fclose(f) != 0) ok = false;
+    char backup[256];
+    const int n = std::snprintf(backup, sizeof backup, "%s.bak", path);
+    if (n < 0 || size_t(n) >= sizeof backup) return false;
+    bool exists = false, recovery_exists = false;
+    if (!fileio::regular_or_absent(path, exists) ||
+        !fileio::regular_or_absent(backup, recovery_exists)) return false;
+    (void)recovery_exists;
+    fileio::OwnedFile temporary, recovery;
+    if (!fileio::create_temporary(temporary, path)) return false;
+    FILE* f = temporary.stream();
+    const bool wrote = std::fwrite(bytes, 1, sizeof bytes, f) == sizeof bytes;
+    const bool closed = temporary.close(true);
     StartMenuStore verify;
     uint8_t actual[START_STORE_BYTES];
-    ok = ok && start_store_load(temp, verify) && start_store_encode(verify, actual) &&
-         std::memcmp(bytes, actual, sizeof bytes) == 0;
-    if (!ok) { std::remove(temp); return false; }
-    // FAT implementations may refuse rename-over-existing. Keep an on-disk
-    // prior version before replacing; boot can recover it after an interrupted swap.
-    struct stat st{};
-    const int status = stat(path, &st);
-    const bool exists = status == 0;
-    if ((exists && !S_ISREG(st.st_mode)) || (status != 0 && errno != ENOENT)) {
-        std::remove(temp); return false;
+    if (!wrote || !closed || !start_store_load(temporary.path(), verify) ||
+        !start_store_encode(verify, actual) || std::memcmp(bytes, actual, sizeof bytes)) return false;
+    // Stage a valid primary's recovery COPY without moving/unlinking either
+    // existing name. An I/O refusal is not evidence that the primary is corrupt.
+    if (exists) {
+        uint8_t prior[START_STORE_BYTES + 1]; size_t got = 0;
+        if (!fileio::read_bounded(path, prior, sizeof prior, got)) return false;
+        if (start_store_decode(prior, got, verify)) {
+            if (!fileio::create_temporary(recovery, backup) || !fileio::copy_file(path, recovery)) return false;
+            if (!start_store_load(recovery.path(), verify)) return false;
+        }
     }
-    // Never replace a verified recovery copy with a corrupt primary.
-    StartMenuStore previous;
-    const bool backup_primary = exists && start_store_load(path, previous);
-    if (backup_primary) {
-        std::remove(backup);
-        if (std::rename(path, backup) != 0) { std::remove(temp); return false; }
-    } else if (exists && std::remove(path) != 0) {
-        std::remove(temp); return false;
-    }
-    if (std::rename(temp, path) != 0) {
-        if (backup_primary) std::rename(backup, path);
-        std::remove(temp);
-        return false;
+    if (!temporary.publish(path)) return false; // commit point: never remove primary
+    // Recovery rotation is best-effort AFTER successful primary publication.
+    // A second rename refusal keeps the old .bak; it cannot undo a committed save
+    // or destroy either valid version. FAT replacement refusal is fail-closed.
+    if (recovery.path()[0]) (void)recovery.publish(backup);
+    return true;
+}
+
+namespace {
+// SNMJ v1 is a publication envelope, NOT a replacement SNMU version. The inner
+// 96-byte SNMU v4 serialization stays byte-exact. Generation establishes commit
+// order independently of clock/mtime, recent-slot timestamps or filename order.
+constexpr size_t JOURNAL_BYTES = 16 + START_STORE_BYTES + 4;
+struct PreferenceJournal {
+    char path[256] = {};
+    bool exists = false;
+    uint64_t generation = 0;
+    uint8_t bytes[JOURNAL_BYTES] = {};
+};
+bool sibling(char (&out)[256], const char* path, const char* suffix) {
+    if (!path || !*path) return false;
+    const int n = std::snprintf(out, sizeof out, "%s%s", path, suffix);
+    return n >= 0 && size_t(n) < sizeof out;
+}
+bool read_journal(PreferenceJournal& journal) {
+    if (!fileio::regular_or_absent(journal.path, journal.exists)) return false;
+    if (!journal.exists) return true;
+    uint8_t raw[JOURNAL_BYTES + 1]; size_t got = 0;
+    if (!fileio::read_bounded(journal.path, raw, sizeof raw, got) || got != JOURNAL_BYTES ||
+        std::memcmp(raw, "SNMJ\1\0\0\0", 8)) return false;
+    uint32_t sum = 0;
+    for (int b = 0; b < 4; ++b) sum |= uint32_t(raw[JOURNAL_BYTES - 4 + b]) << (8 * b);
+    if (sum != checksum(raw, JOURNAL_BYTES - 4)) return false;
+    StartMenuStore decoded; uint8_t canonical[START_STORE_BYTES];
+    if (!start_store_decode(raw + 16, START_STORE_BYTES, decoded) ||
+        !start_store_encode(decoded, canonical) || std::memcmp(canonical, raw + 16, sizeof canonical)) return false;
+    for (int b = 0; b < 8; ++b) journal.generation |= uint64_t(raw[8 + b]) << (8 * b);
+    if (!journal.generation) return false;
+    std::memcpy(journal.bytes, raw, JOURNAL_BYTES);
+    return true;
+}
+bool journals(const char* path, PreferenceJournal (&records)[2], int& latest) {
+    if (!sibling(records[0].path, path, ".prefs0") ||
+        !sibling(records[1].path, path, ".prefs1") ||
+        !read_journal(records[0]) || !read_journal(records[1])) return false;
+    latest = records[0].exists ? 0 : records[1].exists ? 1 : -1;
+    if (records[0].exists && records[1].exists) {
+        // Two distinct commits must never have the same generation. Preserve
+        // both ambiguous names rather than guessing an ordering or erasing one.
+        if (records[0].generation == records[1].generation) return false;
+        latest = records[1].generation > records[0].generation ? 1 : 0;
     }
     return true;
+}
+enum class LegacyRead { Absent, Invalid, Valid, Error };
+LegacyRead legacy_read(const char* path, StartMenuStore& out) {
+    bool exists = false;
+    if (!fileio::regular_or_absent(path, exists)) return LegacyRead::Error;
+    if (!exists) return LegacyRead::Absent;
+    uint8_t bytes[START_STORE_BYTES + 1]; size_t got = 0;
+    if (!fileio::read_bounded(path, bytes, sizeof bytes, got)) return LegacyRead::Error;
+    return start_store_decode(bytes, got, out) ? LegacyRead::Valid : LegacyRead::Invalid;
+}
+bool create_journal_temporary(fileio::OwnedFile& file, const char* destination) {
+    // libctru's error table does not normalize every FS already-exists result.
+    // Skip known occupied regular siblings BEFORE O_EXCL; a race/open error
+    // still grants no cleanup authority and fails closed, never reopen with wb.
+    char path[256];
+    for (unsigned i = 0; i < 100; ++i) {
+        const int n = i ? std::snprintf(path, sizeof path, "%s.tmp-%02u", destination, i)
+                        : std::snprintf(path, sizeof path, "%s.tmp", destination);
+        if (n < 0 || size_t(n) >= sizeof path) return false;
+        bool exists = false;
+        if (!fileio::regular_or_absent(path, exists)) return false;
+        if (exists) continue;
+        return file.create(path) == fileio::ReserveResult::Ok;
+    }
+    return false;
+}
+// A vacant destination avoids both FAT replacement refusal AND libctru's
+// delete-target fallback. On 3DS call the FS service directly: even a late
+// competing name must not enter archive_rename's destructive replacement path.
+bool publish_preference(fileio::OwnedFile& temporary, const char* destination) {
+    if (!fileio::absent(destination)) return false;
+#ifdef __3DS__
+    if (std::strncmp(destination, "sdmc:/", 6) || std::strncmp(temporary.path(), "sdmc:/", 6)) return false;
+    FS_Archive archive;
+    const Result opened = FSUSER_OpenArchive(&archive, ARCHIVE_SDMC, fsMakePath(PATH_EMPTY, ""));
+    if (R_FAILED(opened)) { errno = int(opened); return false; }
+    const Result renamed = FSUSER_RenameFile(archive, fsMakePath(PATH_ASCII, temporary.path() + 5),
+                                           archive, fsMakePath(PATH_ASCII, destination + 5));
+    // Closing this extra archive handle cannot revoke a completed publication.
+    (void)FSUSER_CloseArchive(archive);
+    if (R_FAILED(renamed)) { errno = int(renamed); return false; }
+    temporary.retain();
+    return true;
+#else
+    return temporary.publish(destination); // host oracle; serialized directory
+#endif
+}
+}
+
+bool start_store_load_preferences(const char* path, StartMenuStore& out) {
+    PreferenceJournal records[2]; int latest = -1;
+    if (!journals(path, records, latest)) return false;
+    if (latest >= 0) return start_store_decode(records[latest].bytes + 16, START_STORE_BYTES, out);
+    // Import legacy only when NEITHER journal exists. Read/close errors are not
+    // corruption; they never authorize falling back to an older/default store.
+    const auto state = legacy_read(path, out);
+    if (state == LegacyRead::Valid) return true;
+    if (state == LegacyRead::Error) return false;
+    char backup[256];
+    return sibling(backup, path, ".bak") && legacy_read(backup, out) == LegacyRead::Valid;
+}
+
+bool start_store_save_preferences(const char* path, const StartMenuStore& store) {
+    uint8_t payload[START_STORE_BYTES];
+    if (!start_store_encode(store, payload)) return false;
+    PreferenceJournal records[2]; int latest = -1;
+    if (!journals(path, records, latest)) return false;
+    // Before first import, inspect old names without moving/truncating anything.
+    // A readable malformed legacy record can be left archived; an I/O error
+    // cannot. In particular, we do not claim it is corrupt to justify deletion.
+    if (latest < 0) {
+        StartMenuStore legacy; char backup[256];
+        if (!sibling(backup, path, ".bak") || legacy_read(path, legacy) == LegacyRead::Error ||
+            legacy_read(backup, legacy) == LegacyRead::Error) return false;
+    }
+    const uint64_t previous = latest < 0 ? 0 : records[latest].generation;
+    if (previous == UINT64_MAX) return false;
+    const int target = latest < 0 ? 0 : 1 - latest;
+    uint8_t bytes[JOURNAL_BYTES] = {};
+    std::memcpy(bytes, "SNMJ\1\0\0\0", 8);
+    for (int b = 0; b < 8; ++b) bytes[8 + b] = uint8_t((previous + 1) >> (8 * b));
+    std::memcpy(bytes + 16, payload, sizeof payload);
+    const uint32_t sum = checksum(bytes, JOURNAL_BYTES - 4);
+    for (int b = 0; b < 4; ++b) bytes[JOURNAL_BYTES - 4 + b] = uint8_t(sum >> (8 * b));
+    fileio::OwnedFile temporary;
+    if (!create_journal_temporary(temporary, records[target].path)) return false;
+    FILE* f = temporary.stream();
+    const bool wrote = std::fwrite(bytes, 1, sizeof bytes, f) == sizeof bytes;
+    const bool flushed = std::fflush(f) == 0;
+    const bool synced = flushed && ::fsync(::fileno(f)) == 0;
+    const bool closed = temporary.close(false);
+    PreferenceJournal verified;
+    std::strcpy(verified.path, temporary.path());
+    if (!wrote || !flushed || !synced || !closed || !read_journal(verified) ||
+        !verified.exists || std::memcmp(verified.bytes, bytes, sizeof bytes)) return false;
+    if (records[target].exists) {
+        // Recheck both snapshots before reclaiming only the older COMMITTED
+        // envelope. Cleanup of old SNMU/.bak/.tmp and unrecognized journal data
+        // is forbidden. Newest committed prefs survive even if remove is EIO.
+        PreferenceJournal check[2]; int now = -1;
+        if (!journals(path, check, now) || now != latest ||
+            std::memcmp(check[0].bytes, records[0].bytes, JOURNAL_BYTES) ||
+            std::memcmp(check[1].bytes, records[1].bytes, JOURNAL_BYTES) ||
+            std::remove(records[target].path) != 0) return false;
+    }
+    const bool published = publish_preference(temporary, records[target].path);
+    // Resolve an applied-but-error reply only by exact generation+payload
+    // readback AND vanished source. Never erase the destination on uncertainty.
+    PreferenceJournal committed;
+    std::strcpy(committed.path, records[target].path);
+    const bool exact = read_journal(committed) && committed.exists &&
+        !std::memcmp(committed.bytes, bytes, sizeof bytes);
+    if (!published && (!fileio::absent(temporary.path()) || !exact)) return false;
+    return exact;
+}
+
+bool last_patch_store_save(const char* path, int slot) {
+    if (!path || !*path || !project_slot_valid(slot)) return false;
+    bool exists = false;
+    if (!fileio::regular_or_absent(path, exists)) return false;
+    fileio::OwnedFile temporary;
+    if (!fileio::create_temporary(temporary, path)) return false;
+    const uint8_t bytes[5] = {'S','L','O','T', uint8_t(slot)};
+    const bool wrote = std::fwrite(bytes, 1, sizeof bytes, temporary.stream()) == sizeof bytes;
+    const bool closed = temporary.close(true);
+    uint8_t actual[6]; size_t got = 0;
+    if (!wrote || !closed || !fileio::read_bounded(temporary.path(), actual, sizeof actual, got) ||
+        got != sizeof bytes || std::memcmp(actual, bytes, sizeof bytes)) return false;
+    return temporary.publish(path); // rename failure retains old SLOT and old .tmp
 }
 
 void start_store_forget(StartMenuStore& store, int slot) {

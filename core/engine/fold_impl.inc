@@ -3,18 +3,20 @@
 namespace fold_detail {
 inline int uni(q15 v) { return std::max(0,int(v)); }
 inline int bi(q15 v) { return std::max(-32767,int(v)); }
-inline float periodic_sine(float cycles) {
+// `lut` is osc_clean::sine_table(), fetched once per block by modern_process
+// instead of once per sine call (function-local static guard). Same table.
+inline float periodic_sine(const float* lut,float cycles) {
     const float phase=cycles-float(osc_clean::floor_small(cycles));
-    return osc_clean::sine(uint32_t(phase*16777216.f)<<8);
+    return osc_clean::sine(lut,uint32_t(phase*16777216.f)<<8);
 }
-inline float fold(float x,float smooth) {
+inline float fold(const float* lut,float x,float smooth) {
     const float u=x-4.f*float(osc_clean::floor_small((x+1.f)*.25f));
     const float sharp=u<=1.f?u:2.f-u;
-    return smooth>0?sharp+(periodic_sine(x*.25f)-sharp)*smooth:sharp;
+    return smooth>0?sharp+(periodic_sine(lut,x*.25f)-sharp)*smooth:sharp;
 }
-inline float wrap(float x,float smooth) {
+inline float wrap(const float* lut,float x,float smooth) {
     const float sharp=x-2.f*float(osc_clean::floor_small((x+1.f)*.5f));
-    return smooth>0?sharp+(periodic_sine(x*.5f)-sharp)*smooth:sharp;
+    return smooth>0?sharp+(periodic_sine(lut,x*.5f)-sharp)*smooth:sharp;
 }
 inline float diode(float x,float smooth) {
     const float a=std::abs(x),radius=.16f*smooth;
@@ -22,13 +24,14 @@ inline float diode(float x,float smooth) {
     const float rounded=radius>0?x*x/(a+radius):a;
     return .375f*x+.625f*rounded;
 }
-inline float shape(float x,int mode,float smooth) {
-    if(mode==0)return fold(x,smooth);
-    if(mode==16384)return wrap(x,smooth);
+inline float shape(const float* lut,float x,int mode,float smooth) {
+    if(mode==0)return fold(lut,x,smooth);
+    if(mode==16384)return wrap(lut,x,smooth);
     if(mode==32767)return diode(x,smooth);
-    if(mode<16384){const float a=fold(x,smooth);return a+(wrap(x,smooth)-a)*(float(mode)/16384.f);}
-    const float a=wrap(x,smooth);return a+(diode(x,smooth)-a)*(float(mode-16384)/16383.f);
+    if(mode<16384){const float a=fold(lut,x,smooth);return a+(wrap(lut,x,smooth)-a)*(float(mode)/16384.f);}
+    const float a=wrap(lut,x,smooth);return a+(diode(x,smooth)-a)*(float(mode-16384)/16383.f);
 }
+inline float shape(float x,int mode,float smooth){return shape(osc_clean::sine_table(),x,mode,smooth);}
 inline q15 sample(float x) {
     const float scaled=std::max(-1.f,std::min(32767.f/32768.f,x))*32768.f;
     return q15(int(scaled+(scaled<0?-.5f:.5f)));
@@ -108,12 +111,13 @@ void FoldUnit::modern_process(q15* buf,int frames) {
     control_tick();
     static_assert(FIR_TAPS==osc_clean::TAPS,"shared immutable decimation coefficients");
     const int mode=fold_detail::uni(resolved_[P_MODE]);
+    const float* const sine_lut=osc_clean::sine_table(); // one init-guard check per block
     for(int i=0;i<frames;++i){
         const q15 dry=buf[i];const float source=float(dry)/32768.f;
         int newest=fir_head_;
         for(int sub=0;sub<2;++sub){
             const float input=input_previous_+(source-input_previous_)*float(sub+1)*.5f;
-            const float wet=fold_detail::shape(input*drive_+bias_,mode,smooth_)-bias_;
+            const float wet=fold_detail::shape(sine_lut,input*drive_+bias_,mode,smooth_)-bias_;
             dc_y_=wet-dc_x_+.999214910f*dc_y_;dc_x_=wet;
             if(std::abs(dc_y_)<1e-20f)dc_y_=0;
             tone_state_+=tone_alpha_*(dc_y_-tone_state_);

@@ -35,7 +35,7 @@ template<int N> struct Plot {
     char times[3][20]={};
 };
 struct Frame {
-    bool valid=false,loaded=false,bypass=false,mute=false,lock=false,full=false,sync=false,clean=false,fine=false,lens=false,gate=false,pad=false;
+    bool valid=false,loaded=false,bypass=false,mute=false,sync=false,clean=false,fine=false,lens=false,gate=false,pad=false;
     uint8_t zoom=4,page=0,selected=C::P_SIZE,mode=0,window=0,count=4,remaining=0,division=0,active=0,limit=1;
     uint8_t reading=0,percent=50,menu_focus=0;
     bool menu=false;
@@ -56,11 +56,11 @@ struct Gesture {
     uintptr_t unit=0,data=0;
     Engine* engine=nullptr;
     platform::AudioOut* audio=nullptr;
-    int chain=-1,slot=-1,step=-1,lock_chain=-1,bank=-1,sample=-1,channels=0;
+    int chain=-1,slot=-1,bank=-1,sample=-1,channels=0;
     int param=-1,action=-1,x=0,y=0,last_x=0,last_y=0;
     q15 value=0;
     View view=View::Chains;
-    bool locked=false,clean=false,fine=false,wave=false,pad=false,bypass=false,mute=false;
+    bool clean=false,fine=false,wave=false,pad=false,bypass=false,mute=false;
     C::LaunchMode mode=C::LaunchMode::Flow;
     C::Window window=C::Window::Linear;
     C::Reading reading=C::Reading::SignedPitch;
@@ -83,21 +83,19 @@ int clamp(int v,int lo=0,int hi=32767){return std::max(lo,std::min(hi,v));}
 bool grain_page(int p){return p<=C::P_GAIN||p==C::P_SCAN;}
 bool bipolar(int p){return p==C::P_PITCH||p==C::P_SCAN;}
 bool context(){return g_eng&&g_audio&&g_overlay==Overlay::Editor&&
-    (g_view==View::Chains||(g_view==View::Sequencer&&g_seq_lock_armed))&&
+    g_view==View::Chains&&
     g_edit_chain>=0&&g_edit_chain<NUM_CHAINS&&g_edit_slot>=0&&g_edit_slot<UNITS_PER_CHAIN;}
-bool locked(){return g_seq_lock_armed&&g_seq_lock_chain==g_edit_chain&&g_seq_lock_step>=0&&g_seq_lock_step<SEQ_STEPS;}
 C* current(){if(!context())return nullptr;Unit*u=g_eng->chains[g_edit_chain].units[g_edit_slot];return u&&u->kind==UnitKind::Grain?static_cast<C*>(u):nullptr;}
 void view_context(const C&u){if(view_engine!=g_eng||view_unit!=uintptr_t(&u)||view_chain!=g_edit_chain||view_slot!=g_edit_slot){
     fine=false;zoom=4;page=grain_page(selected)?0:1;view_engine=g_eng;view_unit=uintptr_t(&u);view_chain=g_edit_chain;view_slot=g_edit_slot;}}
-q15 edit_value(const C&u,int p){return locked()?seq_display_value(g_edit_slot,p,u.params[p].base):u.params[p].base;}
+q15 edit_value(const C&u,int p){return u.params[p].base;}
 bool matches(const Gesture& owner,const C&u){
     if(!context()||param_lens_is_open()||owner.engine!=g_eng||owner.audio!=g_audio||owner.unit!=uintptr_t(&u)||
-       owner.chain!=g_edit_chain||owner.slot!=g_edit_slot||owner.view!=g_view||owner.locked!=g_seq_lock_armed||
+       owner.chain!=g_edit_chain||owner.slot!=g_edit_slot||owner.view!=g_view||
        owner.bank!=g_eng->active_pattern||owner.palette!=palette::revision()||
        owner.clean!=u.clean||owner.mode!=u.launch_mode||owner.window!=u.window||
        owner.reading!=u.reading||owner.percent!=u.reverse_percent)return false;
     if(g_eng->chains[g_edit_chain].units[g_edit_slot]!=&u)return false;
-    if(owner.locked&&(!locked()||owner.step!=g_seq_lock_step||owner.lock_chain!=g_seq_lock_chain))return false;
     if(owner.sample!=u.sample_slot)return false;
     if(u.sample_slot>=0&&u.sample_slot<trackr::synth::SAMPLE_BANK_SIZE){const auto&s=Bank::instance().slot(u.sample_slot);
         if(owner.generation!=Bank::instance().generation(u.sample_slot)||owner.data!=uintptr_t(s.data.data())||
@@ -108,7 +106,7 @@ bool matches(const Gesture& owner,const C&u){
 bool owns(const C&u){return g_drag==Drag::GrainPosition&&matches(gesture,u);}
 void begin(C&u,int x,int y){
     gesture={};gesture.unit=uintptr_t(&u);gesture.engine=g_eng;gesture.audio=g_audio;gesture.chain=g_edit_chain;gesture.slot=g_edit_slot;
-    gesture.view=g_view;gesture.locked=g_seq_lock_armed;gesture.step=g_seq_lock_step;gesture.lock_chain=g_seq_lock_chain;
+    gesture.view=g_view;
     gesture.bank=g_eng->active_pattern;gesture.clean=u.clean;gesture.mode=u.launch_mode;gesture.window=u.window;
     gesture.reading=u.reading;gesture.percent=u.reverse_percent;gesture.palette=palette::revision();
     gesture.x=gesture.last_x=x;gesture.y=gesture.last_y=y;gesture.fine=fine;gesture.sample=u.sample_slot;
@@ -118,7 +116,7 @@ void begin(C&u,int x,int y){
 }
 void arm(C&u,int x,int y,int action,geo::Box box){begin(u,x,y);gesture.action=action;gesture.box=box;}
 void change(C&u,int p,q15 value){if(value==edit_value(u,p))return;
-    if(g_seq_lock_armed){if(locked())seq_record_lock(g_edit_slot,p,value);}else{u.params[p].base=value;mark_project_mutated();}}
+    u.params[p].base=value;mark_project_mutated();}
 void right(int x,int y,const char*t,u32 c){ui::text(x-ui::text_w(t),y,t,c);}
 void seconds(char*out,size_t n,uint32_t f){std::snprintf(out,n,"%.2fs",double(f)/ENGINE_SR);}
 template<class Painter> void marker(const Painter&pen,int x,int y,u32 c){pen.line(x-2,y,x,y-3,c);pen.line(x,y-3,x+2,y,c);pen.line(x+2,y,x,y+3,c);pen.line(x,y+3,x-2,y,c);}
@@ -188,7 +186,7 @@ bool grain_focus_menu_input(u32&down,u32 held,u32 up,bool blocked){
     if(menu_open){
         if(blocked||!context()||param_lens_is_open())grain_focus_release();
         else {platform::AudioOut::Guard guard(*g_audio);C*u=current();
-            if(!u||!matches(menu_owner,*u)||page!=2||!u->clean||g_seq_lock_armed)grain_focus_release();
+            if(!u||!matches(menu_owner,*u)||page!=2||!u->clean)grain_focus_release();
             else if(down&~(KEY_TOUCH|KEY_ZL)){
                 const u32 keys=down&~(KEY_TOUCH|KEY_ZL);
                 if(held&KEY_TOUCH)wait_lift=true;
@@ -239,18 +237,17 @@ bool grain_focus_touch_body(C&u,int x,int y){
     }
     grain_focus_release();if(!context()||param_lens_is_open()||blocked_frame)return false;
     platform::AudioOut::Guard guard(*g_audio);if(current()!=&u)return false;view_context(u);
-    if(g_seq_lock_armed&&!locked())return true;
-    if(geo::scan.has(x,y)){if(u.clean)arm(u,x,y,Scan,geo::scan);else if(!g_seq_lock_armed)arm(u,x,y,Upgrade,geo::scan);return true;}
+    if(geo::scan.has(x,y)){if(u.clean)arm(u,x,y,Scan,geo::scan);else arm(u,x,y,Upgrade,geo::scan);return true;}
     if(geo::fine.has(x,y)){arm(u,x,y,Fine,geo::fine);return true;}
-    if(geo::bypass.has(x,y)){if(!g_seq_lock_armed)arm(u,x,y,Bypass,geo::bypass);return true;}
-    for(int i=0;i<3;++i){if(geo::mode(i).has(x,y)){if(u.clean&&!g_seq_lock_armed)arm(u,x,y,i,geo::mode(i));return true;}
+    if(geo::bypass.has(x,y)){arm(u,x,y,Bypass,geo::bypass);return true;}
+    for(int i=0;i<3;++i){if(geo::mode(i).has(x,y)){if(u.clean)arm(u,x,y,i,geo::mode(i));return true;}
         if(geo::tab(i).has(x,y)){arm(u,x,y,10+i,geo::tab(i));return true;}}
     if(geo::pad.has(x,y)){
-        if(u.clean&&!g_seq_lock_armed&&!u.bypass&&!g_eng->chains[g_edit_chain].mute&&u.sample_slot>=0&&u.sample_slot<trackr::synth::SAMPLE_BANK_SIZE){
-            const auto&s=Bank::instance().slot(u.sample_slot);if(!s.empty()&&s.playable_frames()>=256){begin(u,x,y);gesture.pad=true;gesture.box=geo::pad;gesture.token=u.pad_begin();}}
+        if(u.clean&&!u.bypass&&!g_eng->chains[g_edit_chain].mute&&u.sample_slot>=0&&u.sample_slot<trackr::synth::SAMPLE_BANK_SIZE){
+            const auto&s=Bank::instance().slot(u.sample_slot);if(!s.empty()&&s.playable_frames()>=256){begin(u,x,y);gesture.pad=true;gesture.box=geo::pad;gesture.token=u.pad_begin();g_audio->track_grain_pad(&u,gesture.token);}}
         return true;
     }
-    if(geo::source.has(x,y)){if(!g_seq_lock_armed)arm(u,x,y,Source,geo::source);return true;}
+    if(geo::source.has(x,y)){arm(u,x,y,Source,geo::source);return true;}
     if(geo::wave.has(x,y)){
         selected=C::P_POS;page=0;
         if(u.sample_slot<0||u.sample_slot>=trackr::synth::SAMPLE_BANK_SIZE)return true;
@@ -261,16 +258,13 @@ bool grain_focus_touch_body(C&u,int x,int y){
         gesture.start=pos>gesture.span/2?std::min(pos-gesture.span/2,gesture.frames-gesture.span):0;return true;
     }
     if(page==2){
-        if(geo::reading.has(x,y)){if(u.clean&&!g_seq_lock_armed)arm(u,x,y,Reading,geo::reading);return true;}
-        if(geo::reverse_percent.has(x,y)){if(u.clean&&!g_seq_lock_armed&&u.reading==C::Reading::Mixed){arm(u,x,y,Percent,geo::reverse_percent);gesture.value=u.reverse_percent;}return true;}
+        if(geo::reading.has(x,y)){if(u.clean)arm(u,x,y,Reading,geo::reading);return true;}
+        if(geo::reverse_percent.has(x,y)){if(u.clean&&u.reading==C::Reading::Mixed){arm(u,x,y,Percent,geo::reverse_percent);gesture.value=u.reverse_percent;}return true;}
         for(int i=0;i<4;++i)if(geo::setup(i).has(x,y)){
         const int action=i==0?Window:i==1?Count:i==2?Zoom:Clock;
-        if(i==2||(!g_seq_lock_armed&&(i==3||u.clean)&&(i!=1||u.launch_mode==C::LaunchMode::Burst)))arm(u,x,y,action,geo::setup(i));
+        if(i==2||((i==3||u.clean)&&(i!=1||u.launch_mode==C::LaunchMode::Burst)))arm(u,x,y,action,geo::setup(i));
         return true;}return true;}
     for(int i=0;i<6;++i){if(!geo::param(i).has(x,y))continue;const int p=PARAMS[page][i];selected=p;
-        const auto b=geo::param(i);if(locked()&&hit(x,y,b.x+3,b.y,ui::text_w(NAMES[p])+6,12)){
-            if(g_eng->remove_step_lock(g_seq_lock_chain,g_seq_lock_step,g_edit_slot,p))mark_project_mutated();
-            return true;}
         if((!u.clean&&p==C::P_SCAN)||(u.clean&&u.window==C::Window::Hann&&(p==C::P_ATTACK||p==C::P_RELEASE)))return true;
         begin(u,x,y);gesture.param=p;gesture.value=edit_value(u,p);return true;}
     return true;
@@ -299,15 +293,15 @@ void grain_focus_touch_release(){
     C*browser=nullptr;bool opening=false;Gesture owner;
     if(gesture.unit&&context()&&!param_lens_is_open()&&!blocked_frame){platform::AudioOut::Guard guard(*g_audio);C*u=current();
         if(u&&owns(*u)){const int a=gesture.action;bool changed=false;
-            if(a==Reading&&!g_seq_lock_armed&&u->clean){opening=true;owner=gesture;menu_focus=clamp(int(u->reading),0,3);}
-            else if(a>=MenuRow&&a<MenuRow+4&&menu_open&&u->clean&&!g_seq_lock_armed){changed=u->reading!=C::Reading(a-MenuRow);if(changed)u->set_reading(C::Reading(a-MenuRow));}
-            else if(a==Percent&&u->clean&&!g_seq_lock_armed&&u->reading==C::Reading::Mixed){changed=u->reverse_percent!=gesture.value;if(changed)u->set_reverse_percent(uint8_t(gesture.value));}
-            else if(a>=0&&a<3&&!g_seq_lock_armed&&u->clean){const auto mode=C::LaunchMode(a);changed=u->launch_mode!=mode;if(changed)u->set_launch_mode(mode);}
+            if(a==Reading&&u->clean){opening=true;owner=gesture;menu_focus=clamp(int(u->reading),0,3);}
+            else if(a>=MenuRow&&a<MenuRow+4&&menu_open&&u->clean){changed=u->reading!=C::Reading(a-MenuRow);if(changed)u->set_reading(C::Reading(a-MenuRow));}
+            else if(a==Percent&&u->clean&&u->reading==C::Reading::Mixed){changed=u->reverse_percent!=gesture.value;if(changed)u->set_reverse_percent(uint8_t(gesture.value));}
+            else if(a>=0&&a<3&&u->clean){const auto mode=C::LaunchMode(a);changed=u->launch_mode!=mode;if(changed)u->set_launch_mode(mode);}
             else if(a>=10&&a<13){page=a-10;if(page<2&&grain_page(selected)!=(page==0))selected=page?C::P_DENS:C::P_SIZE;}
             else if(a==Fine)fine=!fine;
             else if(a==Scan){selected=C::P_SCAN;page=0;change(*u,C::P_SCAN,0);}
             else if(a==Zoom)zoom=zoom==16?1:zoom*2;
-            else if(!g_seq_lock_armed){
+            else {
                 if(a==Bypass){u->bypass=!u->bypass;changed=true;}
                 else if(a==Upgrade&&!u->clean){u->clean=true;u->reset();u->control_tick();changed=true;}
                 else if(a==Window&&u->clean){u->set_window(u->window==C::Window::Linear?C::Window::Hann:C::Window::Linear);changed=true;}
@@ -321,14 +315,14 @@ void grain_focus_touch_release(){
     }
     grain_focus_release();wait_lift=false;
     if(opening){menu_open=true;menu_dirty=true;menu_owner=owner;}
-    if(browser&&context()&&!g_seq_lock_armed)module_focus_touch_common_header(*browser,150,10); // browser I/O outside guard
+    if(browser&&context())module_focus_touch_common_header(*browser,150,10); // browser I/O outside guard
 }
 void grain_focus_capture(){
     frame={};if(!context()){grain_focus_release();if(!param_lens_is_open()){view_unit=0;view_engine=nullptr;fine=false;zoom=4;}return;}
     C::VisualGrain heads[8]={};
     {platform::AudioOut::Guard guard(*g_audio);C*u=current();if(!u){grain_focus_release();return;}view_context(*u);
         if((gesture.unit&&!owns(*u))||(menu_open&&!matches(menu_owner,*u)))grain_focus_release();
-        const auto&ch=g_eng->chains[g_edit_chain];frame.valid=true;frame.bypass=u->bypass;frame.mute=ch.mute;frame.lock=g_seq_lock_armed;frame.full=frame.lock&&g_seq_lock_flash>0;
+        const auto&ch=g_eng->chains[g_edit_chain];frame.valid=true;frame.bypass=u->bypass;frame.mute=ch.mute;
         frame.chain=g_edit_chain;frame.slot=g_edit_slot;frame.page=page;frame.selected=selected;frame.clean=u->clean;frame.fine=fine;frame.zoom=zoom;frame.lens=param_lens_is_open();
         frame.mode=u->clean?clamp(int(u->launch_mode),0,2):0;frame.window=u->clean?clamp(int(u->window),0,1):0;
         frame.count=clamp(u->burst_count,1,16);frame.remaining=u->burst_remaining();frame.gate=u->gate_open();frame.pad=gesture.pad&&gesture.unit==uintptr_t(u);
@@ -379,7 +373,7 @@ void closed_draw(const sigil_surface::Painter& pen){
     gran_reading_ui::header_text(pen,126,frame.clean?"scan 0":"old >",frame.clean?m::ghost():m::spot());gran_reading_ui::header_text(pen,frame.fine?178:190,frame.fine?"fine /32":"wide",m::ghost());
     gran_reading_ui::header_text(pen,242,"byp",frame.bypass?m::spot():m::ghost());pen.right(m::right_edge(320),m::kHeaderTextY,"x del",m::ghost());if(frame.bypass)pen.line(242,m::kHeaderMarkY,258,m::kHeaderMarkY,m::spot());
     for(int i=0;i<3;++i){const int x=14+62*i;gran_reading_ui::word(pen,x,49,MODES[i],frame.mode==i?m::spot():m::ghost());if(frame.mode==i)pen.line(x,54,x+28,54,m::spot());}
-    const bool enabled=frame.clean&&!frame.lock&&!frame.bypass&&!frame.mute&&frame.loaded&&frame.frames>=256;
+    const bool enabled=frame.clean&&!frame.bypass&&!frame.mute&&frame.loaded&&frame.frames>=256;
     if(frame.pad)pen.rect(214,26,98,30,(m::spot()&0xffffffu)|(22u<<24));
     gran_reading_ui::word(pen,263,49,PADS[frame.mode],enabled?m::spot():m::ghost(),true);pen.line(220,54,306,54,frame.pad?m::spot():palette::shadow());
     pen.text(14,65,frame.name[0]?frame.name:"no sample",m::ink());
@@ -392,14 +386,14 @@ void closed_draw(const sigil_surface::Painter& pen){
         module_fader::horizontal(pen,x,x+84,y+25,at(frame.edit[p]),at(frame.live[p]),{bool(frame.mod_links&(1u<<p)),quiet,frame.bypass||frame.mute},bipolar(p)?at(p==C::P_PITCH?8192:0):-1,true);
     }}else{
         const char*labels[]={"window","burst count","zoom","clock"};const char*clocks[]={"1/8","1/16","1/32","1/64"};
-        for(int i=0;i<4;++i){const int x=14+(i%2)*104,y=165+(i/2)*34;const bool enable=i==2||(!frame.lock&&(i==3||frame.clean)&&(i!=1||frame.mode==2));
+        for(int i=0;i<4;++i){const int x=14+(i%2)*104,y=165+(i/2)*34;const bool enable=i==2||((i==3||frame.clean)&&(i!=1||frame.mode==2));
             pen.text(x,y,labels[i],enable?m::ink():m::ghost());
             if(i==0)std::snprintf(text,sizeof text,"%s%s",frame.window?"hann":"linear",enable?" >":"");
             if(i==1)std::snprintf(text,sizeof text,"%u%s",unsigned(frame.count),frame.mode==2?"":" / stored");
             if(i==2)std::snprintf(text,sizeof text,"x%u >",unsigned(frame.zoom));
             if(i==3)std::snprintf(text,sizeof text,"%s%s",frame.sync?clocks[frame.division]:"free",enable?" >":"");
             pen.right(x+84,y+12,text,i==0&&enable?m::spot():m::ghost());pen.line(x,y+25,x+84,y+25,palette::shadow());}
-        const bool enable=frame.clean&&!frame.lock;
+        const bool enable=frame.clean;
         pen.text(222,165,"reading",enable?m::ink():m::ghost());
         const char*word=gran_reading_ui::labels[frame.reading];
         pen.right(306,177,word,enable?m::spot():m::ghost());
@@ -412,12 +406,11 @@ void closed_draw(const sigil_surface::Painter& pen){
         // Config has no modulation/live source: coincident marks only.
         module_fader::horizontal(pen,222,306,224,at,at,{false,!mixed,frame.bypass||frame.mute},-1,true);
     }
-    if(frame.lock)std::snprintf(text,sizeof text,frame.full?"lock full":"p-lock / name: remove");
-    else if(frame.bypass||frame.mute)std::snprintf(text,sizeof text,frame.bypass?"paused":"muted / scan runs");
+    if(frame.bypass||frame.mute)std::snprintf(text,sizeof text,frame.bypass?"paused":"muted / scan runs");
     else if(!frame.clean)std::snprintf(text,sizeof text,"legacy / old >: v2");
     else if(frame.window==1&&frame.page==1)std::snprintf(text,sizeof text,"hann / atk + rel stored");
     else std::snprintf(text,sizeof text,"wave: position / pad: %s",PADS[frame.mode]);
-    gran_reading_ui::footer(pen,320,text,frame.lock?"b back":"l: mod >");
+    gran_reading_ui::footer(pen,320,text,"l: mod >");
 }
 } // namespace
 void grain_focus_draw(const C&){
@@ -434,7 +427,7 @@ void grain_focus_draw(const C&){
         [](int i){return gran_reading_ui::labels[i];},[](int,int,unsigned,bool){},m::ink(),m::spot(),m::branch());
 }
 bool grain_focus_draw_top(){
-    if(!frame.valid||!frame.clean||frame.lock||frame.lens)return false;
+    if(!frame.valid||!frame.clean||frame.lens)return false;
     m::paper(400);module_heading::header(UnitKind::Grain,m::spot());ui::text(92,m::kHeaderTextY,"sample cloud",m::ghost());
     char text[64];std::snprintf(text,sizeof text,"ch%02d / %02d",frame.chain+1,frame.slot+1);right(m::right_edge(400),m::kHeaderTextY,text,m::ghost());
     ui::text(14,47,frame.name[0]?frame.name:"no sample",m::ink());

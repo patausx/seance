@@ -33,8 +33,8 @@ struct Frame {
     uint8_t stage=0;
     int8_t chain=0, slot=0, selected=V::P_DECAY;
     bool valid=false, flexible=true, ready=false, bypass=false, mute=false;
-    bool lock=false, lock_full=false, lens=false, gain_only=false;
-    bool modern=false, setup=false, lock_armed=false, cycling=false;
+    bool lens=false, gain_only=false;
+    bool modern=false, setup=false, cycling=false;
     int32_t bpm=120*65536;
     uint32_t latched[3]={}, times[3]={}, total=2;
     uint8_t plot[353]={}, kinds[UNITS_PER_CHAIN]={};
@@ -46,8 +46,8 @@ struct Frame {
 static_assert(sizeof(Frame)<=1280 && std::is_trivially_copyable<Frame>::value,
               "bounded pointer-free dual VCA frame");
 int selected=V::P_DECAY, drag_param=-1, origin_x=0, origin_y=0, drag_extent=160, drag_sign=1;
-int origin_chain=-1, origin_slot=-1, origin_step=-1, origin_lock_chain=-1;
-bool origin_locked=false, drag_horizontal=false, drag_time=false, origin_flexible=false;
+int origin_chain=-1, origin_slot=-1;
+bool drag_horizontal=false, drag_time=false, origin_flexible=false;
 uintptr_t origin_unit=0;
 q15 origin_value=0;
 uint32_t origin_time=0, origin_total=0;
@@ -68,35 +68,19 @@ bool time_param(int p) { return p==V::P_ATTACK || p==V::P_HOLD || p==V::P_DECAY;
 bool curve_param(int p) { return p==V::P_A_CURVE || p==V::P_D_CURVE; }
 bool context(bool drawing=false) {
     return g_eng && g_audio && (drawing || (!blocked_frame && !param_lens_is_open())) && g_overlay==Overlay::Editor &&
-        (g_view==View::Chains || (g_view==View::Sequencer && g_seq_lock_armed)) &&
+        g_view==View::Chains &&
         g_edit_chain>=0 && g_edit_chain<NUM_CHAINS && g_edit_slot>=0 && g_edit_slot<UNITS_PER_CHAIN;
 }
-bool lock_context() {
-    return g_seq_lock_armed && g_seq_lock_chain==g_edit_chain && g_seq_lock_step>=0 && g_seq_lock_step<SEQ_STEPS;
-}
-int bank() { const int b=sequencer_edit_bank();return b>=0&&b<NUM_PATTERNS?b:g_eng->active_pattern; }
-int gesture_bank() { return g_seq_lock_armed?bank():g_eng->active_pattern; }
 q15 edited(const V& u,int p) {
-    if(lock_context()) {
-        const auto& step=g_eng->sequence_pattern(bank()).steps[g_edit_chain][g_seq_lock_step];
-        for(int i=0;i<std::min(int(step.lock_count),SEQ_LOCKS);++i)
-            if(step.locks[i].slot==g_edit_slot&&step.locks[i].param==p)return step.locks[i].value;
-    }
     return u.params[p].base;
 }
 Drag drag_kind(int p) {
     return p==V::P_GAIN?Drag::VcaGain:p==V::P_ATTACK?Drag::VcaAttack:p==V::P_DECAY?Drag::VcaDecay:Drag::ParamBase;
 }
 void assign(V& u,int p,q15 value) {
-    if((g_seq_lock_armed && !lock_context()) || p<0 || p>=u.num_params)return;
-    if(lock_context()) {
-        auto& step=g_eng->sequence_pattern(bank()).steps[g_edit_chain][g_seq_lock_step];
-        const int count=std::min(int(step.lock_count),SEQ_LOCKS);int found=-1;
-        for(int i=0;i<count;++i)if(step.locks[i].slot==g_edit_slot&&step.locks[i].param==p){found=i;break;}
-        if(found>=0){if(step.locks[found].value==value)return;step.locks[found].value=value;}
-        else {if(count>=SEQ_LOCKS){g_seq_lock_flash=90;return;}
-            step.locks[count]={uint8_t(g_edit_slot),uint8_t(p),value};step.lock_count=uint8_t(count+1);}
-    } else {if(value==u.params[p].base)return;u.params[p].base=value;}
+    if(p<0 || p>=u.num_params)return;
+    if(value==u.params[p].base)return;
+    u.params[p].base=value;
     mark_project_mutated();
 }
 uint32_t duration(q15 value,int p,bool flexible) {
@@ -231,22 +215,16 @@ void bind(const V& u) {
 void begin(V& u,int p,int tx,int ty) {
     selected=drag_param=p;origin_x=tx;origin_y=ty;origin_value=edited(u,p);
     origin_chain=g_edit_chain;origin_slot=g_edit_slot;origin_unit=uintptr_t(&u);origin_flexible=u.flexible;
-    origin_locked=g_seq_lock_armed;origin_step=g_seq_lock_step;origin_lock_chain=g_seq_lock_chain;
-    origin_engine=g_eng;origin_view=g_view;origin_bank=gesture_bank();origin_setup=setup;
+    origin_engine=g_eng;origin_view=g_view;origin_bank=g_eng->active_pattern;origin_setup=setup;
     origin_modern=u.modern();origin_sync=u.modern()&&vt::enabled(edited(u,V::P_SYNC));origin_fine=fine_held;
     g_drag=drag_kind(p);g_drag_param=p;
 }
 bool owns(const V& u) {
-    return origin_engine==g_eng&&origin_view==g_view&&origin_bank==gesture_bank()&&origin_unit==uintptr_t(&u)&&
+    return origin_engine==g_eng&&origin_view==g_view&&origin_bank==g_eng->active_pattern&&origin_unit==uintptr_t(&u)&&
         origin_chain==g_edit_chain&&origin_slot==g_edit_slot&&origin_flexible==u.flexible&&origin_modern==u.modern()&&
-        origin_locked==g_seq_lock_armed&&origin_setup==setup&&origin_fine==fine_held&&drag_param==selected&&
+        origin_setup==setup&&origin_fine==fine_held&&drag_param==selected&&
         g_drag_param==drag_param&&origin_sync==(u.modern()&&vt::enabled(edited(u,V::P_SYNC)))&&
-        g_eng->chains[g_edit_chain].units[g_edit_slot]==&u&&drag_param<u.num_params&&
-        (!origin_locked||(lock_context()&&origin_step==g_seq_lock_step&&origin_lock_chain==g_seq_lock_chain));
-}
-bool remove_name(int p,int x,int y,const char* name,int tx,int ty) {
-    if(!lock_context()||!hit(tx,ty,x-3,y-4,ui::text_w(name)+6,16))return false;
-    selected=p;if(g_eng->remove_step_lock(g_seq_lock_chain,g_seq_lock_step,g_edit_slot,p,bank()))mark_project_mutated();return true;
+        g_eng->chains[g_edit_chain].units[g_edit_slot]==&u&&drag_param<u.num_params;
 }
 void elapsed(char* out,size_t size,uint32_t samples,bool units=true) {
     const uint32_t ms=(samples+16)/32;
@@ -312,7 +290,7 @@ void draw_flexible() {
             ui::text(14,73,"original sound and free stage times",m::ghost());
             ui::text(14,106,"time / retrigger / cycle",m::ghost());
             option(222,133,"extend",false);
-            ui::text(14,173,frame.lock_armed?"exit p-lock to extend":"explicit upgrade / keeps current ahd",m::ghost());
+            ui::text(14,173,"explicit upgrade / keeps current ahd",m::ghost());
             ui::text(14,199,"new saved copy needs current reader",m::ghost());
         } else {
             ui::text(14,45,"time",chosen(V::P_SYNC));
@@ -339,9 +317,8 @@ void draw_flexible() {
             position(frame.edit[p],p,x+1,end-1),position(frame.sounding[p],p,x+1,end-1),
             {bool(frame.mod_links&(1u<<p)),false,frame.bypass||frame.mute},curve_param(p)?position(0,p,x+1,end-1):-1);
     }
-    if(frame.lock)m::footer(320,frame.lock_full?"lock full / name: remove":"p-lock / name: remove","b back");
-    else {ui::text(m::kLeft,m::kTextY,frame.setup?"b main":"b back",m::ghost());
-        ui::text(112,m::kTextY,frame.setup?"a trig":"a trig/r fine",m::ghost());right(m::right_edge(320),m::kTextY,"l: mod >",m::ghost());}
+    ui::text(m::kLeft,m::kTextY,frame.setup?"b main":"b back",m::ghost());
+    ui::text(112,m::kTextY,frame.setup?"a trig":"a trig/r fine",m::ghost());right(m::right_edge(320),m::kTextY,"l: mod >",m::ghost());
 }
 bool draw_flexible_top() {
     m::paper(400);module_heading::header(UnitKind::Vca,m::spot());char text[80];
@@ -376,7 +353,7 @@ bool draw_flexible_top() {
     if(frame.ready&&!frame.bypass&&!frame.mute)std::snprintf(text,sizeof text,"opening %u%%",(frame.opening*100u+16383)/32767);
     else std::snprintf(text,sizeof text,"opening --");
     ui::text(14,208,text,m::ink());right(386,208,frame.multiplier,m::spot());
-    const char* caption=frame.lock_full?"lock full / name: remove":frame.lock?"lock shape / dot: actual":frame.bypass?"bypassed / shape not output":frame.mute?"muted / shape not output":"shape from rest / dot: actual";
+    const char* caption=frame.bypass?"bypassed / shape not output":frame.mute?"muted / shape not output":"shape from rest / dot: actual";
     m::footer(400,caption,stage_name());return true;
 }
 } // namespace
@@ -398,23 +375,22 @@ bool vca_focus_touch_body(V& u,int tx,int ty) {
     bind(u);vca_focus_release();g_drag=Drag::None;
     if(u.flexible&&hit(tx,ty,198,0,48,26)){setup=!setup;return true;}
     if(ty<26) {
-        if(!g_seq_lock_armed && hit(tx,ty,244,0,39,26)) {u.bypass=!u.bypass;mark_project_mutated();}
+        if(hit(tx,ty,244,0,39,26)) {u.bypass=!u.bypass;mark_project_mutated();}
         return true;
     }
     if(u.flexible) {
-        if(g_seq_lock_armed&&!lock_context())return true;
         if(setup) {
             if(!u.modern()) {
-                if(!g_seq_lock_armed&&hit(tx,ty,212,124,82,32)){V defaults;
+                if(hit(tx,ty,212,124,82,32)){V defaults;
                     for(int p=V::AHD_COUNT;p<V::P_COUNT;++p)u.params[p]=defaults.params[p];
                     for(auto& scene:g_eng->scenes[g_edit_chain])if(scene.kind[g_edit_slot]==UnitKind::Vca)
                         for(int p=V::AHD_COUNT;p<V::P_COUNT;++p)scene.base[g_edit_slot][p]=defaults.params[p].base;
                     u.set_modern(true);mark_project_mutated();bind(u);setup=true;}
                 return true;
             }
-            const int ps[]={V::P_SYNC,V::P_RETRIGGER,V::P_RUN};const char* ns[]={"time","retrigger","run"};
+            const int ps[]={V::P_SYNC,V::P_RETRIGGER,V::P_RUN};
             for(int row=0;row<3;++row)if(hit(tx,ty,8,37+row*60,304,28)) {
-                const int p=ps[row];selected=p;if(remove_name(p,14,45+row*60,ns[row],tx,ty))return true;
+                const int p=ps[row];selected=p;
                 if(row==0){if(tx>=160)assign(u,p,tx<240?0:32767);}
                 else if(row==1){if(tx>=102)assign(u,p,vt::retrigger_value(tx<164?0:tx<245?1:2));}
                 else if(tx>=140)assign(u,p,tx<247?0:32767);
@@ -425,7 +401,6 @@ bool vca_focus_touch_body(V& u,int tx,int ty) {
         for(int row=0;row<4;++row)for(int col=0;col<2;++col){const int p=main_params[row][col],x=lefts[col],y=rows[row];
             if(!hit(tx,ty,x-6,y-8,146,42))continue;
             selected=p;
-            if(remove_name(p,x,y,main_names[row][col],tx,ty))return true;
             if(p==V::P_DUCK){if(ty>=y+12)assign(u,p,tx<x+75?0:32767);return true;}
             begin(u,p,tx,ty);return true;
         }
@@ -433,16 +408,15 @@ bool vca_focus_touch_body(V& u,int tx,int ty) {
     }
     q15 values[V::P_COUNT]={};for(int p=0;p<u.num_params;++p)values[p]=edited(u,p);
     const Shape shape(values,u.flexible);
-    int p=-1;bool name=false,node=false;
+    int p=-1;bool node=false;
     if(hit(tx,ty,277,86,37,73) || hit(tx,ty,273,52,41,32))p=V::P_GAIN;
     else if(ty>=161 && ty<195 && tx>=8 && tx<300) {
         const int col=(tx-8)/74;
         static const int params[]={V::P_ATTACK,V::P_HOLD,V::P_DECAY,V::P_FLOOR};
-        p=params[col];name=ty<177;
+        p=params[col];
     } else if(u.flexible && ty>=198 && ty<222) {
         if(tx>=8 && tx<156)p=V::P_A_CURVE;
         else if(tx>=164 && tx<312)p=V::P_D_CURVE;
-        name=tx<(p==V::P_A_CURVE?58:218);
     } else if(ty>=64 && ty<160 && tx<275) {
         int best=0x7fffffff;
         auto candidate=[&](int param,int x,int y,int radius) {
@@ -465,12 +439,6 @@ bool vca_focus_touch_body(V& u,int tx,int ty) {
     }
     if(p<0 || p>=u.num_params)return true;
     selected=p;
-    if(g_seq_lock_armed && !lock_context())return true;
-    // Parameter-name tap clears only a stored lock; values and nodes edit it.
-    if(lock_context() && (name || (p==V::P_GAIN && ty>=52 && ty<66))) {
-        if(g_eng->remove_step_lock(g_seq_lock_chain,g_seq_lock_step,g_edit_slot,p,bank()))mark_project_mutated();
-        return true;
-    }
     begin(u,p,tx,ty);
     drag_horizontal=time_param(p);drag_time=node && time_param(p) && u.flexible;
     origin_time=duration(origin_value,p,u.flexible);origin_total=shape.total;
@@ -515,8 +483,7 @@ void vca_focus_capture() {
         if(selected>=u.num_params){selected=V::P_DECAY;vca_focus_release();}
         frame.valid=true;frame.flexible=u.flexible;frame.modern=u.modern();frame.setup=setup;frame.selected=selected;
         frame.chain=g_edit_chain;frame.slot=g_edit_slot;frame.bypass=u.bypass;frame.mute=chain.mute;
-        frame.lock=lock_context();frame.lock_armed=g_seq_lock_armed;frame.lens=param_lens_is_open();
-        frame.lock_full=frame.lock&&g_eng->sequence_pattern(bank()).steps[g_edit_chain][g_seq_lock_step].lock_count>=SEQ_LOCKS;
+        frame.lens=param_lens_is_open();
         if(frame.lens)vca_focus_release();
         g_eng->capture_param_inspector(g_edit_chain,g_edit_slot,selected,frame.detail);
         frame.ready=u.visual_ready();frame.stage=u.visual_stage();frame.progress=u.visual_progress_q16();
@@ -596,8 +563,7 @@ void vca_focus_draw(const V&) {
         std::snprintf(text,sizeof text,"%c curve %s",i?'d':'a',value);ui::text(i?174:14,204,text,frame.flexible?chosen(p):m::ghost());
     }
     ui::line(14,223,306,223,m::branch());
-    if(frame.lock)ui::text(m::kLeft,m::kTextY,frame.lock_full?"lock full / tap name to clear / b back":"p-lock / tap name to clear / b back",m::ghost());
-    else {ui::text(m::kLeft,m::kTextY,"b back",m::ghost());ui::text(118,m::kTextY,"a trig",m::ghost());right(m::right_edge(320),m::kTextY,"l: mod >",m::ghost());}
+    ui::text(m::kLeft,m::kTextY,"b back",m::ghost());ui::text(118,m::kTextY,"a trig",m::ghost());right(m::right_edge(320),m::kTextY,"l: mod >",m::ghost());
 }
 
 bool vca_focus_draw_top() {
@@ -606,10 +572,10 @@ bool vca_focus_draw_top() {
     const auto& d=frame.detail;char text[80],value[24];m::paper(400);
     module_heading::header(UnitKind::Vca,m::spot());
     std::snprintf(text,sizeof text,"ch%02d / %02d",frame.chain+1,frame.slot+1);right(m::right_edge(400),m::kHeaderTextY,text,m::ghost());
-    ui::text(14,42,title(),m::spot());ui::text(14,58,frame.lock?"edit lock":d.temp?"temporary":"base",m::ghost());
+    ui::text(14,42,title(),m::spot());ui::text(14,58,d.temp?"temporary":"base",m::ghost());
     auto format=[&](q15 v) {value_text(value,sizeof value,d.param,v,frame.flexible);};
     format(d.temp?d.control:frame.edit[frame.selected]);hero(value);
-    const bool compact_top=frame.flexible && !frame.lens && !frame.lock;
+    const bool compact_top=frame.flexible && !frame.lens;
     format(d.base);std::snprintf(text,sizeof text,"stored base %s",value);ui::text(14,compact_top?149:166,text,m::ghost());
     auto px=[&](q15 v) {return 14+(clamp(v,d.bipolar?-32767:0)+(d.bipolar?32767:0))*210/(d.bipolar?65534:32767);};
     const int sy=compact_top?171:184;
@@ -618,7 +584,7 @@ bool vca_focus_draw_top() {
         d.bipolar?px(0):-1);
     format(d.bipolar?-32767:0);ui::text(14,compact_top?185:199,value,m::ghost());format(32767);right(224,compact_top?185:199,value,m::ghost());
     ui::line(240,46,240,211,m::branch());
-    if(frame.lens || frame.lock || !frame.flexible) {
+    if(frame.lens || !frame.flexible) {
         ui::text(254,46,"live / resolved",m::ghost());format(d.effective);ui::text(254,60,value,m::spot());
         format(d.control);std::snprintf(text,sizeof text,"control %s",value);ui::text(254,78,text,m::ink());
         format(d.target);std::snprintf(text,sizeof text,"target %s",value);ui::text(254,92,text,m::ghost());
@@ -637,7 +603,7 @@ bool vca_focus_draw_top() {
     ui::text(254,111,text,d.source!=ModSource::None && !d.mod_enabled?m::ghost():m::ink());
     static const char* layers[]={"base","step lock","audition","performance","temp"};
     std::snprintf(text,sizeof text,"via %s",layers[d.layer<5?d.layer:0]);ui::text(254,127,text,m::ghost());
-    if(frame.lens || frame.lock || !frame.flexible) {
+    if(frame.lens || !frame.flexible) {
         ui::text(254,149,d.clip_low||d.clip_high?"range / clips":"potential range",m::ghost());
         format(d.range_min);ui::text(254,164,value,m::ink());format(d.range_max);ui::text(254,178,value,m::ink());
         value_text(value,sizeof value,d.param,frame.sounding[d.param],frame.flexible);
@@ -647,8 +613,7 @@ bool vca_focus_draw_top() {
         draw_shape(shape,254,170,384,202,false);live_dot(254,170,384,202,2);
     }
     const char* explanation=frame.flexible?"shape from rest / dot is actual opening":"legacy ad / original sound and nominal times";
-    if(frame.lock_full)explanation="lock full / tap parameter name to clear";
-    else if(frame.bypass)explanation="bypassed / diagram is not audible output";
+    if(frame.bypass)explanation="bypassed / diagram is not audible output";
     else if(frame.mute)explanation="chain muted / diagram is not audible output";
     else if(d.temp)explanation="temporary / release l restores stored base";
     else if(frame.flexible && (time_param(d.param)||curve_param(d.param)))explanation="time + curve latch at each stage entry";

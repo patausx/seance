@@ -34,7 +34,7 @@ void sync_edit_context() { // caller holds Guard
     }
     if(g_edit_bank==g_seq_bank && g_history_chain==g_seq_chain && g_edit_signature==signature) return;
     g_selection.clear(); g_history.clear();
-    g_value_drag=false; g_select_chain=-1; g_target_picker=false;
+    g_value_drag=false; g_select_chain=-1;
     g_offset=false; g_edit_status[0]=0;
     g_edit_bank=g_seq_bank; g_history_chain=g_seq_chain; g_edit_signature=signature;
 }

@@ -33,10 +33,10 @@ struct Gesture {
     Engine* engine=nullptr;
     uintptr_t unit=0;
     View view=View::Chains;
-    int chain=-1,slot=-1,bank=-1,step=-1,lock_chain=-1,param=-1;
+    int chain=-1,slot=-1,bank=-1,param=-1;
     int start=0,last=0;
     q15 value=0;
-    bool locked=false,vertical=false,setup=false,fine=false;
+    bool vertical=false,setup=false,fine=false;
 } gesture;
 struct Frame {
     ParamInspector param={};
@@ -49,7 +49,7 @@ struct Frame {
     int8_t chain=-1,slot=-1,selected=S::P_SIZE;
     uint8_t window=0,division=0;
     bool valid=false,ready=false,frozen=false,longer=false,bypass=false,mute=false;
-    bool setup=false,fine=false,locked=false,lock_full=false,lens=false;
+    bool setup=false,fine=false,lens=false;
 } frame;
 static_assert(sizeof(Frame)<=512 && std::is_trivially_copyable<Frame>::value,
               "swarm draw uses a bounded pointer-free capture, not audio access");
@@ -58,17 +58,9 @@ bool bipolar(int p) { return p==S::P_PITCH||p==S::P_PITCH_ENV; }
 q15 legal(int p,int v) { return q15(clamp(v,bipolar(p)?-32767:0)); }
 bool context() {
     return g_eng&&g_audio&&g_overlay==Overlay::Editor&&
-        (g_view==View::Chains||(g_view==View::Sequencer&&g_seq_lock_armed))&&
+        g_view==View::Chains&&
         g_edit_chain>=0&&g_edit_chain<NUM_CHAINS&&g_edit_slot>=0&&g_edit_slot<UNITS_PER_CHAIN;
 }
-bool lock_context() {
-    return g_seq_lock_armed&&g_seq_lock_chain==g_edit_chain&&g_seq_lock_step>=0&&g_seq_lock_step<SEQ_STEPS;
-}
-int edit_bank() {
-    const int bank=sequencer_edit_bank();
-    return bank>=0&&bank<NUM_PATTERNS?bank:g_eng->active_pattern;
-}
-int gesture_bank() {return g_seq_lock_armed?edit_bank():g_eng->active_pattern;}
 bool ours() { return g_drag==Drag::StrnPitch; }
 void release() { gesture={};if(ours())g_drag=Drag::None; }
 void bind(const S& u) {
@@ -78,43 +70,25 @@ void bind(const S& u) {
     }
 }
 q15 edit_value(const S& u,int p) {
-    if(lock_context()) {
-        const auto& step=g_eng->sequence_pattern(edit_bank()).steps[g_edit_chain][g_seq_lock_step];
-        for(int i=0;i<std::min(int(step.lock_count),SEQ_LOCKS);++i)
-            if(step.locks[i].slot==g_edit_slot&&step.locks[i].param==p)return step.locks[i].value;
-    }
     return u.params[p].base;
 }
-void set_value(S& u,int p,q15 v) { // caller holds guard; never fall back to base on a failed lock
-    if((g_seq_lock_armed&&!lock_context())||edit_value(u,p)==v)return;
-    if(g_seq_lock_armed) {
-        auto& step=g_eng->sequence_pattern(edit_bank()).steps[g_edit_chain][g_seq_lock_step];
-        const int count=std::min(int(step.lock_count),SEQ_LOCKS);
-        int found=-1;
-        for(int i=0;i<count;++i)if(step.locks[i].slot==g_edit_slot&&step.locks[i].param==p){found=i;break;}
-        if(found>=0)step.locks[found].value=v;
-        else {
-            if(count>=SEQ_LOCKS){g_seq_lock_flash=90;return;}
-            step.locks[count]={uint8_t(g_edit_slot),uint8_t(p),v};step.lock_count=uint8_t(count+1);
-        }
-    } else u.params[p].base=v;
+void set_value(S& u,int p,q15 v) { // caller holds guard
+    if(edit_value(u,p)==v)return;
+    u.params[p].base=v;
     mark_project_mutated();
 }
 void begin(S& u,int p,int x,int y,bool vertical) {
     selected=p;
-    if(g_seq_lock_armed&&!lock_context())return;
     gesture={};gesture.engine=g_eng;gesture.unit=uintptr_t(&u);gesture.view=g_view;
-    gesture.chain=g_edit_chain;gesture.slot=g_edit_slot;gesture.bank=gesture_bank();
-    gesture.locked=g_seq_lock_armed;gesture.step=g_seq_lock_step;gesture.lock_chain=g_seq_lock_chain;
+    gesture.chain=g_edit_chain;gesture.slot=g_edit_slot;gesture.bank=g_eng->active_pattern;
     gesture.param=p;gesture.start=gesture.last=vertical?y:x;gesture.value=edit_value(u,p);
     gesture.vertical=vertical;gesture.setup=setup;gesture.fine=fine;g_drag=Drag::StrnPitch;
 }
 bool owns(const S& u) {
     return gesture.engine==g_eng&&gesture.unit==uintptr_t(&u)&&gesture.view==g_view&&
-        gesture.chain==g_edit_chain&&gesture.slot==g_edit_slot&&gesture.bank==gesture_bank()&&
+        gesture.chain==g_edit_chain&&gesture.slot==g_edit_slot&&gesture.bank==g_eng->active_pattern&&
         gesture.param==selected&&gesture.setup==setup&&gesture.fine==fine&&
-        gesture.locked==g_seq_lock_armed&&g_eng->chains[g_edit_chain].units[g_edit_slot]==&u&&
-        (!gesture.locked||(lock_context()&&gesture.step==g_seq_lock_step&&gesture.lock_chain==g_seq_lock_chain));
+        g_eng->chains[g_edit_chain].units[g_edit_slot]==&u;
 }
 uint32_t length(q15 value,bool longer) {
     return 128u+uint32_t(uint64_t(clamp(value))*(longer?32640u:8064u)/32767u);
@@ -206,8 +180,8 @@ void setup_controls(const Frame& f) {
     for(int row=0;row<2;++row)for(int col=0;col<2;++col)setting_control(col,row,f);
     char value[32];std::snprintf(value,sizeof value,"hold %s",f.edit[S::P_HOLD]>16384?"on":"off");
     text(14,167,value,f.edit[S::P_HOLD]>16384?m::spot():m::ink());
-    std::snprintf(value,sizeof value,"shape %s",f.window==0?"tri":f.window==1?"hann":"trap");text(118,167,value,f.locked?m::ghost():m::ink());
-    text(230,167,f.longer?"span long":"span scan",f.locked?m::ghost():m::ink());
+    std::snprintf(value,sizeof value,"shape %s",f.window==0?"tri":f.window==1?"hann":"trap");text(118,167,value,m::ink());
+    text(230,167,f.longer?"span long":"span scan",m::ink());
     text(14,201,"pitch step",!f.fine?m::spot():m::ghost());
     text(118,201,"pitch fine",f.fine?m::spot():m::ghost());text(250,201,"zero",m::ink());
 }
@@ -254,13 +228,15 @@ void stranular_focus_capture() {
     frame={};
     if(!context()){stranular_focus_cancel();return;}
     if(param_lens_is_open())release();
+    // Another module's editor: no guard entry. Chain slots are written only by this UI thread.
+    {const Unit* u=g_eng->chains[g_edit_chain].units[g_edit_slot];if(!u||u->kind!=UnitKind::Stranular){stranular_focus_cancel();return;}}
     platform::AudioOut::Guard guard(*g_audio);
     const Unit* u=g_eng->chains[g_edit_chain].units[g_edit_slot];
     if(!u||u->kind!=UnitKind::Stranular){stranular_focus_cancel();return;}
     const auto& st=*static_cast<const S*>(u);bind(st);
     if(ours()&&!owns(st))release();
     frame.valid=true;frame.chain=g_edit_chain;frame.slot=g_edit_slot;frame.selected=selected;
-    frame.setup=setup;frame.fine=fine;frame.bypass=u->bypass;frame.locked=g_seq_lock_armed;frame.lock_full=g_seq_lock_flash>0;
+    frame.setup=setup;frame.fine=fine;frame.bypass=u->bypass;
     frame.mod_links=focus_mod_links(st);frame.mute=g_eng->chains[g_edit_chain].mute;frame.ready=st.ready();
     frame.longer=st.long_mode;frame.window=st.window_mode%3;frame.division=std::min(int(st.sync_division),3);
     frame.frozen=st.visual_frozen();frame.span=st.scan_span_frames();frame.bpm=g_eng->bpm;frame.lens=param_lens_is_open();
@@ -280,7 +256,7 @@ bool stranular_focus_touch_body(S& u,int x,int y) {
     bind(u);release();
     if(l::contains(l::setup,x,y)){setup=!setup;return true;}
     if(y<24) {
-        if(!g_seq_lock_armed&&l::contains(l::bypass,x,y)){u.bypass=!u.bypass;mark_project_mutated();}
+        if(l::contains(l::bypass,x,y)){u.bypass=!u.bypass;mark_project_mutated();}
         return true; // physical X owns deletion
     }
     if(!setup) {
@@ -297,7 +273,7 @@ bool stranular_focus_touch_body(S& u,int x,int y) {
         for(int row=0;row<2;++row)for(int col=0;col<2;++col)if(l::contains(l::extra(col,row),x,y)) {
             const int p=settings[row][col];selected=p;
             if(p==S::P_SYNC&&x>=90&&y<132) {
-                if(!g_seq_lock_armed) {
+                {
                     if(u.params[p].base<=16384)set_value(u,p,32767);
                     else if(u.sync_division>=3){u.sync_division=0;set_value(u,p,0);}
                     else {++u.sync_division;mark_project_mutated();}
@@ -307,8 +283,8 @@ bool stranular_focus_touch_body(S& u,int x,int y) {
             return true;
         }
         if(l::contains(l::hold,x,y)){selected=S::P_HOLD;set_value(u,selected,edit_value(u,selected)>16384?0:32767);}
-        else if(l::contains(l::shape,x,y)&&!g_seq_lock_armed){u.window_mode=(u.window_mode+1)%3;mark_project_mutated();}
-        else if(l::contains(l::span,x,y)&&!g_seq_lock_armed){u.long_mode=!u.long_mode;mark_project_mutated();}
+        else if(l::contains(l::shape,x,y)){u.window_mode=(u.window_mode+1)%3;mark_project_mutated();}
+        else if(l::contains(l::span,x,y)){u.long_mode=!u.long_mode;mark_project_mutated();}
         else if(l::contains(l::step,x,y))fine=false;
         else if(l::contains(l::fine,x,y))fine=true;
         else if(l::contains(l::zero,x,y)){selected=S::P_PITCH;set_value(u,selected,0);}
@@ -352,7 +328,7 @@ bool stranular_focus_draw_bottom() {
         center(160,37,label,color);line(118,50,202,50,color);
         time_control(0,f);time_control(1,f);for(int slot=0;slot<4;++slot)performance_control(slot,f);
     }
-    m::footer(320,f.locked?(f.lock_full?"lock full / b back":"p-lock / b back"):"b back",f.locked?"":"l: mod >");
+    m::footer(320,"b back","l: mod >");
     return true;
 }
 void stranular_focus_draw_body(const S&) {stranular_focus_draw_bottom();}

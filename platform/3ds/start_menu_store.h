@@ -26,7 +26,22 @@ constexpr size_t START_STORE_BYTES = 96; // v2/v3/v4: header/history + 3 opaque 
 bool start_store_decode(const uint8_t* bytes, size_t size, StartMenuStore& out);
 bool start_store_encode(const StartMenuStore& store, uint8_t (&out)[START_STORE_BYTES]);
 bool start_store_load(const char* path, StartMenuStore& out);
+// Exclusive staging; no primary unlink. Recovery copy rotation follows the
+// primary commit and is best-effort; old .bak survives a rotation refusal.
 bool start_store_save(const char* path, const StartMenuStore& store);
+// SDMC app preferences use two bounded generation/checksum journal siblings.
+// The original SNMU/.bak/.tmp names remain untouched (legacy import only).
+// Load selects the newest committed journal, never a staging file. Save only
+// reclaims a verified older journal while a newer valid one remains present.
+// These explicit APIs must be paired at ALL main preference save/load callers;
+// raw start_store_load/save and SLOT keep their existing compatibility contract.
+// Serialized controller/offline access only; no power-loss durability promise.
+// Unreadable/invalid journal names fail closed, without deleting or downgrading.
+bool start_store_load_preferences(const char* path, StartMenuStore& out);
+bool start_store_save_preferences(const char* path, const StartMenuStore& store);
+// Exact legacy five-byte SLOT record, independent of SNMU. Valid slots only;
+// intentionally forgetting an unsaved session remains the controller's policy.
+bool last_patch_store_save(const char* path, int slot);
 // Call only after a project load succeeds, including explicit startup resume.
 void start_store_touch(StartMenuStore& store, int slot, uint64_t now);
 void start_store_forget(StartMenuStore& store, int slot);

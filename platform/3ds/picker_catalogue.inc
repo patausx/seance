@@ -4,6 +4,7 @@
 // Add metadata here and regenerate with tools/generate_picker_labels.py.
 PICKER_ENTRY(Osc, "osc", "oscillator", Sources, "generates pitched sine, triangle, saw and pulse waveforms.")
 PICKER_ENTRY(Fm, "fm", "fm", Sources, "creates tones with two-operator fm and feedback.")
+PICKER_ENTRY(Pent, "pent", "pent", Sources, "five continuous voices with rational tuning and delayed phase modulation.")
 PICKER_ENTRY(Motor, "motor", "motor", Sources, "generates jittered saw and pulse tones with resonant body.")
 PICKER_ENTRY(Noise, "noise", "noise", Sources, "generates white, pink, crackle and metallic noise.")
 PICKER_ENTRY(Bird, "bird", "bird", Sources, "synthesizes short bird-like calls with pitch sweeps, trills and noise.")
@@ -11,6 +12,10 @@ PICKER_ENTRY(Inst, "inst", "instruments", Sources, "plays struck modal vibes, sa
 PICKER_ENTRY(SamplePlayer, "play", "play", Sources, "plays a sample with pitch, looping and playback-window controls.")
 PICKER_ENTRY(Scratch, "scrt", "scrt", Sources, "scratches samples or holds a local window with paired xy controls.")
 PICKER_ENTRY(Paul, "paul", "paul", Sources, "stretches a sample spectrally with source position, window and freeze.")
+PICKER_ENTRY(Rule, "rule", "rule", Sources, "plays sample notes from a 15-cell ring automaton.")
+PICKER_ENTRY(Rot, "rot", "rot", Sources, "rots and heals a private sample loop without changing the original.")
+// Reserved wire identity; not a selectable module or title resource.
+PICKER_RETIRED(Relic, 31)
 PICKER_ENTRY(Grain, "gran", "gran", Sources, "turns a loaded sample into a cloud of overlapping grains.")
 PICKER_ENTRY(MicIn, "mic", "mic", Sources, "brings microphone input into the chain with gain and low-cut.")
 PICKER_ENTRY(Filter, "filt", "filter", Tone, "shapes tone with resonant filtering, drive and filter morph.")

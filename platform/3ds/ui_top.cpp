@@ -16,6 +16,7 @@
 #include "ui_workspace.h"
 #include "ui_sequencer.h"
 #include "sequencer_inspector.h"
+#include "sequencer_bank_panel.h"
 #include "sequencer_lock_format.h"
 #include "sequencer_slices.h"
 #include "sequencer_cuts.h"
@@ -69,6 +70,9 @@ const char* short_unit_name(UnitKind kind) {
         case UnitKind::Motor:        return "MTR";
         case UnitKind::Strain:       return "STAI";
         case UnitKind::Scratch:      return "SCR";
+        case UnitKind::Rot:          return "ROT";
+        case UnitKind::Rule:         return "RUL";
+        case UnitKind::Pent:         return "PNT";
         case UnitKind::Paul:         return "PAU";
         default:                     return "---";
     }
@@ -104,6 +108,9 @@ const char* top_sequence_source_name(int chain) {
     if (kind == UnitKind::Fm) return "fm";
     if (kind == UnitKind::SamplePlayer) return "play";
     if (kind == UnitKind::Grain) return "gran";
+    if (kind == UnitKind::Rot) return "rot";
+    if (kind == UnitKind::Rule) return "rule";
+    if (kind == UnitKind::Pent) return "pent";
     if (kind == UnitKind::Motor) return "motor";
     if (kind == UnitKind::Noise) return "noise";
     if (kind == UnitKind::MicIn) return "mic";
@@ -182,34 +189,10 @@ void draw_sequencer_extent() {
         ui::text(16 + group * 48, 200, label, group == page ? m::spot() : m::ghost());
     }
 }
-const char* lock_module_name(UnitKind kind) {
-    // Six 62px slots, including index and bypass suffix. Never shrink/clip names
-    // opportunistically: repeated modules keep a stable, distinguishable address.
-    switch (kind) {
-        case UnitKind::Empty: return "--";
-        case UnitKind::SamplePlayer: return "play";
-        case UnitKind::Grain: return "gran";
-        case UnitKind::Filter: return "filter";
-        case UnitKind::Bitcrush: return "bit";
-        case UnitKind::Chorus: return "chorus";
-        case UnitKind::Reverb: return "rev";
-        case UnitKind::Stranular: return m::module_name(kind);
-        case UnitKind::Recorder: return "rec";
-        case UnitKind::Strain: return "strain";
-        default: return m::module_name(kind);
-    }
-}
 void draw_lock_inspector(const SequencerInspector& d) {
     // Only the frozen controller DTO is read here, including all group ranges.
-    // Neither a profile, module graph nor live effective value shares this table.
-    for (int s = 0; s < UNITS_PER_CHAIN; ++s) {
-        const auto& module = d.modules[s];
-        const int x = 14 + s * 62;
-        char label[16];
-        std::snprintf(label, sizeof label, "%02d %s%s", s + 1, lock_module_name(module.kind), module.bypass ? "~" : "");
-        ui::text(x, 37, label, s == d.slot ? m::spot() : module.kind == UnitKind::Empty || module.bypass ? m::ghost() : m::ink());
-        if (s == d.slot) ui::line(x, 48, x + 59, 48, m::spot());
-    }
+    // The chain and its route are the shared path lines above, as in every layer;
+    // the selected module is their underlined word. No live effective value here.
     const bool valid = d.slot >= 0 && d.slot < UNITS_PER_CHAIN && d.param >= 0 &&
         d.param < std::min(PARAM_BANK_SIZE, d.modules[d.slot].count);
     int first_step = -1, last_step = -1, paste_first = -1, paste_last = -1, paste_count = 0;
@@ -217,76 +200,82 @@ void draw_lock_inspector(const SequencerInspector& d) {
         if (d.selection & (uint64_t(1) << s)) { if (first_step < 0) first_step = s; last_step = s; }
         if (d.paste_mask & (uint64_t(1) << s)) { if (paste_first < 0) paste_first = s; paste_last = s; ++paste_count; }
     }
-    char text[80];
-    if (first_step >= 0) std::snprintf(text, sizeof text, "lock ch%02d / s%02d / group %d (%02d-%02d)", d.chain + 1, d.step + 1, d.selected_count, first_step + 1, last_step + 1);
-    else std::snprintf(text, sizeof text, "lock ch%02d / step %02d / single", d.chain + 1, d.step + 1);
-    ui::text(14, 55, text, m::spot());
-    const int count = valid ? std::min(PARAM_BANK_SIZE, d.modules[d.slot].count) : 0;
-    const int first = valid ? (d.param / 6) * 6 : 0;
-    std::snprintf(text, sizeof text, "%d-%d / %d", count ? first + 1 : 0, std::min(first + 6, count), count);
-    ui::text(386 - ui::text_w(text), 55, text, m::ghost());
+    char text[160];
+    if (first_step >= 0) std::snprintf(text, sizeof text, "steps %02d-%02d / group %d", first_step + 1, last_step + 1, d.selected_count);
+    else std::snprintf(text, sizeof text, "step %02d", d.step + 1);
+    ui::text(24, 62, text, m::spot());
     const char* copy_scope = d.copy_scope == 1 ? "locks" : d.copy_scope == 2 ? "param" : "steps";
     const char* scope = d.clipboard_scope == 1 ? "locks" : d.clipboard_scope == 2 ? "param" : "steps";
-    std::snprintf(text, sizeof text, "touch %s / copy %s / clip %s %d / undo%c redo%c", d.offset ? "offset" : "set", copy_scope, scope, d.clipboard_count, d.can_undo ? '+' : '-', d.can_redo ? '+' : '-');
-    ui::text(14, 69, text, m::ghost());
-    ui::text(18, 83, "parameter", m::ghost());
-    ui::text(118, 83, "stored locks", m::ghost());
-    ui::text(356, 83, "cover", m::ghost());
-    ui::line(14, 93, 386, 93, m::branch());
+    std::snprintf(text, sizeof text, "touch %s / copy %s / clip %d", d.offset ? "offset" : "set", copy_scope, d.clipboard_count);
+    ui::text(376 - ui::text_w(text), 62, text, m::ghost());
+    ui::text(36, 78, "parameter", m::ghost());
+    ui::text(130, 78, "stored locks", m::ghost());
+    ui::text(376 - ui::text_w("cover"), 78, "cover", m::ghost());
+    ui::line(24, 88, 376, 88, palette::subdued());
+    const int count = valid ? std::min(PARAM_BANK_SIZE, d.modules[d.slot].count) : 0;
+    const int first = valid ? (d.param / 6) * 6 : 0;
+    char page[48];
+    std::snprintf(page, sizeof page, "%d-%d / %d", count ? first + 1 : 0, std::min(first + 6, count), count);
     if (!valid) {
-        ui::text(18, 110, "no module parameters / no lock target", m::ghost());
+        ui::text(36, 94, "no module parameters / no lock target", m::ghost());
     } else {
         const auto& module = d.modules[d.slot];
+        const MusicalScale scale_now = sequencer_snapshot().project_scale;
         for (int p = first; p < std::min(first + 6, count); ++p) {
             const auto& row = d.rows[p];
             const bool selected = p == d.param;
-            const int y = 98 + (p - first) * 13;
-            if (selected) ui::rect(14, y - 2, 372, 12, m::spot());
-            const u32 ink = selected ? palette::inverse() : m::ink();
-            const u32 muted = selected ? palette::inverse() : m::ghost();
-            ui::text(18, y, module.params[p].name, ink);
+            const int y = 94 + (p - first) * 13;
+            // Marker and spot ink, like every other list: no full-width fill.
+            if (selected) m::marker(30, y + 3, m::spot());
+            ui::text(36, y, module.params[p].name, selected ? m::spot() : m::ink());
             char low[40], high[40], range[88];
             if (!row.covered) std::snprintf(range, sizeof range, "base");
             else {
-                seq_lock::format_value(module.kind, module.variant, p, row.minimum, low, sizeof low);
-                seq_lock::format_value(module.kind, module.variant, p, row.maximum, high, sizeof high);
+                seq_lock::format_value(module.kind, module.variant, p, row.minimum, low, sizeof low, scale_now);
+                seq_lock::format_value(module.kind, module.variant, p, row.maximum, high, sizeof high, scale_now);
                 if (row.minimum == row.maximum) std::snprintf(range, sizeof range, "%s", low);
                 else std::snprintf(range, sizeof range, "%s .. %s", low, high);
                 // Never truncate a number or let it hide coverage. Equal rounded
                 // labels can conceal a genuine raw range; expose exact q15 then.
-                if (ui::text_w(range) > 228 || (row.minimum != row.maximum && !std::strcmp(low, high)))
+                if (ui::text_w(range) > 210 || (row.minimum != row.maximum && !std::strcmp(low, high)))
                     std::snprintf(range, sizeof range, "q15 %d .. %d", int(row.minimum), int(row.maximum));
             }
-            ui::text(118, y, range, row.covered ? ink : muted);
+            ui::text(130, y, range, selected ? m::spot() : row.covered ? m::ink() : m::ghost());
             char coverage[20]; std::snprintf(coverage, sizeof coverage, "%u/%d", unsigned(row.covered), std::max(1, std::min(64, d.selected_count)));
-            ui::text(382 - ui::text_w(coverage), y, coverage, muted);
+            ui::text(376 - ui::text_w(coverage), y, coverage, selected ? m::spot() : m::ghost());
         }
-        ui::line(14, 175, 386, 175, m::branch());
+        ui::line(24, 174, 376, 174, palette::subdued());
         const auto& row = d.rows[d.param];
         const auto& target = module.params[d.param];
-        char value[40]; seq_lock::format_value(module.kind, module.variant, d.param, row.focused, value, sizeof value);
-        std::snprintf(text, sizeof text, "s%02d %s %s / q15 %d", d.step + 1, row.focused_locked ? "lock" : "base", value, int(row.focused));
-        ui::text(14, 181, text, m::ink());
-        seq_lock::format_value(module.kind, module.variant, d.param, target.base, value, sizeof value);
-        std::snprintf(text, sizeof text, "base %s / %02d %s / %.8s", value, d.slot + 1, lock_module_name(module.kind), target.name);
-        ui::text(14, 194, text, m::ghost());
+        char value[40], base[40];
+        seq_lock::format_value(module.kind, module.variant, d.param, row.focused, value, sizeof value, scale_now);
+        seq_lock::format_value(module.kind, module.variant, d.param, target.base, base, sizeof base, scale_now);
+        // One line for the focused step. The longest honest form that fits beside the page mark.
+        const int room = 376 - 24 - ui::text_w(page) - 12;
+        if (row.focused_locked) std::snprintf(text, sizeof text, "s%02d lock %s / base %s / stored, not live", d.step + 1, value, base);
+        else std::snprintf(text, sizeof text, "s%02d base %s / stored, not live", d.step + 1, base);
+        if (ui::text_w(text) > room) {
+            if (row.focused_locked) std::snprintf(text, sizeof text, "s%02d lock %s / base %s", d.step + 1, value, base);
+            else std::snprintf(text, sizeof text, "s%02d base %s", d.step + 1, base);
+        }
+        if (ui::text_w(text) > room) std::snprintf(text, sizeof text, "s%02d %s %s", d.step + 1, row.focused_locked ? "lock" : "base", value);
+        ui::text(24, 180, text, m::ink());
     }
-    if (d.status[0]) ui::text(14, 207, d.status, m::spot());
+    ui::text(376 - ui::text_w(page), 180, page, m::ghost());
+    // Only when there is something to say.
+    if (d.status[0]) ui::text(24, 196, d.status, m::spot());
     else if (paste_count) {
         std::snprintf(text, sizeof text, "paste %d -> %02d-%02d%s / %s", paste_count, paste_first + 1, paste_last + 1, paste_count != paste_last - paste_first + 1 ? " sparse" : "", scope);
-        ui::text(14, 207, text, m::ghost());
+        ui::text(24, 196, text, m::ghost());
     } else if (valid && d.modules[d.slot].kind == UnitKind::Comp && d.param == CompUnit::P_RELEASE) {
-        ui::text(14, 207, "f free ms / s sync tau / clock per stored step", m::ghost());
+        ui::text(24, 196, "f free ms / s sync tau / clock per stored step", m::ghost());
     } else if (valid && d.modules[d.slot].kind == UnitKind::Fract && d.param == FractUnit::P_SIZE) {
-        ui::text(14, 207, "f free ms / s nominal sync / 1s capture limit", m::ghost());
-    } else ui::text(14, 207, "stored only / base is not live modulation", m::ghost());
-    if (d.show_l_help) {
-        ui::text(14, 219, "l: <> range / ^v group values / tap group", m::spot());
-        ui::text(14, 231, "l+x copy / l+a paste / l+y undo / l+b deselect", m::ink());
-    } else {
-        ui::text(14, 219, "cpad <> module / ^v param / dpad steps / ~=bypass", m::ghost());
-        ui::text(14, 231, "a+ b- / y listen / l tools / r mode", m::ghost());
+        ui::text(24, 196, "f free ms / s nominal sync / 1s capture limit", m::ghost());
     }
+    if (d.show_l_help) {
+        ui::text(24, 216, "l: <> range / ^v group values / tap group", m::spot());
+        ui::text(24, 228, "l+x copy / l+a paste / l+y undo / l+b deselect", m::ink());
+    } else ui::text(24, 228, "cpad <> module / ^v param / a+ b- / y listen / l tools", m::ghost());
 }
 void draw_l_help(int mode) {
     // Other modes keep their profile/help footprint. LOCK retains its complete
@@ -511,6 +500,54 @@ void draw_sequencer_slices(const SequencerInspector& inspector) {
     }
     m::footer(400, cuts ? "shared cuts / pattern untouched" : "a next / l value / cuts to edit", cuts ? "b score" : "-- window");
 }
+// While the held-B bank panel is open: what the candidate bank really stores,
+// four tracks of 64 steps with the staged length post. Frozen DTO only; the
+// playhead comes from the worker snapshot and only for the sounding bank.
+void draw_bank_overview(const SequencerBankPanel& d) {
+    static const char* names[] = {"forward", "reverse", "ping-pong"};
+    const bool live = g_ui_snapshot.transport_playing && g_ui_snapshot.sequencer_enabled &&
+        !g_ui_snapshot.pattern_transition.active && d.bank == g_ui_snapshot.active_pattern;
+    auto step_x = [](int step) { return 38 + step * 5 + (step / 16) * 6; };
+    for (int c = 0; c < NUM_CHAINS; ++c) {
+        const int y = 52 + c * 42;
+        const bool on = c == d.track;
+        const int length = std::max(1, std::min(SEQ_STEPS, int(d.length[c])));
+        char text[48];
+        if (on) m::marker(14, y + 3, m::spot());
+        std::snprintf(text, sizeof text, "%d", c + 1);
+        ui::text(24, y, text, on ? m::spot() : m::ink());
+        std::snprintf(text, sizeof text, "%d steps / %s", length, names[d.direction[c] % 3]);
+        const int right = 376 - ui::text_w(text);
+        ui::text(right, y, text, on ? m::spot() : m::ghost());
+        int x = 38;
+        bool any = false;
+        for (int s = 0; s < UNITS_PER_CHAIN; ++s) {
+            const UnitKind kind = (UnitKind)g_ui_snapshot.unit_kind[c][s];
+            if (kind == UnitKind::Empty) continue;
+            const char* name = sequence_route_name(kind);
+            const int next = x + (any ? 17 : 0);
+            // A full six-module route never runs under the length: it ends openly.
+            if (next + ui::text_w(name) > right - 24) { ui::text(x + 5, y, "/ ..", m::ghost()); break; }
+            if (any) ui::text(x + 5, y, "/", m::ghost());
+            ui::text(next, y, name, m::ink());
+            x = next + ui::text_w(name); any = true;
+        }
+        if (!any) ui::text(x, y, "empty", m::ghost());
+        for (int s = 0; s < SEQ_STEPS; ++s) {
+            const uint64_t bit = uint64_t(1) << s;
+            const u32 quiet = s < length ? m::ghost() : palette::subdued();
+            if (d.trig[c] & bit) ui::rect(step_x(s), y + 14, 3, 9, s < length ? m::ink() : palette::subdued());
+            else if (d.lock[c] & bit) ui::frame(step_x(s), y + 17, 3, 6, quiet); // lock-only step
+            else ui::rect(step_x(s) + 1, y + 21, 1, 2, quiet);
+        }
+        ui::rect(step_x(length - 1) + 4, y + 12, 1, 13, m::spot()); // end post of the staged length
+        if (live && g_ui_snapshot.sequence_step[c] < length)
+            ui::rect(step_x(g_ui_snapshot.sequence_step[c]), y + 26, 3, 2, palette::playhead());
+    }
+    ui::text(24, 228, "l r bank / ^v track / <> steps / a direction", m::ghost());
+    const char* state = live ? "playing" : d.bank == g_ui_snapshot.active_pattern ? "play bank" : "not playing";
+    ui::text(376 - ui::text_w(state), 228, state, m::ghost());
+}
 void draw_sequencer_top() {
     const int chain = sequencer_selected_chain();
     const int step = sequencer_selected_step();
@@ -538,7 +575,8 @@ void draw_sequencer_top() {
     const auto& transition=sequencer_snapshot().pattern_transition;
     if(transition.active)std::snprintf(bank,sizeof bank,"edit %d / %d>%d %d%%",sequencer_edit_bank()+1,
         transition.source+1,transition.destination+1,transition::position_percent(transition.position));
-    else std::snprintf(bank,sizeof bank,"edit %d / play %d%s",sequencer_edit_bank()+1,
+    else std::snprintf(bank,sizeof bank,"edit %d / play %d%s",
+        (sequencer_bank_panel().open?sequencer_bank_panel().bank:sequencer_edit_bank())+1,
         sequencer_snapshot().active_pattern+1,project_is_dirty()?" *":"");
     ui::text(24,16,bank,m::spot());
     const unsigned beats_per_bar = sequencer_snapshot().beats_per_bar ? sequencer_snapshot().beats_per_bar : 4;
@@ -549,11 +587,15 @@ void draw_sequencer_top() {
         sequencer_snapshot().transport_playing ? "play" : "stop");
     ui::text(376 - ui::text_w(transport), 16, transport, m::ghost());
 
+    if (sequencer_bank_panel().open) {
+        draw_bank_overview(sequencer_bank_panel());
+        return;
+    }
+    draw_sequencer_path(inspector, layer);
     if (layer == 6) {
         draw_lock_inspector(inspector);
         return;
     }
-    draw_sequencer_path(inspector, layer);
     if (layer == seq_slice::MODE) {
         draw_sequencer_slices(inspector);
         return;

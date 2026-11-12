@@ -9,6 +9,7 @@
 #include "osc_readout.h"
 #include "play_readout.h"
 #include "inst_readout.h"
+#include "pent_readout.h"
 #include "bit_readout.h"
 #include "ring_readout.h"
 #include "strain_readout.h"
@@ -29,6 +30,8 @@ inline uint8_t variant(const Unit& unit) {
             const auto& u = static_cast<const PlayUnit&>(unit);
             return uint8_t(u.modern() | (u.pitch_quantize << 1) | (uint8_t(u.pitch_mode()) << 2));
         }
+        case UnitKind::Rule: return static_cast<const RuleUnit&>(unit).config().phrase;
+        case UnitKind::Pent: return uint8_t(static_cast<const PentUnit&>(unit).width);
         case UnitKind::Delay: return static_cast<const DelayUnit&>(unit).modern();
         // Same variant identity: legacy MOTOR cannot accept note/mode locks; modern can.
         case UnitKind::Motor: return static_cast<const MotorUnit&>(unit).modern();
@@ -72,6 +75,15 @@ inline Domain toggle(int v, int threshold) { return {v > threshold ? 1 : 0, 2}; 
 inline Domain domain(UnitKind kind, uint8_t variant, int p, q15 value) {
     const int v = uni(value);
     switch (kind) {
+        case UnitKind::Rule:
+            if (p == RuleUnit::P_RULE) return {RuleUnit::rule_number(value),256};
+            if (p == RuleUnit::P_SCALE) return {RuleUnit::scale_index(value),5};
+            if (p == RuleUnit::P_VOICES) return {RuleUnit::voice_limit(value)-1,32};
+            if (p == RuleUnit::P_MUTATE) return {v*64/32767,65};
+            break;
+        case UnitKind::Pent:
+            if (p == PentUnit::P_ROOT) return {PentUnit::root_note(value), 121};
+            break;
         case UnitKind::SamplePlayer:
             if (p == PlayUnit::P_NOTE) return {musical_note::decode(value)-musical_note::MIN, 73};
             if (p == PlayUnit::P_LOOP || p == PlayUnit::P_MODE || p == PlayUnit::P_SCRUB || p == PlayUnit::P_HOLD)
@@ -228,10 +240,11 @@ inline q15 comp_release_nudge(q15 value, int direction, bool sync) {
     return from==to?value:CompUnit::release_value(to);
 }
 
-inline void format_value(UnitKind kind, uint8_t variant, int param, q15 value, char* out, int capacity) {
+inline void format_value(UnitKind kind, uint8_t variant, int param, q15 value, char* out, int capacity, MusicalScale scale = {}) {
     if (!out || capacity <= 0) return;
     if (param < 0 || param >= PARAM_BANK_SIZE) { std::snprintf(out, capacity, "--"); return; }
     const int v = detail::uni(value);
+    if (kind == UnitKind::Pent) {pent_readout::value_text(out,size_t(capacity),param,value);return;}
     if (kind == UnitKind::Fold) {
         fold_editor_visual::value_text(out,size_t(capacity),param,value,(variant&1)!=0);return;
     }
@@ -282,7 +295,7 @@ inline void format_value(UnitKind kind, uint8_t variant, int param, q15 value, c
     }
     if (kind == UnitKind::SamplePlayer) {
         play_readout::value_text(out, size_t(capacity), param, value, (variant & 1) != 0, (variant & 2) != 0,
-            PlayUnit::PitchMode((variant >> 2) & 3));
+            PlayUnit::PitchMode((variant >> 2) & 3), scale);
         return;
     }
     if (kind == UnitKind::Grain && param == GrainUnit::P_SCAN && !(variant & 8)) {
@@ -292,9 +305,9 @@ inline void format_value(UnitKind kind, uint8_t variant, int param, q15 value, c
     if (kind == UnitKind::Osc) {
         const bool clean=(variant&16)!=0,quantize=(variant&2)!=0;
         if(param==OscUnit::P_PITCH){
-            std::snprintf(out,capacity,"%.1fhz",osc_readout::hz(value,clean,quantize));return;
+            std::snprintf(out,capacity,"%.1fhz",osc_readout::hz(value,clean,quantize,scale));return;
         }
-        if(osc_readout::value_text(out,size_t(capacity),param,value,clean,quantize))return;
+        if(osc_readout::value_text(out,size_t(capacity),param,value,clean,quantize,scale))return;
     }
     if (kind == UnitKind::Ghost) {
         if (param == GhostUnit::P_TONE) std::snprintf(out, capacity, "%uhz root", unsigned(GhostUnit::root_hz(value)));

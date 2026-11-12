@@ -26,7 +26,7 @@ using C=StrainUnit;
 union Visual {model::Plot legacy;l::Plot modern;Visual():modern{}{}};
 struct Frame {
     uint16_t mod_links=0;
-    bool valid=false,modern=false,setup=false,bypass=false,mute=false,lock=false,lock_full=false,lock_armed=false,lens=false;
+    bool valid=false,modern=false,setup=false,bypass=false,mute=false,lens=false;
     int8_t chain=0,slot=0,selected=0,route_first=0,route_last=UNITS_PER_CHAIN-1;
     q15 edit[C::P_COUNT]={},live[C::P_COUNT]={};char values[C::P_COUNT][18]={};
     char cycle[18]={},edit_cycle[18]={};
@@ -37,8 +37,8 @@ static_assert(sizeof(Frame)<2560 && std::is_trivially_copyable<Frame>::value,
               "bounded pointer-free strain frame; no engine/PCM/model work in draw");
 struct Gesture {
     Engine* engine=nullptr;uintptr_t unit=0;View view=View::Chains;
-    int chain=-1,slot=-1,bank=-1,step=-1,lock_chain=-1,param=-1,start=0;
-    bool locked=false,modern=false,setup=false,fine=false;q15 value=0;
+    int chain=-1,slot=-1,bank=-1,param=-1,start=0;
+    bool modern=false,setup=false,fine=false;q15 value=0;
 } gesture;
 struct Key {q15 values[C::P_COUNT]={};bool modern=false,bypass=false;};
 Key cached_key;Visual cached_plot;bool cache_valid=false;
@@ -56,12 +56,9 @@ constexpr int main_params[4][2]={{C::P_DRIVE,C::P_TEETH},{C::P_BODY,C::P_BIAS},
     {C::P_FEEDBACK,C::P_MOTION},{C::P_TRIM,C::P_MIX}};
 constexpr const char* main_names[4][2]={{"drive","teeth"},{"body","bias"},{"feedback","motion"},{"wet trim","mix"}};
 bool capture_context(){return g_eng&&g_audio&&g_overlay==Overlay::Editor&&
-    (g_view==View::Chains||(g_view==View::Sequencer&&g_seq_lock_armed))&&
+    g_view==View::Chains&&
     g_edit_chain>=0&&g_edit_chain<NUM_CHAINS&&g_edit_slot>=0&&g_edit_slot<UNITS_PER_CHAIN;}
 bool context(){return !blocked_frame&&!param_lens_is_open()&&capture_context();}
-bool lock_context(){return g_seq_lock_armed&&g_seq_lock_chain==g_edit_chain&&g_seq_lock_step>=0&&g_seq_lock_step<SEQ_STEPS;}
-int bank(){const int b=sequencer_edit_bank();return b>=0&&b<NUM_PATTERNS?b:g_eng->active_pattern;}
-int gesture_bank(){return g_seq_lock_armed?bank():g_eng->active_pattern;}
 void release(){gesture={};if(g_drag==Drag::StrainParam)g_drag=Drag::None;}
 void bind(const C& u){
     if(bound_engine!=g_eng||bound_unit!=uintptr_t(&u)||bound_chain!=g_edit_chain||bound_slot!=g_edit_slot||bound_modern!=u.modern()){
@@ -70,23 +67,12 @@ void bind(const C& u){
     }
 }
 q15 edit_value(const C& u,int p){
-    if(lock_context()){
-        const auto& step=g_eng->sequence_pattern(bank()).steps[g_edit_chain][g_seq_lock_step];
-        for(int i=0;i<std::min(int(step.lock_count),SEQ_LOCKS);++i)
-            if(step.locks[i].slot==g_edit_slot&&step.locks[i].param==p)return step.locks[i].value;
-    }
     return u.params[p].base;
 }
 void set_value(C& u,int p,q15 value){
-    if((g_seq_lock_armed&&!lock_context())||p<0||p>=u.num_params)return;
-    if(g_seq_lock_armed){
-        auto& step=g_eng->sequence_pattern(bank()).steps[g_edit_chain][g_seq_lock_step];
-        const int count=std::min(int(step.lock_count),SEQ_LOCKS);int found=-1;
-        for(int i=0;i<count;++i)if(step.locks[i].slot==g_edit_slot&&step.locks[i].param==p){found=i;break;}
-        if(found>=0){if(step.locks[found].value==value)return;step.locks[found].value=value;}
-        else {if(count>=SEQ_LOCKS){g_seq_lock_flash=90;return;}
-            step.locks[count]={uint8_t(g_edit_slot),uint8_t(p),value};step.lock_count=uint8_t(count+1);}
-    }else {if(u.params[p].base==value)return;u.params[p].base=value;}
+    if(p<0||p>=u.num_params)return;
+    if(u.params[p].base==value)return;
+    u.params[p].base=value;
     mark_project_mutated();cache_valid=false;
 }
 int clamp(int v,int p){return std::max(p==C::P_BIAS?-32767:0,std::min(32767,v));}
@@ -97,21 +83,14 @@ int position(q15 value,int p,int left,int right){
 }
 void begin(C& u,int p,int x){
     selected=p;gesture={};gesture.engine=g_eng;gesture.unit=uintptr_t(&u);gesture.view=g_view;
-    gesture.chain=g_edit_chain;gesture.slot=g_edit_slot;gesture.bank=gesture_bank();
-    gesture.step=g_seq_lock_step;gesture.lock_chain=g_seq_lock_chain;gesture.locked=g_seq_lock_armed;
+    gesture.chain=g_edit_chain;gesture.slot=g_edit_slot;gesture.bank=g_eng->active_pattern;
     gesture.param=p;gesture.start=x;gesture.value=edit_value(u,p);gesture.setup=setup;
     gesture.modern=u.modern();gesture.fine=fine_held;g_drag=Drag::StrainParam;g_drag_param=p;
 }
 bool owns(const C& u){return gesture.engine==g_eng&&gesture.unit==uintptr_t(&u)&&gesture.view==g_view&&
-    gesture.chain==g_edit_chain&&gesture.slot==g_edit_slot&&gesture.bank==gesture_bank()&&
-    gesture.param==selected&&gesture.locked==g_seq_lock_armed&&gesture.setup==setup&&gesture.fine==fine_held&&
-    gesture.modern==u.modern()&&g_eng->chains[g_edit_chain].units[g_edit_slot]==&u&&
-    (!gesture.locked||(lock_context()&&gesture.step==g_seq_lock_step&&gesture.lock_chain==g_seq_lock_chain));}
-bool remove_name(int p,int x,int y,const char* name,int tx,int ty){
-    if(!lock_context()||!hit(tx,ty,x-3,y-4,ui::text_w(name)+6,16))return false;
-    selected=p;if(g_eng->remove_step_lock(g_seq_lock_chain,g_seq_lock_step,g_edit_slot,p,bank()))mark_project_mutated();
-    cache_valid=false;return true;
-}
+    gesture.chain==g_edit_chain&&gesture.slot==g_edit_slot&&gesture.bank==g_eng->active_pattern&&
+    gesture.param==selected&&gesture.setup==setup&&gesture.fine==fine_held&&
+    gesture.modern==u.modern()&&g_eng->chains[g_edit_chain].units[g_edit_slot]==&u;}
 void capture_route(){
     // Keep complete labels and the selected slot even if future names outgrow
     // the full six-slot route. Current longest six labels still all fit.
@@ -128,7 +107,7 @@ void capture_route(){
 }
 void capture_plot(){
     Key key;key.modern=frame.modern;key.bypass=frame.bypass;
-    std::copy(frame.lock?frame.edit:frame.live,(frame.lock?frame.edit:frame.live)+C::P_COUNT,key.values);
+    std::copy(frame.live,frame.live+C::P_COUNT,key.values);
     if(!cache_valid||key.modern!=cached_key.modern||key.bypass!=cached_key.bypass||
         !std::equal(std::begin(key.values),std::end(key.values),std::begin(cached_key.values))){
         // Placement construction activates only a bounded union member; no heap.
@@ -154,7 +133,7 @@ void trace(const model::Trace& t,u32 c){
 void legacy_reference(){
     ui::line(14,82,24,82,m::ghost());ui::text(30,78,"test 250hz/.75fs",m::ghost());
     const auto out=frame.mute?m::ghost():m::spot();
-    const char* label=frame.bypass?"byp dry":frame.lock?"lock out":frame.mute?"muted":"out";
+    const char* label=frame.bypass?"byp dry":frame.mute?"muted":"out";
     const int label_x=310-ui::text_w(label);ui::line(label_x-18,82,label_x-8,82,out);ui::text(label_x,78,label,out);
     for(int level:{1,0,-1}){const int y=model::ZERO-level*model::HEIGHT;
         const char* label=level>0?"+1":level<0?"-1":"0";ui::text(56-ui::text_w(label),y-4,label,m::ghost());
@@ -191,27 +170,26 @@ bool strain_focus_touch_body(C& u,int tx,int ty){
     bind(u);release();
     if(u.modern()&&hit(tx,ty,198,0,48,26)){setup=!setup;return true;}
     if(!u.modern()&&hit(tx,ty,164,0,76,26)){
-        if(!g_seq_lock_armed){C defaults;
+        {C defaults;
             for(int p=C::LEGACY_COUNT;p<C::P_COUNT;++p)u.params[p]=defaults.params[p];
             for(auto& scene:g_eng->scenes[g_edit_chain])if(scene.kind[g_edit_slot]==UnitKind::Strain)
                 for(int p=C::LEGACY_COUNT;p<C::P_COUNT;++p)scene.base[g_edit_slot][p]=defaults.params[p].base;
             u.set_modern(true);mark_project_mutated();bind(u);}
         return true;
     }
-    if(ty<26){if(!g_seq_lock_armed&&hit(tx,ty,246,0,38,25)){u.bypass=!u.bypass;mark_project_mutated();}return true;}
-    if(g_seq_lock_armed&&!lock_context())return true;
+    if(ty<26){if(hit(tx,ty,246,0,38,25)){u.bypass=!u.bypass;mark_project_mutated();}return true;}
     if(u.modern()){
         if(setup){if(hit(tx,ty,8,l::kSetupY-8,304,42)){
-            selected=C::P_RATE;if(remove_name(C::P_RATE,14,l::kSetupY,"rate",tx,ty))return true;
+            selected=C::P_RATE;
             begin(u,C::P_RATE,tx);}}
         else for(int row=0;row<4;++row)for(int col=0;col<2;++col){
             const int p=main_params[row][col],x=l::kControlLeft[col],end=l::kControlRight[col],y=l::kMainY[row];
             if(!hit(tx,ty,x-6,y-8,end-x+12,42))continue;
-            selected=p;if(remove_name(p,x,y,main_names[row][col],tx,ty))return true;begin(u,p,tx);return true;}
+            selected=p;begin(u,p,tx);return true;}
         return true;
     }
     for(int p=0;p<C::LEGACY_COUNT;++p){const auto& c=CONTROLS[p];if(!hit(tx,ty,c.x,c.y,c.w,c.h))continue;
-        selected=p;if(remove_name(p,c.label_x,c.label_y,c.name,tx,ty))return true;begin(u,p,tx);return true;}
+        selected=p;begin(u,p,tx);return true;}
     return true;
 }
 void strain_focus_drag(C& u,int tx,int){
@@ -235,8 +213,7 @@ void strain_focus_capture(){
         const auto& u=*static_cast<const C*>(unit);bind(u);
         if(gesture.param>=0&&!owns(u))release();
         if(selected>=u.num_params){selected=C::P_DRIVE;release();}
-        frame.valid=true;frame.modern=u.modern();frame.setup=setup;frame.bypass=u.bypass;frame.mute=chain.mute;frame.lock_armed=g_seq_lock_armed;frame.lens=param_lens_is_open();
-        frame.lock=lock_context();frame.lock_full=frame.lock&&g_eng->sequence_pattern(bank()).steps[g_edit_chain][g_seq_lock_step].lock_count>=SEQ_LOCKS;
+        frame.valid=true;frame.modern=u.modern();frame.setup=setup;frame.bypass=u.bypass;frame.mute=chain.mute;frame.lens=param_lens_is_open();
         frame.chain=g_edit_chain;frame.slot=g_edit_slot;frame.selected=selected;frame.mod_links=focus_mod_links(u);
         for(int i=0;i<UNITS_PER_CHAIN;++i){frame.kinds[i]=chain.units[i]?uint8_t(chain.units[i]->kind):uint8_t(UnitKind::Empty);
             frame.bypassed[i]=chain.units[i]&&chain.units[i]->bypass;}
@@ -244,7 +221,7 @@ void strain_focus_capture(){
     }
     for(int p=0;p<(frame.modern?C::P_COUNT:C::LEGACY_COUNT);++p)
         strain_readout::value_text(frame.values[p],sizeof frame.values[p],p,frame.edit[p],frame.modern);
-    if(frame.modern){strain_readout::cycle_text(frame.cycle,sizeof frame.cycle,(frame.lock?frame.edit:frame.live)[C::P_RATE]);
+    if(frame.modern){strain_readout::cycle_text(frame.cycle,sizeof frame.cycle,frame.live[C::P_RATE]);
         strain_readout::cycle_text(frame.edit_cycle,sizeof frame.edit_cycle,frame.edit[C::P_RATE]);}
     capture_route();
     if(!frame.lens)capture_plot(); // actual private DSP / core motion outside guard, before GPU
@@ -255,7 +232,7 @@ void strain_focus_draw(const C&){
     char text[24];std::snprintf(text,sizeof text,"ch%02d / %02d",frame.chain+1,frame.slot+1);
     ui::text(78,m::kHeaderTextY,text,m::ghost());
     if(frame.modern)ui::text(206,m::kHeaderTextY,frame.setup?"main":"setup",m::spot());
-    else if(!frame.lock_armed)ui::text(170,m::kHeaderTextY,"extend",m::spot());
+    else ui::text(170,m::kHeaderTextY,"extend",m::spot());
     ui::text(258,m::kHeaderTextY,"byp",frame.bypass?m::spot():m::ghost());
     right(m::right_edge(320),m::kHeaderTextY,"x",m::ghost());
     if(frame.bypass)ui::line(258,m::kHeaderMarkY,275,m::kHeaderMarkY,m::spot());
@@ -268,8 +245,7 @@ void strain_focus_draw(const C&){
             ui::text(14,202,"wet trim is outside the return loop",m::ghost());}
         else for(int row=0;row<4;++row)for(int col=0;col<2;++col)
             control(main_params[row][col],l::kControlLeft[col],l::kControlRight[col],l::kMainY[row],main_names[row][col]);
-        if(frame.lock)m::footer(320,frame.lock_full?"lock full":"p-lock / name: remove",frame.setup?"b main":"b back");
-        else m::footer(320,frame.setup?"b main":frame.selected==C::P_BIAS?"r: fine bias / b back":"b back","l: mod >");
+        m::footer(320,frame.setup?"b main":frame.selected==C::P_BIAS?"r: fine bias / b back":"b back","l: mod >");
         return;
     }
     for(int p=0;p<C::LEGACY_COUNT;++p){const auto& c=CONTROLS[p];const bool top=p==C::P_DRIVE||p==C::P_TEETH;
@@ -280,7 +256,7 @@ void strain_focus_draw(const C&){
             position(frame.edit[p],p,c.label_x,c.label_x+c.extent),position(frame.live[p],p,c.label_x,c.label_x+c.extent),
             {bool(frame.mod_links&(1u<<p)),false,frame.bypass||frame.mute},p==C::P_BIAS?position(0,p,c.label_x,c.label_x+c.extent):-1);}
     legacy_reference();ui::line(14,223,306,223,m::branch());
-    if(frame.lock)m::footer(320,frame.lock_full?"lock full":"p-lock / name: remove","b back");else m::footer(320,"b back","l: mod >");
+    m::footer(320,"b back","l: mod >");
 }
 bool strain_focus_draw_top(){
     if(!frame.valid||!frame.modern||frame.lens)return false;
@@ -318,7 +294,7 @@ bool strain_focus_draw_top(){
     ui::text(14,170,"body motion",m::ghost());std::snprintf(text,sizeof text,"idle / %s",frame.cycle);right(386,170,text,m::ghost());
     ui::line(l::kLeft,plot.body,l::kRight,plot.body,palette::shadow());
     for(int i=1;i<l::kMotionPoints;++i)ui::line(l::kLeft+(i-1)*2,plot.motion[i-1],l::kLeft+i*2,plot.motion[i],out);
-    m::footer(400,frame.lock?"lock reset ref / not live":frame.mute?"muted / reset ref / not live":frame.bypass?"bypass / reset ref / not live":"reset reference / not live","1ms return");
+    m::footer(400,frame.mute?"muted / reset ref / not live":frame.bypass?"bypass / reset ref / not live":"reset reference / not live","1ms return");
     return true;
 }
 } // namespace seance::platform::ui3ds

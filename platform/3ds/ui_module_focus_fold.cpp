@@ -25,7 +25,7 @@ using C=FoldUnit;
 union Visual {model::Plot legacy;l::Plot modern;Visual():modern{}{};};
 struct Frame {
     uint16_t mod_links=0;
-    bool valid=false,modern=false,curve=false,bypass=false,mute=false,lock=false,lock_full=false,lock_armed=false,lens=false,ready=false;
+    bool valid=false,modern=false,curve=false,bypass=false,mute=false,lens=false,ready=false;
     int8_t chain=0,slot=0,selected=0,route_first=0,route_last=UNITS_PER_CHAIN-1;
     q15 edit[C::P_COUNT]={},live[C::P_COUNT]={};
     char values[C::P_COUNT][18]={},reference_value[18]={};int16_t positions[C::P_COUNT][3]={};
@@ -35,8 +35,8 @@ struct Frame {
 static_assert(sizeof(Frame)<4096&&std::is_trivially_copyable<Frame>::value,"bounded pointer-free Fold frame, no engine or DSP work in draw");
 struct Gesture {
     Engine* engine=nullptr;uintptr_t unit=0;View view=View::Chains;
-    int chain=-1,slot=-1,bank=-1,step=-1,lock_chain=-1,param=-1,selection=-1,start=0;
-    bool locked=false,modern=false,curve=false,fine=false;q15 value=0;
+    int chain=-1,slot=-1,bank=-1,param=-1,selection=-1,start=0;
+    bool modern=false,curve=false,fine=false;q15 value=0;
 } gesture;
 int selected=C::P_DRIVE,bound_chain=-1,bound_slot=-1;
 Engine* bound_engine=nullptr;uintptr_t bound_unit=0;
@@ -50,12 +50,9 @@ constexpr Control CONTROLS[C::LEGACY_COUNT]={
 };
 constexpr const char* NAMES[C::P_COUNT]={"drive","trim","morph","bias","mix","smooth","tone"};
 bool capture_context(){return g_eng&&g_audio&&g_overlay==Overlay::Editor&&
-    (g_view==View::Chains||(g_view==View::Sequencer&&g_seq_lock_armed))&&
+    g_view==View::Chains&&
     g_edit_chain>=0&&g_edit_chain<NUM_CHAINS&&g_edit_slot>=0&&g_edit_slot<UNITS_PER_CHAIN;}
 bool context(){return !blocked_frame&&!param_lens_is_open()&&capture_context();}
-bool lock_context(){return g_seq_lock_armed&&g_seq_lock_chain==g_edit_chain&&g_seq_lock_step>=0&&g_seq_lock_step<SEQ_STEPS;}
-int bank(){const int b=sequencer_edit_bank();return b>=0&&b<NUM_PATTERNS?b:g_eng->active_pattern;}
-int gesture_bank(){return g_seq_lock_armed?bank():g_eng->active_pattern;}
 void release(){gesture={};for(auto d:DRAGS)if(g_drag==d){g_drag=Drag::None;break;}}
 void bind(const C& u){
     if(bound_engine!=g_eng||bound_unit!=uintptr_t(&u)||bound_chain!=g_edit_chain||bound_slot!=g_edit_slot||bound_modern!=u.modern()){
@@ -64,40 +61,26 @@ void bind(const C& u){
     }
 }
 q15 edit_value(const C& u,int p){
-    if(lock_context()){const auto& step=g_eng->sequence_pattern(bank()).steps[g_edit_chain][g_seq_lock_step];
-        for(int i=0;i<std::min(int(step.lock_count),SEQ_LOCKS);++i)
-            if(step.locks[i].slot==g_edit_slot&&step.locks[i].param==p)return step.locks[i].value;}
     return u.params[p].base;
 }
 void set_value(C& u,int p,q15 value){
-    if((g_seq_lock_armed&&!lock_context())||p<0||p>=u.num_params)return;
-    if(g_seq_lock_armed){auto& step=g_eng->sequence_pattern(bank()).steps[g_edit_chain][g_seq_lock_step];
-        const int count=std::min(int(step.lock_count),SEQ_LOCKS);int found=-1;
-        for(int i=0;i<count;++i)if(step.locks[i].slot==g_edit_slot&&step.locks[i].param==p){found=i;break;}
-        if(found>=0){if(step.locks[found].value==value)return;step.locks[found].value=value;}
-        else {if(count>=SEQ_LOCKS){g_seq_lock_flash=90;return;}
-            step.locks[count]={uint8_t(g_edit_slot),uint8_t(p),value};step.lock_count=uint8_t(count+1);}
-    }else {if(u.params[p].base==value)return;u.params[p].base=value;}
+    if(p<0||p>=u.num_params)return;
+    if(u.params[p].base==value)return;
+    u.params[p].base=value;
     mark_project_mutated();
 }
 void begin(C& u,int p,int x){
     if(p>=0)selected=p;
     gesture={};gesture.engine=g_eng;gesture.unit=uintptr_t(&u);gesture.view=g_view;
-    gesture.chain=g_edit_chain;gesture.slot=g_edit_slot;gesture.bank=gesture_bank();
-    gesture.step=g_seq_lock_step;gesture.lock_chain=g_seq_lock_chain;gesture.locked=g_seq_lock_armed;
+    gesture.chain=g_edit_chain;gesture.slot=g_edit_slot;gesture.bank=g_eng->active_pattern;
     gesture.param=p;gesture.selection=selected;gesture.start=x;gesture.value=p>=0?edit_value(u,p):0;
     gesture.curve=curve;gesture.modern=u.modern();gesture.fine=fine_held;
     g_drag=p>=0?DRAGS[p]:Drag::FoldDrive;g_drag_param=p;
 }
 bool owns(const C& u){return gesture.engine==g_eng&&gesture.unit==uintptr_t(&u)&&gesture.view==g_view&&
-    gesture.chain==g_edit_chain&&gesture.slot==g_edit_slot&&gesture.bank==gesture_bank()&&
-    gesture.selection==selected&&gesture.locked==g_seq_lock_armed&&gesture.curve==curve&&gesture.fine==fine_held&&
-    gesture.modern==u.modern()&&g_eng->chains[g_edit_chain].units[g_edit_slot]==&u&&
-    (!gesture.locked||(lock_context()&&gesture.step==g_seq_lock_step&&gesture.lock_chain==g_seq_lock_chain));}
-bool remove_name(int p,int x,int y,const char* name,int tx,int ty){
-    if(!lock_context()||!hit(tx,ty,x-3,y-4,ui::text_w(name)+6,16))return false;
-    selected=p;if(g_eng->remove_step_lock(g_seq_lock_chain,g_seq_lock_step,g_edit_slot,p,bank()))mark_project_mutated();return true;
-}
+    gesture.chain==g_edit_chain&&gesture.slot==g_edit_slot&&gesture.bank==g_eng->active_pattern&&
+    gesture.selection==selected&&gesture.curve==curve&&gesture.fine==fine_held&&
+    gesture.modern==u.modern()&&g_eng->chains[g_edit_chain].units[g_edit_slot]==&u;}
 u32 color(int p){return frame.selected==p?m::spot():m::ink();}
 void right(int x,int y,const char* text,u32 c){ui::text(x-ui::text_w(text),y,text,c);}
 void rail(int p,int left,int end,int y){module_fader::horizontal(left,end,y,
@@ -111,7 +94,7 @@ void capture_route(){
         else if(frame.route_last>frame.slot)--frame.route_last;else break;}
 }
 void capture_plot(){
-    const q15* values=frame.lock?frame.edit:frame.live;
+    const q15* values=frame.live;
     if(frame.modern){l::Key key;key.bypass=frame.bypass;key.curve=frame.curve;
         std::copy(values,values+C::P_COUNT,key.values);reference.advance(key);frame.ready=reference.ready();
         if(frame.ready)frame.plot.modern=reference.plot;
@@ -125,7 +108,7 @@ void capture_plot(){
 void waveform(){
     ui::line(14,84,24,84,m::ghost());ui::text(30,80,"test sine / .75fs",m::ghost());
     const u32 shape_color=frame.mute?m::ghost():m::spot();
-    ui::line(236,84,250,84,shape_color);ui::text(256,80,frame.bypass?"byp dry":frame.mute?"muted":frame.lock?"lock mdl":"shaped",shape_color);
+    ui::line(236,84,250,84,shape_color);ui::text(256,80,frame.bypass?"byp dry":frame.mute?"muted":"shaped",shape_color);
     for(int level=-1;level<=1;++level){const int y=model::ZERO-level*model::HEIGHT;
         ui::text(8,y-4,level>0?"+1":level<0?"-1":"0",m::ghost());
         if(level==0)ui::line(model::X0,y,model::X1,y,m::branch());else for(int x=model::X0;x<model::X1;x+=5)ui::rect(x,y,1,1,m::branch());}
@@ -156,16 +139,15 @@ bool fold_focus_touch_body(C& u,int tx,int ty){
     platform::AudioOut::Guard guard(*g_audio);if(g_eng->chains[g_edit_chain].units[g_edit_slot]!=&u)return false;
     bind(u);release();
     if(u.modern()&&hit(tx,ty,198,0,48,26)){curve=!curve;return true;}
-    if(!u.modern()&&hit(tx,ty,164,0,76,26)){if(!g_seq_lock_armed)begin(u,-2,tx);return true;}
-    if(ty<26){if(!g_seq_lock_armed&&hit(tx,ty,246,0,38,25)){u.bypass=!u.bypass;mark_project_mutated();}return true;}
-    if(g_seq_lock_armed&&!lock_context())return true;
+    if(!u.modern()&&hit(tx,ty,164,0,76,26)){begin(u,-2,tx);return true;}
+    if(ty<26){if(hit(tx,ty,246,0,38,25)){u.bypass=!u.bypass;mark_project_mutated();}return true;}
     if(u.modern()){
         for(int i=0;i<3;++i)if(hit(tx,ty,8+i*48,114,46,24)){selected=C::P_MODE;set_value(u,C::P_MODE,q15(i==0?0:i==1?16384:32767));return true;}
         if(hit(tx,ty,268,114,44,24)){selected=C::P_BIAS;set_value(u,C::P_BIAS,0);return true;}
         for(const auto& c:l::controls)if(hit(tx,ty,c.x0,c.y0,c.x1-c.x0,c.y1-c.y0)){
-            selected=c.p;if(remove_name(c.p,c.left,c.y,c.name,tx,ty))return true;begin(u,c.p,tx);return true;}
+            selected=c.p;begin(u,c.p,tx);return true;}
     }else for(int p=0;p<C::LEGACY_COUNT;++p){const auto& c=CONTROLS[p];if(!hit(tx,ty,c.x,c.y,c.w,c.h))continue;
-        selected=p;if(remove_name(p,c.label_x,c.label_y,p==C::P_MODE?"mode":NAMES[p],tx,ty))return true;begin(u,p,tx);return true;}
+        selected=p;begin(u,p,tx);return true;}
     return true;
 }
 void fold_focus_drag(C& u,int tx,int ty){
@@ -185,8 +167,7 @@ void fold_focus_drag(C& u,int tx,int ty){
         int raw=l::clamp(int(gesture.value)+movement,p,u.modern());
         if(p==C::P_BIAS&&((gesture.value<0&&raw>0)||(gesture.value>0&&raw<0))&&std::abs(raw)<(gesture.fine?1:range/extent))raw=0;
         next=q15(raw);}
-    // Stationary touchdown is inert. A moved drag may deliberately return to an
-    // explicit zero lock, including when the underlying base is already zero.
+    // Stationary touchdown is inert.
     if(delta==0&&edit_value(u,p)==gesture.value)return;
     set_value(u,p,next);
 }
@@ -195,7 +176,7 @@ void fold_focus_touch_release(){
     if(!context()){release();return;}
     platform::AudioOut::Guard guard(*g_audio);Unit* base=g_eng->chains[g_edit_chain].units[g_edit_slot];
     if(!base||base->kind!=UnitKind::Fold){release();return;}auto& u=*static_cast<C*>(base);
-    if(owns(u)&&!g_seq_lock_armed&&!u.modern()){
+    if(owns(u)&&!u.modern()){
         C defaults(true);for(int p=C::LEGACY_COUNT;p<C::P_COUNT;++p)u.params[p]=defaults.params[p];
         for(auto& scene:g_eng->scenes[g_edit_chain])if(scene.kind[g_edit_slot]==UnitKind::Fold)
             for(int p=C::LEGACY_COUNT;p<C::P_COUNT;++p)scene.base[g_edit_slot][p]=defaults.params[p].base;
@@ -211,8 +192,7 @@ void fold_focus_capture(){
         const auto& u=*static_cast<const C*>(unit);bind(u);if(gesture.param!=-1&&!owns(u))release();
         if(selected>=u.num_params){selected=C::P_DRIVE;release();}
         frame.valid=true;frame.modern=u.modern();frame.curve=curve;frame.bypass=u.bypass;frame.mute=chain.mute;
-        frame.lock_armed=g_seq_lock_armed;frame.lens=param_lens_is_open();frame.lock=lock_context();
-        frame.lock_full=frame.lock&&g_eng->sequence_pattern(bank()).steps[g_edit_chain][g_seq_lock_step].lock_count>=SEQ_LOCKS;
+        frame.lens=param_lens_is_open();
         frame.chain=g_edit_chain;frame.slot=g_edit_slot;frame.selected=selected;frame.mod_links=focus_mod_links(u);
         for(int i=0;i<UNITS_PER_CHAIN;++i){frame.kinds[i]=chain.units[i]?uint8_t(chain.units[i]->kind):uint8_t(UnitKind::Empty);frame.bypassed[i]=chain.units[i]&&chain.units[i]->bypass;}
         for(int p=0;p<u.num_params;++p){frame.edit[p]=edit_value(u,p);frame.live[p]=u.modern()?u.control_value(p):u.params[p].effective;}
@@ -227,14 +207,14 @@ void fold_focus_capture(){
         frame.positions[p][2]=(p==C::P_BIAS||(frame.modern&&p==C::P_DRIVE))?l::position(0,p,left,end,frame.modern):p==C::P_MODE?l::position(16384,p,left,end,frame.modern):-1;
     }
     l::value_text(frame.reference_value,sizeof frame.reference_value,frame.selected,
-        (frame.lock?frame.edit:frame.live)[frame.selected],frame.modern);
+        frame.live[frame.selected],frame.modern);
     capture_route();if(!frame.lens)capture_plot(); // outside guard; never model work under MOD or in draw
 }
 void fold_focus_draw(const C&){
     m::paper(320);if(!frame.valid)return;module_heading::header(UnitKind::Fold,m::spot());
     char text[24];std::snprintf(text,sizeof text,"ch%02d / %02d",frame.chain+1,frame.slot+1);ui::text(62,m::kHeaderTextY,text,m::ghost());
     if(frame.modern)ui::text(206,m::kHeaderTextY,frame.curve?"curve":"wave",m::spot());
-    else if(!frame.lock_armed)ui::text(170,m::kHeaderTextY,"extend",m::spot());
+    else ui::text(170,m::kHeaderTextY,"extend",m::spot());
     ui::text(258,m::kHeaderTextY,"byp",frame.bypass?m::spot():m::ghost());right(m::right_edge(320),m::kHeaderTextY,"x",m::ghost());
     if(frame.bypass)ui::line(258,m::kHeaderMarkY,275,m::kHeaderMarkY,m::spot());
     if(frame.lens){m::footer(320,"b back","l: mod >");return;}
@@ -249,7 +229,7 @@ void fold_focus_draw(const C&){
         const q15 mode=frame.edit[C::P_MODE];ui::text(174,60,"fold",mode==0?m::spot():m::ghost());ui::text(227,60,"wrap",mode==16384?m::spot():m::ghost());ui::text(278,60,"diode",mode==32767?m::spot():m::ghost());
         waveform();for(int p:{C::P_BIAS,C::P_TRIM,C::P_MIX}){const auto& c=CONTROLS[p];ui::text(c.label_x,182,NAMES[p],frame.selected==p?m::spot():m::ghost());ui::text(c.label_x,196,frame.values[p],color(p));rail(p,c.rail_x,c.rail_x+c.extent,c.rail_y);}ui::line(14,223,306,223,m::branch());
     }
-    if(frame.lock)m::footer(320,frame.lock_full?"lock full":"p-lock / name: remove","b back");else m::footer(320,"b back","l: mod >");
+    m::footer(320,"b back","l: mod >");
 }
 bool fold_focus_draw_top(){
     if(!frame.valid||!frame.modern||frame.lens)return false;
@@ -271,6 +251,6 @@ bool fold_focus_draw_top(){
     if(frame.ready){trace(frame.plot.modern.source,m::ghost());trace(frame.plot.modern.output,out);}else ui::text(176,128,"updating",m::ghost());
     ui::text(34,198,frame.curve?"-1":"0",m::ghost());ui::text(207,198,frame.curve?"0":"4",m::ghost());right(386,198,frame.curve?"+1 in":"8ms",m::ghost());
     ui::text(14,214,frame.curve?"before dc / tone / trim / mix":"post dc / tone / trim / mix",m::ghost());
-    m::footer(400,frame.lock?"lock ref / not live":frame.mute?"muted ref / not live":frame.bypass?"byp ref / not live":"reset ref / not live","+/-1fs");return true;
+    m::footer(400,frame.mute?"muted ref / not live":frame.bypass?"byp ref / not live":"reset ref / not live","+/-1fs");return true;
 }
 } // namespace seance::platform::ui3ds

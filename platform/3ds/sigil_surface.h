@@ -10,7 +10,7 @@
 #include "../../core/ui/pixel_geometry.h"
 #include <algorithm>
 #include <cstring>
-#ifdef __3DS__
+#if defined(__3DS__) || defined(SEANCE_RULE_UI_CACHE_GPU_TEST)
 #include <citro2d.h>
 #endif
 
@@ -25,13 +25,15 @@ template<int Width> struct BasicCache {
     static constexpr int W=Width;
     uint32_t pixels[W*H]={};
     bool pending=false, valid=false;
-#ifdef __3DS__
+#if defined(__3DS__) || defined(SEANCE_RULE_UI_CACHE_GPU_TEST)
     C3D_Tex texture{};
-    Tex3DS_SubTexture sub{W,H,0,1,float(W)/256,1-float(H)/128};
+    // Never written: one shared constant per width, so the cache object itself is
+    // all-zero and lands in .bss (the .3dsx stores .data, not .bss).
+    static constexpr Tex3DS_SubTexture sub{W,H,0,1,float(W)/256,1-float(H)/128};
     bool ready=false;
 #endif
     bool init() {
-#ifdef __3DS__
+#if defined(__3DS__) || defined(SEANCE_RULE_UI_CACHE_GPU_TEST)
         if(ready)return true;
         ready=C3D_TexInit(&texture,256,128,GPU_RGBA8);
         if(ready){C3D_TexSetFilter(&texture,GPU_LINEAR,GPU_LINEAR);C3D_TexSetWrap(&texture,GPU_CLAMP_TO_EDGE,GPU_CLAMP_TO_EDGE);}
@@ -41,7 +43,7 @@ template<int Width> struct BasicCache {
 #endif
     }
     void shutdown() {
-#ifdef __3DS__
+#if defined(__3DS__) || defined(SEANCE_RULE_UI_CACHE_GPU_TEST)
         if(ready)C3D_TexDelete(&texture);
         ready=false;
 #endif
@@ -72,7 +74,7 @@ template<int Width> struct BasicCache {
     }
     // After successful SYNCDRAW FrameBegin, before either screen submits draws.
     void upload() {
-#ifdef __3DS__
+#if defined(__3DS__) || defined(SEANCE_RULE_UI_CACHE_GPU_TEST)
         if(!pending||!ready)return;
         auto* data=static_cast<uint8_t*>(texture.data);
         // Extend the edge into texture padding so linear filtering has no seam.
@@ -88,7 +90,7 @@ template<int Width> struct BasicCache {
     }
     bool draw() const {
         if(!valid)return false;
-#ifdef __3DS__
+#if defined(__3DS__) || defined(SEANCE_RULE_UI_CACHE_GPU_TEST)
         if(!ready)return false;
         const C2D_Image image{const_cast<C3D_Tex*>(&texture),&sub};
         C2D_DrawImageAt(image,0,0,0,nullptr,2,2);

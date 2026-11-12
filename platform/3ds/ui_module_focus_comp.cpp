@@ -20,7 +20,7 @@ constexpr const char* NAMES[C::P_COUNT] = {
     "threshold", "ratio", "attack", "release", "makeup", "mix", "knee", "detector hp", "release clock"
 };
 struct Frame {
-    bool valid=false, bypass=false, mute=false, lock=false, full=false, lens=false, detail=false;
+    bool valid=false, bypass=false, mute=false, lens=false, detail=false;
     int chain=0, slot=0, selected=0;
     int32_t bpm=120<<16;
     q15 edit[C::P_COUNT]={};
@@ -38,22 +38,19 @@ Engine* page_engine=nullptr;
 struct Gesture {
     uintptr_t unit=0;
     Engine* engine=nullptr;
-    int chain=-1, slot=-1, step=-1, lock_chain=-1, bank=-1, param=-1, x=0;
+    int chain=-1, slot=-1, param=-1, x=0;
     q15 value=0;
-    bool lock=false, sync=false;
+    bool sync=false;
 } gesture;
 
 int uni(int v) { return std::max(0,std::min(32767,v)); }
 bool context() {
     return g_eng && g_audio && g_overlay==Overlay::Editor &&
-        (g_view==View::Chains || (g_view==View::Sequencer && g_seq_lock_armed)) &&
+        g_view==View::Chains &&
         g_edit_chain>=0 && g_edit_chain<NUM_CHAINS && g_edit_slot>=0 && g_edit_slot<UNITS_PER_CHAIN;
 }
-bool lock_context() {
-    return g_seq_lock_armed && g_seq_lock_chain==g_edit_chain && g_seq_lock_step>=0 && g_seq_lock_step<SEQ_STEPS;
-}
 q15 edit_value(const C& u,int p) {
-    return lock_context()?seq_display_value(g_edit_slot,p,u.params[p].base):u.params[p].base;
+    return u.params[p].base;
 }
 void sync_page(const C& u) {
     if(page_engine!=g_eng || page_unit!=uintptr_t(&u)) {
@@ -63,14 +60,11 @@ void sync_page(const C& u) {
 bool owns(const C& u) {
     return gesture.engine==g_eng && gesture.unit==uintptr_t(&u) &&
         gesture.chain==g_edit_chain && gesture.slot==g_edit_slot &&
-        g_eng->chains[g_edit_chain].units[g_edit_slot]==&u && gesture.lock==g_seq_lock_armed &&
-        (!gesture.lock || (lock_context() && gesture.step==g_seq_lock_step &&
-        gesture.lock_chain==g_seq_lock_chain && gesture.bank==g_eng->active_pattern));
+        g_eng->chains[g_edit_chain].units[g_edit_slot]==&u;
 }
 void change(C& u,int p,q15 value) {
     if(value==edit_value(u,p))return;
-    if(g_seq_lock_armed) { if(lock_context())seq_record_lock(g_edit_slot,p,value); }
-    else {u.params[p].base=value;mark_project_mutated();}
+    u.params[p].base=value;mark_project_mutated();
 }
 void format(char* out,size_t n,int p,q15 value,bool sync,int32_t bpm) {
     if(!out || !n)return;
@@ -122,10 +116,8 @@ void field(int p,int x,int y,int width=138) {
 void modulation_status(char* out,size_t n) {
     const auto& d=frame.routes[frame.selected];
     const bool muted=d.source!=ModSource::None && !d.mod_enabled;
-    if(frame.full && !muted) {std::snprintf(out,n,"lock full / 4 per step");return;}
-    if(frame.lock && !muted) {std::snprintf(out,n,"outline edit / fill live");return;}
     if(d.source==ModSource::None) {std::snprintf(out,n,"%s / hold l: mod",d.temp?"temp":"base");return;}
-    const char* state=muted?(frame.full?"muted / lock full":frame.lock?"muted / lock":"muted"):d.temp?"temp":"hold l";
+    const char* state=muted?"muted":d.temp?"temp":"hold l";
     if(d.source==ModSource::EnvFollow)std::snprintf(out,n,"env%d / %+d%% / %s",d.env_chain+1,int(d.depth)*100/32767,state);
     else std::snprintf(out,n,"sigil %c / %+d%% / %s",'a'+mod_source_sigil(d.source),int(d.depth)*100/32767,state);
 }
@@ -163,39 +155,33 @@ bool comp_focus_touch_body(C& u,int tx,int ty) {
     comp_focus_release();
     if(g_eng->chains[g_edit_chain].units[g_edit_slot]!=&u)return false;
     sync_page(u);
-    if(g_seq_lock_armed && !lock_context())return true;
     if(hit(tx,ty,64,0,100,30)) {
-        if(!comp_focus_back()){g_overlay=Overlay::None;g_seq_lock_armed=false;g_drag=Drag::None;}
+        if(!comp_focus_back()){g_overlay=Overlay::None;g_drag=Drag::None;}
         return true;
     }
     if(hit(tx,ty,252,218,68,22)) {
-        if(!g_seq_lock_armed){u.bypass=!u.bypass;mark_project_mutated();}
+        u.bypass=!u.bypass;mark_project_mutated();
         return true;
     }
     if(!details && hit(tx,ty,166,176,148,39)) {details=true;selected=C::P_KNEE;return true;}
-    int p=-1,label_x=12,label_y=43;
+    int p=-1;
     if(!details) {
         if(hit(tx,ty,6,34,308,87))p=C::P_THRESHOLD;
         for(int i=0;i<5;++i) {
             const int x=(i&1)?170:12,y=128+(i/2)*30;
-            if(hit(tx,ty,x-5,y-5,148,30)){p=i+1;label_x=x;label_y=y;break;}
+            if(hit(tx,ty,x-5,y-5,148,30)){p=i+1;break;}
         }
     } else {
         for(int i=0;i<3;++i) {
             const int y=64+i*48;
-            if(hit(tx,ty,8,y-6,304,42)){p=C::P_KNEE+i;label_x=16;label_y=y;break;}
+            if(hit(tx,ty,8,y-6,304,42)){p=C::P_KNEE+i;break;}
         }
     }
     if(p<0)return true;
     selected=p;
-    if(lock_context() && hit(tx,ty,label_x-3,label_y-3,ui::text_w(NAMES[p])+6,13)) {
-        if(g_eng->remove_step_lock(g_seq_lock_chain,g_seq_lock_step,g_edit_slot,p))mark_project_mutated();
-        return true;
-    }
     if(p==C::P_CLOCK){change(u,p,edit_value(u,p)>16383?0:32767);return true;}
     gesture.unit=uintptr_t(&u);gesture.engine=g_eng;gesture.chain=g_edit_chain;gesture.slot=g_edit_slot;
-    gesture.step=g_seq_lock_step;gesture.lock_chain=g_seq_lock_chain;gesture.bank=g_eng->active_pattern;
-    gesture.param=p;gesture.x=tx;gesture.value=edit_value(u,p);gesture.lock=g_seq_lock_armed;
+    gesture.param=p;gesture.x=tx;gesture.value=edit_value(u,p);
     gesture.sync=edit_value(u,C::P_CLOCK)>16383;g_drag=Drag::CompParam;
     return true;
 }
@@ -223,8 +209,8 @@ void comp_focus_capture() {
         if(!unit || unit->kind!=UnitKind::Comp){comp_focus_release();page_unit=0;page_engine=nullptr;return;}
         const auto& u=*static_cast<const C*>(unit);sync_page(u);
         if(gesture.unit && (!owns(u) || param_lens_is_open() || g_drag!=Drag::CompParam))comp_focus_release();
-        frame.valid=true;frame.bypass=u.bypass;frame.mute=chain.mute;frame.lock=lock_context();
-        frame.full=frame.lock && g_seq_lock_flash>0;frame.lens=false;frame.detail=details;
+        frame.valid=true;frame.bypass=u.bypass;frame.mute=chain.mute;
+        frame.lens=false;frame.detail=details;
         frame.chain=g_edit_chain;frame.slot=g_edit_slot;frame.selected=selected;frame.bpm=u.transport_bpm_q16();
         frame.visual=u.visual();
         for(int p=0;p<C::P_COUNT;++p) {
@@ -251,7 +237,7 @@ void comp_focus_draw(const C&) {
     m::paper(320);if(!frame.valid)return;
     module_heading::header(UnitKind::Comp,m::spot());
     ui::text(70,m::kHeaderTextY,frame.detail?"< controls":"< chain",m::ghost());
-    right(m::right_edge(320),m::kHeaderTextY,frame.detail?"comp / detail":frame.lock?"comp / lock":frame.bypass?"comp / bypass":"comp / active",m::spot());
+    right(m::right_edge(320),m::kHeaderTextY,frame.detail?"comp / detail":frame.bypass?"comp / bypass":"comp / active",m::spot());
     ui::line(12,30,307,30,m::branch());
     if(!frame.detail) {
         ui::text(12,43,"threshold",frame.selected==C::P_THRESHOLD?m::spot():m::ghost());source_tag(C::P_THRESHOLD,78,43);

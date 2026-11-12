@@ -5,6 +5,8 @@
 
 #include "module_random_impl.inc"
 #include "paul_engine_impl.inc"
+#include "rule_engine_impl.inc"
+#include "rot_engine_impl.inc"
 
 namespace seance {
 
@@ -24,6 +26,8 @@ struct Engine::StructuralUndo {
     MacroPad macro_pads[8];
     Unit* retained = nullptr;
 };
+
+#include "relic_engine_impl.inc"
 
 static void swap_pattern(Pattern& a, Pattern& b) {
     for (int chain = 0; chain < NUM_CHAINS; ++chain) {
@@ -79,9 +83,47 @@ const char* unit_kind_name(UnitKind k) {
         case UnitKind::Inst:          return "INST";
         case UnitKind::Scratch:       return "SCRT";
         case UnitKind::Paul:          return "PAUL";
+        case UnitKind::Pent:          return "PENT";
+        case UnitKind::Rule:          return "RULE";
+        case UnitKind::Rot:           return "ROT";
+        case UnitKind::Relic:         return "RELIC";
         case UnitKind::Strain:        return "STRAIN";
         default:                     return "?";
     }
+}
+
+// Validate public PENT config literally, never repairing an invalid width.
+static bool pent_install_valid(const Unit* unit) {
+    if(unit && unit->kind==UnitKind::Rot) {
+        const auto& r=*static_cast<const RotUnit*>(unit);
+        if(!r.ready() || !RotUnit::valid_config(r.config()) || r.sample_slot<0 || r.sample_slot>=trackr::synth::SAMPLE_BANK_SIZE)return false;
+        for(int p=0;p<RotUnit::P_COUNT;++p)if(r.params[p].base < (p==RotUnit::P_PITCH?-32767:0))return false;
+    }
+    if(unit && unit->kind==UnitKind::Rule) {
+        const auto& r=*static_cast<const RuleUnit*>(unit);
+        if(!RuleUnit::valid_config(r.config()) || r.sample_slot<0 || r.sample_slot>=trackr::synth::SAMPLE_BANK_SIZE)return false;
+        for(int p=0;p<RuleUnit::P_COUNT;++p)if(r.params[p].base < (p==RuleUnit::P_ROOT?-32767:0))return false;
+    }
+    if (!unit || unit->kind != UnitKind::Pent) return true;
+    const auto& pent = *static_cast<const PentUnit*>(unit);
+    if (uint8_t(pent.width) > uint8_t(PentUnit::Width::Stereo)) return false;
+    for (const auto& param : pent.params) if (param.base < 0) return false;
+    return true;
+}
+
+void Engine::capture_pent_visual(int chain, int slot, PentUnit::Visual& out) const {
+    out = {};
+    if (unsigned(chain) >= NUM_CHAINS || unsigned(slot) >= UNITS_PER_CHAIN) return;
+    const Unit* unit = chains[chain].units[slot];
+    if (!unit || unit->kind != UnitKind::Pent) return;
+    const auto& pent = *static_cast<const PentUnit*>(unit);
+    out = pent.visual(); // no resolution, clock advancement, reset or UI synthesis
+    const auto& pipe = chains[chain];
+    if (!out.ready || !unit->ready() || !out.frames || pipe.mute || pipe.volume <= 0 || unit->bypass || bounce_preview_active() ||
+        uint8_t(pent.width) > 1 || !pipe.rendered_channels || !chain_audio_channels(chain) ||
+        pent_render_source_[chain] != unit ||
+        pent_render_width_[chain] != uint8_t(pent.width) || resolve_sequence_source(chain).slot != slot ||
+        (unit->arp_voice.owner >= 0 && !unit->arp_voice.gain)) out.audible = false;
 }
 
 Engine::Engine() {
@@ -93,6 +135,19 @@ Engine::Engine() {
         step_dest[i] = (uint8_t)(i % NUM_CHAINS);
         reset_sigil(i);
     }
+}
+
+void Engine::bind_pitch_scale(Unit* unit) {
+    if (unit && unit->kind == UnitKind::Osc) static_cast<OscUnit*>(unit)->pitch_scale = project_scale_;
+    else if (unit && unit->kind == UnitKind::SamplePlayer) static_cast<PlayUnit*>(unit)->pitch_scale = project_scale_;
+}
+
+bool Engine::set_project_scale(MusicalScale scale) {
+    if (!musical_scale::valid(scale) || musical_scale::equal(scale, project_scale_)) return false;
+    project_scale_ = scale;
+    for (auto& chain : chains) for (auto* unit : chain.units) bind_pitch_scale(unit);
+    bind_pitch_scale(&play_preview_);
+    return true;
 }
 
 void Engine::reset_performance_bindings() {
@@ -184,6 +239,7 @@ void Engine::capture_ui_snapshot(EngineUiSnapshot& out,
     out.rec_waveform_slot = -1;
     out.rec_waveform_valid = 0;
     std::memset(out.rec_waveform, 0, sizeof out.rec_waveform);
+    out.project_scale = project_scale_;
     out.sequencer_enabled = sequencer_enabled;
     out.sequencer_fill_active = sequencer_fill_active;
     out.swing_percent = (uint8_t)((effective_swing_q16() + 32768) / 65536);
@@ -595,6 +651,7 @@ Engine::SequenceSource Engine::resolve_sequence_source(int chain) const {
 }
 
 void Engine::capture_sequence_snapshot(EngineUiSnapshot& out, int bank) const {
+    out.project_scale = project_scale_;
     const Pattern& selected = sequence_pattern(bank);
     // A transition is an event stream, not one playing bank. Suppress the
     // single-bank head even at an endpoint: old accepted lookahead may remain.
@@ -1313,9 +1370,12 @@ void Engine::transport_play() {
         if (sigil_config[i].restart == SigilRestart::Transport && sigils[i].mode != SigilMode::Follow) reset_sigil(i);
     cancel_param_temp();
     cancel_sequence_audition();
+    if (!transport_playing) cancel_rot_auditions();
     transport_playing = true;
 }
 void Engine::transport_stop() {
+    cancel_rot_auditions();
+    cancel_relic_gesture();
     stop_bounce(BounceReason::Stopped);
     release_play_gates();
     transition_fx_.stop();
@@ -1328,6 +1388,8 @@ void Engine::transport_stop() {
         if (u && u->kind == UnitKind::Fract) static_cast<FractUnit*>(u)->stop_transport();
         else if (u && u->kind == UnitKind::Glitch) static_cast<GlitchUnit*>(u)->stop_transport();
         else if (u && u->kind == UnitKind::Vca) static_cast<VcaUnit*>(u)->stop_cycle();
+        else if (u && u->kind == UnitKind::Rule) static_cast<RuleUnit*>(u)->stop();
+        else if (u && u->kind == UnitKind::Rot) static_cast<RotUnit*>(u)->stop();
     stop_pattern_chain();
     sequencer_fill_active = false;
     pending_triggers = pending_rec_start = pending_rec_stop = 0;
@@ -1335,6 +1397,7 @@ void Engine::transport_stop() {
     if (pending_pattern < NUM_PATTERNS) activate_pattern(pending_pattern);
 }
 void Engine::transport_reset() {
+    cancel_relic_gesture();relic_epoch_=0;
     // Reset/load must observe LOW before another action edge, even if a sigil
     // restarts high. This is independent of the unit's DSP or undo state.
     for (auto& chain : chains) for (Unit* unit : chain.units)
@@ -1356,6 +1419,7 @@ void Engine::transport_reset() {
         } else if (u && u->kind == UnitKind::Glitch) static_cast<GlitchUnit*>(u)->reset();
         else if (u && u->kind == UnitKind::Inst) u->reset(); // reset discards old notes; ordinary stop keeps finite tails
         else if (u && u->kind == UnitKind::Vca && static_cast<VcaUnit*>(u)->modern()) u->reset();
+        else if (u && (u->kind == UnitKind::Rule || u->kind == UnitKind::Rot)) u->reset();
     transport_frame = 0;
     beat_count = 0;
     frame_in_beat = 0;
@@ -1421,16 +1485,27 @@ trackr::synth::SampleEditResult Engine::request_chain_record(int chain, bool sta
         // This method may run at an audio-guarded controller boundary or from
         // host/offline code, but it must never allocate. UI stages workspaces via
         // plan_chain_record/stage_recorder/commit_chain_record first.
-        for (auto* unit : chains[chain].units) {
+        for (int slot = 0; slot < UNITS_PER_CHAIN; ++slot) {
+            auto* unit = chains[chain].units[slot];
             if (!unit || unit->kind != UnitKind::Recorder) continue;
             auto* rec = static_cast<RecUnit*>(unit);
             if (!rec->can_start_fresh()) return SampleEditResult::Busy;
             if (rec->sample_slot < 0 || rec->sample_slot >= trackr::synth::SAMPLE_BANK_SIZE) return SampleEditResult::InvalidSlot;
             const auto& sample = trackr::synth::SampleBank::instance().slot(rec->sample_slot);
-            if (!recorder_is_private(*rec) || !sample.has_storage() || sample.channels != 1 ||
+            const uint8_t channels = chain_audio_channels(chain, slot);
+            if (!channels || !chain_audio_channels(chain)) return SampleEditResult::InvalidSlot;
+            if (!recorder_is_private(*rec) || !sample.has_storage() || sample.channels != channels ||
                 sample.logical_frames != 0 || sample.num_frames() != rec->required_capacity_frames())
                 return SampleEditResult::SharedSlot;
         }
+    }
+    // All preflights above precede transient ownership changes. An accepted
+    // Start reserves recording globally, even when quantized/on another chain.
+    if (start) {
+        bool recorder = false;
+        for (const Unit* u : chains[chain].units)
+            if (u && u->kind == UnitKind::Recorder) recorder = true;
+        if (recorder) cancel_rot_auditions();
     }
     cancel_param_temp();
     cancel_scratch_gesture();
@@ -1481,6 +1556,7 @@ bool Engine::recording_active_or_pending() const {
 }
 
 void Engine::interrupt_recorders() {
+    cancel_relic_gesture();
     cancel_pending_recorder();
     pending_rec_start = pending_rec_stop = 0;
     // A queued whole-chain launch must not re-open a take after wake/input loss.
@@ -1502,10 +1578,12 @@ trackr::synth::SampleEditResult Engine::validate_recorder_command(int chain, int
     if (command == RecorderCommand::Resume && !rec.is_paused()) return SampleEditResult::Busy;
     if (command == RecorderCommand::Start && !rec.can_start_fresh()) return SampleEditResult::Busy;
     if (!recorder_is_private(rec)) return SampleEditResult::SharedSlot;
+    const uint8_t channels = chain_audio_channels(chain, slot);
+    if (!channels || !chain_audio_channels(chain)) return SampleEditResult::InvalidSlot;
     if (command != RecorderCommand::Start)
-        return rec.writer_storage_matches() ? SampleEditResult::Ok : SampleEditResult::SharedSlot;
+        return rec.writer_storage_matches() && rec.writer_channels_ == channels ? SampleEditResult::Ok : SampleEditResult::SharedSlot;
     const auto& sample = trackr::synth::SampleBank::instance().slot(rec.sample_slot);
-    if (!sample.has_storage() || sample.channels != 1 || sample.logical_frames != 0 ||
+    if (!sample.has_storage() || sample.channels != channels || sample.logical_frames != 0 ||
         sample.num_frames() != rec.required_capacity_frames() || !rec.target_frames()) return SampleEditResult::SharedSlot;
     return SampleEditResult::Ok;
 }
@@ -1536,6 +1614,8 @@ trackr::synth::SampleEditResult Engine::request_recorder_command(
 
 void Engine::accept_recorder_command(int chain, int slot, RecorderCommand command, LaunchQuantize quantize) {
     auto* rec = static_cast<RecUnit*>(chains[chain].units[slot]);
+    if (command == RecorderCommand::Start || command == RecorderCommand::Resume)
+        cancel_rot_auditions();
     cancel_param_temp();
     cancel_scratch_gesture();
     launch_quantize = quantize;
@@ -1587,7 +1667,9 @@ bool Engine::recorder_command_current(const PendingRecorderCommand& command) con
         command.rec->sample_slot != command.sample_slot) return false;
     const auto& sample = trackr::synth::SampleBank::instance().slot(command.sample_slot);
     return trackr::synth::SampleBank::instance().generation(command.sample_slot) == command.bank_generation &&
-        sample.data.data() == command.data && sample.data.size() == command.elements && sample.channels == command.channels;
+        sample.data.data() == command.data && sample.data.size() == command.elements && sample.channels == command.channels &&
+        (command.command == RecorderCommand::Stop ||
+         (chain_audio_channels(command.chain) && chain_audio_channels(command.chain, command.slot) == command.channels));
 }
 
 void Engine::fire_pending_rec(uint8_t mask) {
@@ -1619,7 +1701,7 @@ void Engine::fire_pending_rec(uint8_t mask) {
             auto& token = pending_chain_recorders_[chain][slot];
             if (recorder_command_current(token) &&
                 validate_recorder_command(chain, slot, token.command) == trackr::synth::SampleEditResult::Ok) {
-                if (starts & bit) token.rec->trigger();
+                if (starts & bit) { cancel_rot_auditions(); token.rec->trigger(); }
                 if (stops & bit) token.rec->stop();
             }
             token = {};
@@ -1655,6 +1737,7 @@ void Engine::set_swing(int percent) {
 
 void Engine::activate_pattern(int index, bool start_now) {
     if (index < 0 || index >= NUM_PATTERNS) return;
+    cancel_relic_gesture();
     clear_pattern_transition();
     clear_sequence_runtime(true, !transport_playing);
     if (active_pattern < NUM_PATTERNS) pattern_banks[active_pattern] = pattern;
@@ -1669,6 +1752,7 @@ void Engine::activate_pattern(int index, bool start_now) {
 
 void Engine::request_pattern(int index, bool quantized) {
     if (index < 0 || index >= NUM_PATTERNS) return;
+    cancel_relic_gesture();
     // An explicit launch, including the current bank, ends the override and
     // must not leave transition events queued under a now-single-bank label.
     if (pattern_transition_.active) clear_sequence_runtime();
@@ -2245,6 +2329,7 @@ void Engine::capture_param_inspector(int chain, int slot, int param, ParamInspec
         static_cast<const ScratchUnit*>(unit)->axis_control_source(param):value.control_source();
     out.effective = value.effective;
     out.source = value.src; out.depth = value.mod_depth; out.bipolar = value.bipolar;
+    out.relic_source=value.relic_source;out.relic_port=value.relic_port;
     out.mod_enabled = value.mod_enabled;
     out.temp = value.temp_override;
     bool scratch_layer=false;
@@ -2254,9 +2339,9 @@ void Engine::capture_param_inspector(int chain, int slot, int param, ParamInspec
     }
     out.layer = value.temp_override ? 4 : (value.performance_override || scratch_layer ? 3 :
                 (value.audition_override ? 2 : (value.step_lock_override ? 1 : 0)));
-    out.source_value = value.mod_enabled ? modulation_value(value.src) : 0;
+    out.source_value = value.mod_enabled ? parameter_modulation_value(unit,param) : 0;
     q31 source_lo = 0, source_hi = 0;
-    if (mod_source_sigil(value.src) >= 0 && sigil_config[mod_source_sigil(value.src)].enabled) {
+    if (!value.relic_source && mod_source_sigil(value.src) >= 0 && sigil_config[mod_source_sigil(value.src)].enabled) {
         // Include signed depth and legacy INT16_MIN. This is a conservative rail.
         // Preserve DSP values and include that extra negative LSB in potential.
         source_lo = -32768; source_hi = 32767;
@@ -2269,7 +2354,7 @@ void Engine::capture_param_inspector(int chain, int slot, int param, ParamInspec
             if (source_lo > source_hi) { const q31 tmp=source_lo; source_lo=source_hi; source_hi=tmp; }
             if (c.shape == SigilShape::Drawn && !s.drawn) source_lo = source_hi = 0;
         }
-    } else if (value.src == ModSource::EnvFollow) source_hi = 32767;
+    } else if (!value.relic_source && value.src == ModSource::EnvFollow) source_hi = 32767;
     if (!value.mod_enabled) source_lo = source_hi = 0;
     q31 lo = (q31)out.control + ((source_lo * value.mod_depth) >> 15);
     q31 hi = (q31)out.control + ((source_hi * value.mod_depth) >> 15);
@@ -2290,7 +2375,12 @@ bool Engine::sequence_audition_allowed(int chain) const {
         if (unit->kind == UnitKind::Recorder) {
             // Even bypassed REC captures. Never insert an edit preview into a take.
             if (static_cast<const RecUnit*>(unit)->writer_open()) return false;
-        } else if (!unit->bypass) audible = true;
+        } else if (!unit->bypass) {
+            // ROT stopped auditions own a private preparing tape. A REC owner
+            // anywhere excludes that manual preview; other source policy stays.
+            if (unit->kind == UnitKind::Rot && recording_active_or_pending()) return false;
+            audible = true;
+        }
     }
     return audible;
 }
@@ -2307,12 +2397,25 @@ void Engine::refresh_audition_params(int chain, bool release) {
             if (release) param.audition_override = false;
             if (!param.temp_override) param.slew_ready = false;
             if(unit->kind==UnitKind::Scratch) {
-                auto* s=static_cast<ScratchUnit*>(unit);s->synchronize();s->resolve_param(p,modulation_value(param.src));
-            } else param.resolve(modulation_value(param.src));
+                auto* s=static_cast<ScratchUnit*>(unit);s->synchronize();s->resolve_param(p,parameter_modulation_value(unit,p));
+            } else param.resolve(parameter_modulation_value(unit,p));
         }
         if (!changed) continue;
         unit->control_tick();
         update_clock_unit(unit);
+    }
+}
+
+void Engine::cancel_rot_auditions(int chain) {
+    if (chain < -1 || chain >= NUM_CHAINS) return;
+    const int first = chain < 0 ? 0 : chain;
+    const int last = chain < 0 ? NUM_CHAINS : chain + 1;
+    for (int c = first; c < last; ++c) for (Unit* unit : chains[c].units) {
+        if (!unit || unit->kind != UnitKind::Rot) continue;
+        auto* rot = static_cast<RotUnit*>(unit);
+        // audition_ is the actual stopped manual owner, also retained after
+        // stop()/release. started_/HOLD alone never grant cancellation authority.
+        if (rot->audition_) rot->reset();
     }
 }
 
@@ -2322,6 +2425,9 @@ void Engine::cancel_sequence_audition() {
     sequence_audition_end_frame_ = 0;
     // No retained Unit pointers or saved params: current topology and current
     // playback/performance overrides remain authoritative after cancellation.
+    // No owner (-1) is a no-op, NOT an all-chain ROT cancellation. Kill the
+    // old chain's transient reader before a refresh can leave preparation alive.
+    if (chain >= 0) cancel_rot_auditions(chain);
     refresh_audition_params(chain, true);
 }
 
@@ -2635,8 +2741,7 @@ void Engine::fire_sequence_event(int chain, uint64_t tick, uint64_t nominal_fram
             if (!refresh_param[slot][param_index]) continue;
             refresh_unit = true;
             Param& param = unit->params[param_index];
-            const q15 modulation = param.src == ModSource::None
-                ? 0 : modulation_value(param.src);
+            const q15 modulation = parameter_modulation_value(unit,param_index);
             if(unit->kind==UnitKind::Scratch) {
                 auto* s=static_cast<ScratchUnit*>(unit);s->synchronize();s->resolve_param(param_index,modulation);
             } else param.resolve(modulation);
@@ -2951,6 +3056,7 @@ void Engine::swap_patch_state(Engine& other) {
     cancel_param_temp();
     other.cancel_param_temp();
     cancel_scratch_gesture();other.cancel_scratch_gesture();
+    retire_relic_sources_all();other.retire_relic_sources_all();
     for (int i = 0; i < NUM_SIGILS; ++i) {
         const SigilConfig config = sigil_config[i];
         sigil_config[i] = other.sigil_config[i]; other.sigil_config[i] = config;
@@ -2959,6 +3065,8 @@ void Engine::swap_patch_state(Engine& other) {
     const EnvResponse er = env_response_; env_response_ = other.env_response_; other.env_response_ = er;
     invalidate_structural_undo();
     other.invalidate_structural_undo();
+    // Parked resources depart WITH their patch. No guarded destruction.
+    {Unit* retired=structural_undo_retired_;structural_undo_retired_=other.structural_undo_retired_;other.structural_undo_retired_=retired;}
     release_sequence_locks();
     other.release_sequence_locks();
     for (int c = 0; c < NUM_CHAINS; ++c) {
@@ -2986,6 +3094,10 @@ void Engine::swap_patch_state(Engine& other) {
     uint8_t ap = active_pattern; active_pattern = other.active_pattern; other.active_pattern = ap;
     uint8_t pp = pending_pattern; pending_pattern = other.pending_pattern; other.pending_pattern = pp;
     LaunchQuantize pq = pattern_launch_quantize; pattern_launch_quantize = other.pattern_launch_quantize; other.pattern_launch_quantize = pq;
+    MusicalScale scale = project_scale_; project_scale_ = other.project_scale_; other.project_scale_ = scale;
+    for (auto& chain : chains) for (auto* unit : chain.units) bind_pitch_scale(unit);
+    for (auto& chain : other.chains) for (auto* unit : chain.units) other.bind_pitch_scale(unit);
+    bind_pitch_scale(&play_preview_); other.bind_pitch_scale(&other.play_preview_);
     uint8_t sw = swing_percent; swing_percent = other.swing_percent; other.swing_percent = sw;
     bool seq_on = sequencer_enabled; sequencer_enabled = other.sequencer_enabled; other.sequencer_enabled = seq_on;
     for (int i = 0; i < PATTERN_CHAIN_STEPS; ++i) {
@@ -3013,6 +3125,7 @@ void Engine::swap_patch_state(Engine& other) {
     LaunchQuantize lq = launch_quantize; launch_quantize = other.launch_quantize; other.launch_quantize = lq;
     // A held performance gesture belongs to the departing patch, not its units.
     live_retrigger_active_ = other.live_retrigger_active_ = false;
+    for(int c=0;c<NUM_CHAINS;++c){rebind_rules(c);other.rebind_rules(c);rebind_rots(c);other.rebind_rots(c);}
     transport_reset();
     other.transport_reset();
     env_value_ = other.env_value_ = 0;
@@ -3044,6 +3157,12 @@ SampleSlotRefs Engine::sample_slot_refs(int sample_slot, const Unit* ignore) con
                 case UnitKind::Paul:
                     if (static_cast<const PaulUnit*>(unit)->sample_slot == sample_slot) ++refs.paul;
                     break;
+                case UnitKind::Rot:
+                    if (static_cast<const RotUnit*>(unit)->sample_slot == sample_slot) ++refs.rot;
+                    break;
+                case UnitKind::Rule:
+                    if (static_cast<const RuleUnit*>(unit)->sample_slot == sample_slot) ++refs.rule;
+                    break;
                 case UnitKind::Recorder:
                     if (static_cast<const RecUnit*>(unit)->sample_slot == sample_slot) ++refs.rec;
                     break;
@@ -3057,6 +3176,10 @@ SampleSlotRefs Engine::sample_slot_refs(int sample_slot, const Unit* ignore) con
         static_cast<const ScratchUnit*>(retained)->sample_slot==sample_slot)++refs.scratch;
     if(retained && retained!=ignore && retained->kind==UnitKind::Paul &&
         static_cast<const PaulUnit*>(retained)->sample_slot==sample_slot)++refs.paul;
+    if(retained && retained!=ignore && retained->kind==UnitKind::Rule &&
+        static_cast<const RuleUnit*>(retained)->sample_slot==sample_slot)++refs.rule;
+    if(retained && retained!=ignore && retained->kind==UnitKind::Rot &&
+        static_cast<const RotUnit*>(retained)->sample_slot==sample_slot)++refs.rot;
     return refs;
 }
 
@@ -3111,9 +3234,12 @@ trackr::synth::SampleEditResult Engine::plan_recorder(RecUnit& rec, bool auto_de
     }
     const uint32_t frames = rec.required_capacity_frames();
     const Sample& current = bank.slot(target);
-    const bool needs_commit = target != rec.sample_slot || current.channels != 1 ||
+    const uint8_t channels = installed ? chain_audio_channels(out.chain, out.unit_slot) : 1;
+    if (!channels || (installed && !chain_audio_channels(out.chain))) return SampleEditResult::InvalidSlot;
+    const bool needs_commit = target != rec.sample_slot || current.channels != channels ||
                               current.logical_frames == UINT32_MAX || current.num_frames() != frames;
-    if (needs_commit && !bank.can_replace(target, frames)) return SampleEditResult::MemoryBudget;
+    if (needs_commit && !bank.can_replace(target, (size_t)frames * channels)) return SampleEditResult::MemoryBudget;
+    out.channels = channels;
     out.rec = &rec;
     out.original_slot = rec.sample_slot;
     out.target_slot = target;
@@ -3126,7 +3252,9 @@ trackr::synth::SampleEditResult Engine::plan_recorder(RecUnit& rec, bool auto_de
         const auto& original = bank.slot(rec.sample_slot);
         out.original_data = original.data.data(); out.original_elements = original.data.size();
         out.original_logical_frames = original.logical_frames;
+        out.original_channels = original.channels;
     }
+    out.target_channels = current.channels;
     out.target_data = current.data.data(); out.target_elements = current.data.size();
     out.target_logical_frames = current.logical_frames;
     out.recorded_frames = rec.recorded_frames();
@@ -3174,7 +3302,9 @@ bool Engine::recorder_plan_current(const RecWorkspacePlan& plan) const {
         chains[(int)plan.chain].units[(int)plan.unit_slot] != plan.rec)) return false;
     return plan.rec->kind == UnitKind::Recorder && plan.rec->session_token() == plan.session_token &&
         plan.rec->state_token() == plan.state_token && plan.rec->take_generation() == plan.take_generation &&
-        plan.rec->recorded_frames() == plan.recorded_frames;
+        plan.rec->recorded_frames() == plan.recorded_frames &&
+        plan.channels == (plan.chain >= 0 ? chain_audio_channels(plan.chain, plan.unit_slot) : 1) &&
+        (plan.chain < 0 || chain_audio_channels(plan.chain));
 }
 
 trackr::synth::SampleEditResult Engine::validate_recorder_plan(const RecWorkspacePlan& plan) const {
@@ -3190,13 +3320,13 @@ trackr::synth::SampleEditResult Engine::validate_recorder_plan(const RecWorkspac
     if (plan.original_slot >= 0 && plan.original_slot < SAMPLE_BANK_SIZE) {
         const auto& original = bank.slot(plan.original_slot);
         if (original.data.data() != plan.original_data || original.data.size() != plan.original_elements ||
-            original.logical_frames != plan.original_logical_frames) return SampleEditResult::SharedSlot;
+            original.logical_frames != plan.original_logical_frames || original.channels != plan.original_channels) return SampleEditResult::SharedSlot;
     }
     const auto& target = bank.slot(plan.target_slot);
     if (target.data.data() != plan.target_data || target.data.size() != plan.target_elements ||
-        target.logical_frames != plan.target_logical_frames) return SampleEditResult::SharedSlot;
+        target.logical_frames != plan.target_logical_frames || target.channels != plan.target_channels) return SampleEditResult::SharedSlot;
     if (plan.target_slot != plan.original_slot && !target.empty()) return SampleEditResult::SharedSlot;
-    if (plan.needs_commit && (plan.staged.channels != 1 || plan.staged.num_frames() != plan.frames ||
+    if (plan.needs_commit && (plan.staged.channels != plan.channels || plan.staged.num_frames() != plan.frames ||
         plan.staged.logical_frames != 0)) return SampleEditResult::InvalidSlot;
     return SampleEditResult::Ok;
 }
@@ -3254,7 +3384,7 @@ trackr::synth::SampleEditResult Engine::commit_chain_record(RecWorkspacePlan* pl
 trackr::synth::SampleEditResult Engine::stage_recorder(RecWorkspacePlan& plan) {
     if (!plan.rec || plan.target_slot < 0) return trackr::synth::SampleEditResult::InvalidSlot;
     if (!plan.needs_commit) return trackr::synth::SampleEditResult::Ok;
-    return RecUnit::stage_workspace(plan.frames, plan.staged);
+    return RecUnit::stage_workspace(plan.frames, plan.staged, plan.channels);
 }
 
 trackr::synth::SampleEditResult Engine::commit_recorder(RecWorkspacePlan& plan) {
@@ -3284,7 +3414,7 @@ trackr::synth::SampleEditResult Engine::commit_recorder_restart(RecWorkspacePlan
     if (plan.rec->take_needs_save() && !plan.discard_unsaved) return SampleEditResult::Busy;
     SampleBank& bank = SampleBank::instance();
     const Sample& target = plan.needs_commit ? plan.staged : bank.slot(plan.target_slot);
-    if (!target.has_storage() || target.channels != 1 || target.num_frames() != plan.frames ||
+    if (!target.has_storage() || target.channels != plan.channels || target.num_frames() != plan.frames ||
         target.logical_frames == UINT32_MAX || !plan.frames) return SampleEditResult::InvalidSlot;
     if (plan.needs_commit && !bank.can_replace(plan.target_slot, plan.staged.data.capacity())) return SampleEditResult::MemoryBudget;
     // After this point only non-failing swaps/scalars. Retired PCM lives in plan.
@@ -3329,6 +3459,9 @@ trackr::synth::SampleEditResult Engine::clear_recorder(RecUnit& rec) {
 Unit* Engine::replace_unit(int chain, int slot, Unit* u) {
     if (chain < 0 || chain >= NUM_CHAINS || slot < 0 || slot >= UNITS_PER_CHAIN)
         { delete u; return nullptr; }
+    if(!pent_install_valid(u) || !can_install_unit(u,chains[chain].units[slot]))return nullptr; // caller retains refused candidate
+    pent_render_source_[chain] = nullptr;
+    cancel_relic_gesture();
     cancel_param_temp();
     cancel_scratch_gesture();
     invalidate_structural_undo();
@@ -3350,7 +3483,12 @@ Unit* Engine::replace_unit(int chain, int slot, Unit* u) {
     if(old && old!=u && old->kind==UnitKind::Paul) {
         auto* p=static_cast<PaulUnit*>(old);p->reset();p->engine_=nullptr;p->chain_=p->slot_=-1;
     }
+    if(old && old!=u && old->kind==UnitKind::Rule){auto* r=static_cast<RuleUnit*>(old);r->reset();r->engine_=nullptr;r->chain_=r->slot_=-1;}
+    if(old && old!=u && old->kind==UnitKind::Rot){auto* r=static_cast<RotUnit*>(old);r->reset();r->engine_=nullptr;r->chain_=r->slot_=-1;}
     chains[chain].units[slot] = u;
+    bind_pitch_scale(u);
+    if(auto* r=bind_rot(chain,slot))r->reset();
+    if(auto* r=bind_rule(chain,slot))r->reset();
     if(auto* p=bind_paul(chain,slot))p->reset();
     if(u && u->kind==UnitKind::Scratch) {
         auto* scratch=static_cast<ScratchUnit*>(u);scratch->reset();
@@ -3436,7 +3574,9 @@ int Engine::insert_unit(int chain, int slot, Unit* unit) {
     for (int index = slot; index < UNITS_PER_CHAIN; ++index) {
         if (!chains[chain].units[index]) { empty = index; break; }
     }
-    if (empty < 0) return -1;
+    if (empty < 0 || !pent_install_valid(unit) || !can_install_unit(unit)) return -1;
+    pent_render_source_[chain] = nullptr;
+    cancel_relic_gesture();
     invalidate_structural_undo();
     release_sequence_pitch(chain);
     clear_sequence_runtime();
@@ -3446,6 +3586,9 @@ int Engine::insert_unit(int chain, int slot, Unit* unit) {
     for (int index = empty; index > slot; --index)
         chains[chain].units[index] = chains[chain].units[index - 1];
     chains[chain].units[slot] = unit;
+    bind_pitch_scale(unit);
+    rebind_rules(chain);rebind_rots(chain);
+    if(unit->kind==UnitKind::Rule || unit->kind==UnitKind::Rot)unit->reset();
     initialize_module_random(*unit);
 
     const SlotReferenceMap reference_map = insertion_slot_map(slot, empty);
@@ -3483,6 +3626,7 @@ int Engine::move_unit_before(int chain, int from_slot, int before_slot) {
         while (to_slot > from_slot && !chains[chain].units[to_slot]) --to_slot;
     } else if (from_slot < before_slot) --to_slot;
     if (to_slot == from_slot) return from_slot;
+    cancel_relic_gesture();
     if (!structural_edit_in_progress_) invalidate_structural_undo();
 
     release_sequence_pitch(chain);
@@ -3498,6 +3642,7 @@ int Engine::move_unit_before(int chain, int from_slot, int before_slot) {
             chains[chain].units[slot] = chains[chain].units[slot + 1];
     }
     chains[chain].units[to_slot] = moved;
+    rebind_rules(chain);rebind_rots(chain);
 
     const SlotReferenceMap reference_map = movement_slot_map(from_slot, to_slot);
     remap_pattern_slots(pattern, chain, reference_map);
@@ -3535,6 +3680,7 @@ int Engine::move_unit_before(int chain, int from_slot, int before_slot) {
 Unit* Engine::remove_unit(int chain, int slot) {
     if (chain < 0 || chain >= NUM_CHAINS || slot < 0 ||
         slot >= UNITS_PER_CHAIN || !chains[chain].units[slot]) return nullptr;
+    cancel_relic_gesture();
     if (!structural_edit_in_progress_) invalidate_structural_undo();
     release_sequence_pitch(chain);
     clear_sequence_runtime();
@@ -3549,7 +3695,10 @@ Unit* Engine::remove_unit(int chain, int slot) {
     }
     for (int index = slot; index + 1 < UNITS_PER_CHAIN; ++index)
         chains[chain].units[index] = chains[chain].units[index + 1];
+    if(removed->kind==UnitKind::Rot){auto* r=static_cast<RotUnit*>(removed);r->reset();r->engine_=nullptr;r->chain_=r->slot_=-1;}
+    if(removed->kind==UnitKind::Rule){auto* r=static_cast<RuleUnit*>(removed);r->reset();r->engine_=nullptr;r->chain_=r->slot_=-1;}
     chains[chain].units[UNITS_PER_CHAIN - 1] = nullptr;
+    rebind_rules(chain);rebind_rots(chain);
 
     const SlotReferenceMap reference_map = removal_slot_map(slot);
     remap_pattern_slots(pattern, chain, reference_map);
@@ -3670,6 +3819,7 @@ bool Engine::undo_structural_edit(int* restored_chain, int* restored_slot) {
     clear_grain_launch_requests(chain);
     for (int slot = 0; slot < UNITS_PER_CHAIN; ++slot) {
         chains[chain].units[slot] = undo.units[slot];
+        bind_pitch_scale(undo.units[slot]);
         if (undo.units[slot] && undo.units[slot]->kind == UnitKind::Grain)
             static_cast<GrainUnit*>(undo.units[slot])->clear_launch_requests();
     }
@@ -3684,11 +3834,13 @@ bool Engine::undo_structural_edit(int* restored_chain, int* restored_slot) {
     scenes[chain][0] = undo.scenes[0];
     scenes[chain][1] = undo.scenes[1];
     for (int pad = 0; pad < 8; ++pad) macro_pads[pad] = undo.macro_pads[pad];
+    rebind_rules(chain);rebind_rots(chain);
     if (restored_chain) *restored_chain = chain;
     if (restored_slot) *restored_slot = undo.selected_slot;
     // A deleted unit could not observe sigils while detached. Restoring its
     // identity/route/undo must not fire a stale previously armed edge.
     if (undo.retained) undo.retained->module_random_.armed = false;
+    cancel_relic_gesture();
     // The retained deleted unit is installed again and ownership returns to Chain.
     undo.retained = nullptr;
     undo.valid = false;
@@ -3847,21 +3999,31 @@ void Engine::trigger_chain_internal(int chain, bool audible_only) {
     for (int sigil = 0; sigil < NUM_SIGILS; ++sigil)
         if (sigils[sigil].mode == SigilMode::Follow && step_dest[sigil] == chain)
             sigils[sigil].follow(0, false);
+    bool rot_recording_checked = false, rot_recording = false;
     for (int slot=0; slot<UNITS_PER_CHAIN; ++slot) {
         Unit* unit=chains[chain].units[slot];
+        if (unit && unit->kind == UnitKind::Rot && !transport_playing) {
+            if (!rot_recording_checked) {
+                rot_recording = recording_active_or_pending();
+                rot_recording_checked = true;
+            }
+            if (rot_recording) continue; // refuse only ROT stopped manual preview
+        }
         // Recording is an explicit REC/STOP command. A musical chain trigger must
         // never erase a finalized take just because the chain still contains REC.
-        if (!unit || unit->kind == UnitKind::Recorder || (audible_only && unit->bypass)) continue;
+        if (!unit || unit->kind == UnitKind::Relic || unit->kind == UnitKind::Recorder || (audible_only && unit->bypass)) continue;
         if (unit->kind==UnitKind::Arp && (unit->bypass || chains[chain].mute)) continue;
+        if(auto* r=bind_rule(chain,slot))for(int p=0;p<r->num_params;++p)r->params[p].resolve(parameter_modulation_value(r,p));
+        if(auto* r=bind_rot(chain,slot))for(int p=0;p<r->num_params;++p)r->params[p].resolve(parameter_modulation_value(r,p));
         if(auto* p=bind_paul(chain,slot)) {
-            for(int i=0;i<p->num_params;++i)p->params[i].resolve(modulation_value(p->params[i].src));
+            for(int i=0;i<p->num_params;++i)p->params[i].resolve(parameter_modulation_value(p,i));
         }
         if (arp_trigger_owner_for(chain,slot)>=0) continue;
         if(unit->kind==UnitKind::Scratch) {
             auto* scratch=static_cast<ScratchUnit*>(unit);
             scratch->engine_=this;scratch->chain_=int8_t(chain);scratch->slot_=int8_t(slot);
             scratch->synchronize();
-            for(int p=0;p<unit->num_params;++p)scratch->resolve_param(p,modulation_value(unit->params[p].src));
+            for(int p=0;p<unit->num_params;++p)scratch->resolve_param(p,parameter_modulation_value(unit,p));
         }
         if (unit->kind==UnitKind::Vca) update_clock_unit(unit);
         unit->trigger();
@@ -3924,13 +4086,13 @@ void Engine::control_step() {
     // 2) resolve all unit params + let units recompute coefficients
     for (auto& c : chains) {
         for (auto* u : c.units) {
-            if (!u) continue;
+            if (!u || u->kind == UnitKind::Relic) continue;
+            bind_pitch_scale(u);
             ScratchUnit* scratch=u->kind==UnitKind::Scratch?static_cast<ScratchUnit*>(u):nullptr;
             if(scratch)scratch->synchronize(); // invalid latch never resolves one stale control tick
             for (int p = 0; p < u->num_params; ++p) {
                 Param& pr = u->params[p];
-                q15 mv = (pr.src == ModSource::None)
-                    ? 0 : modulation_value(pr.src);
+                q15 mv = parameter_modulation_value(u,p);
                 if(scratch)scratch->resolve_param(p,mv);else pr.resolve(mv);
             }
             u->control_tick();
@@ -3955,6 +4117,7 @@ uint32_t Engine::start_play_preview(int chain, int slot, uint32_t first, uint32_
     play_preview_.set_modern(source.modern());
     play_preview_.sample_slot = source.sample_slot;
     play_preview_.pitch_quantize = source.pitch_quantize;
+    bind_pitch_scale(&play_preview_);
     play_preview_.set_pitch_mode(source.pitch_mode());
     play_preview_.restore_edit_state({});
     if (source.edit_source_matches())
@@ -4085,76 +4248,88 @@ bool Engine::set_transition_fx(TransitionFxKind kind, int amount) {
 void Engine::release_transition_fx() { transition_fx_.release(); }
 
 // Master-bus performance FX: post-mix, pre-limiter, allocation-free.
-// Targets slew toward their goals (~4ms time constant at 1k blocks) so
-// toggling never zippers. When every current value reaches zero the whole
-// section is skipped, keeping the idle render path unchanged.
+// Retain the original 32-frame law: at audio samples 0,32,64,... take
+// floor((target-current)/8), with a signed one-count minimum. At 32kHz
+// the large-signal e-fold time is -1ms/log(7/8) = 7.49ms (not 4ms).
+// This private clock advances even at idle, independent of render/event splits.
 void Engine::process_master_fx(q15* out, int frames) {
     using trackr::fx::q31;
-    // Slew currents toward targets once per rendered block.
-    bool any = false;
-    for (int t = 0; t < (int)GlobalFxTarget::Count; ++t) {
-        const q31 target = master_fx_target_[t];
-        q31 current = master_fx_current_[t];
-        if (current != target) {
-            q31 step = (target - current) >> 3;
-            if (step == 0) step = target > current ? 1 : -1;
-            current += step;
-            master_fx_current_[t] = (q15)current;
-        }
-        if (master_fx_current_[t]) any = true;
-    }
-    const q15 cutoff_amount = master_fx_current_[(int)GlobalFxTarget::Cutoff];
-    const q15 res_amount    = master_fx_current_[(int)GlobalFxTarget::Resonance];
-    const q15 crush_amount  = master_fx_current_[(int)GlobalFxTarget::Crush];
-    const q15 drive_amount  = master_fx_current_[(int)GlobalFxTarget::Drive];
-    if (!any) {
-        master_svf_l_.reset();
-        master_svf_r_.reset();
-        master_crush_hold_ = 0;
-        return;
-    }
-
-    const bool filter_on = cutoff_amount > 0 || res_amount > 0;
-    if (filter_on) {
-        // Cutoff sweeps DOWN as the gesture deepens (classic performance filter):
-        // 0 -> open (bypass-ish), full -> ~500. Resonance rides on top.
-        const q15 cutoff = (q15)(30000 - ((q31)(30000 - 1500) * cutoff_amount >> 15));
-        const q15 resonance = (q15)((q31)26000 * res_amount >> 15);
-        master_svf_l_.set_params(cutoff, resonance);
-        master_svf_r_.set_params(cutoff, resonance);
-        master_svf_l_.type = trackr::dsp::FilterType::LPF;
-        master_svf_r_.type = trackr::dsp::FilterType::LPF;
-    }
-
-    // Crush: sample-rate reduction 1..32x hold. Depth curve favors the
-    // audible low end of the sweep.
-    const int crush_step = crush_amount > 0 ? 1 + ((q31)crush_amount * 31 >> 15) : 0;
-    // Drive: pre-gain 1x..4x into the soft clipper.
-    const q31 drive_gain = 32767 + ((q31)drive_amount * 3 * 32767 >> 15);
-
-    for (int i = 0; i < frames; ++i) {
-        q31 l = out[i * 2];
-        q31 r = out[i * 2 + 1];
-        if (crush_step > 1) {
-            if (master_crush_hold_ <= 0) {
-                master_crush_l_ = (q15)l;
-                master_crush_r_ = (q15)r;
-                master_crush_hold_ = crush_step;
+    while (frames > 0) {
+        const bool tick = master_fx_countdown_ == 0;
+        if (tick) master_fx_countdown_ = CONTROL_INTERVAL;
+        const int chunk = std::min(frames, master_fx_countdown_);
+        bool any = false;
+        for (int t = 0; t < (int)GlobalFxTarget::Count; ++t) {
+            const q31 target = master_fx_target_[t];
+            q31 current = master_fx_current_[t];
+            if (tick && current != target) {
+                q31 step = (target - current) >> 3;
+                if (step == 0) step = target > current ? 1 : -1;
+                current += step;
+                master_fx_current_[t] = (q15)current;
             }
-            --master_crush_hold_;
-            l = master_crush_l_;
-            r = master_crush_r_;
+            if (master_fx_current_[t]) any = true;
         }
+        const q15 cutoff_amount = master_fx_current_[(int)GlobalFxTarget::Cutoff];
+        const q15 res_amount    = master_fx_current_[(int)GlobalFxTarget::Resonance];
+        const q15 crush_amount  = master_fx_current_[(int)GlobalFxTarget::Crush];
+        const q15 drive_amount  = master_fx_current_[(int)GlobalFxTarget::Drive];
+        if (!any) {
+            master_svf_l_.reset();
+            master_svf_r_.reset();
+            master_crush_hold_ = 0;
+            out += chunk * 2;
+            frames -= chunk;
+            master_fx_countdown_ -= chunk;
+            continue;
+        }
+
+        const bool filter_on = cutoff_amount > 0 || res_amount > 0;
         if (filter_on) {
-            l = master_svf_l_.step((q15)l);
-            r = master_svf_r_.step((q15)r);
+            // Cutoff sweeps DOWN as the gesture deepens (classic performance filter):
+            // 0 -> open (bypass-ish), full -> ~500. Resonance rides on top.
+            const q15 cutoff = (q15)(30000 - ((q31)(30000 - 1500) * cutoff_amount >> 15));
+            const q15 resonance = (q15)((q31)26000 * res_amount >> 15);
+            master_svf_l_.set_params(cutoff, resonance);
+            master_svf_r_.set_params(cutoff, resonance);
+            master_svf_l_.type = trackr::dsp::FilterType::LPF;
+            master_svf_r_.type = trackr::dsp::FilterType::LPF;
         }
-        if (drive_amount > 0) {
-            l = trackr::fx::soft_clip_q31((l * drive_gain) >> 15);
-            r = trackr::fx::soft_clip_q31((r * drive_gain) >> 15);
+
+        // Crush: sample-rate reduction 1..32x hold. Depth curve favors the
+        // audible low end of the sweep.
+        const int crush_step = crush_amount > 0 ? 1 + ((q31)crush_amount * 31 >> 15) : 0;
+        // Drive: pre-gain 1x..4x into the soft clipper. The largest gain is
+        // 131065; both gain and signed PCM products are widened BEFORE multiply.
+        const q31 drive_gain = 32767 + q31((int64_t(drive_amount) * 3 * 32767) >> 15);
+
+        for (int i = 0; i < chunk; ++i) {
+            q31 l = out[i * 2];
+            q31 r = out[i * 2 + 1];
+            if (crush_step > 1) {
+                if (master_crush_hold_ <= 0) {
+                    master_crush_l_ = (q15)l;
+                    master_crush_r_ = (q15)r;
+                    master_crush_hold_ = crush_step;
+                }
+                --master_crush_hold_;
+                l = master_crush_l_;
+                r = master_crush_r_;
+            }
+            if (filter_on) {
+                l = master_svf_l_.step((q15)l);
+                r = master_svf_r_.step((q15)r);
+            }
+            if (drive_amount > 0) {
+                l = trackr::fx::soft_clip_q31(q31((int64_t(l) * drive_gain) >> 15));
+                r = trackr::fx::soft_clip_q31(q31((int64_t(r) * drive_gain) >> 15));
+            }
+            out[i * 2]     = trackr::fx::sat_q15(l);
+            out[i * 2 + 1] = trackr::fx::sat_q15(r);
         }
-        out[i * 2]     = trackr::fx::sat_q15(l);
-        out[i * 2 + 1] = trackr::fx::sat_q15(r);
+        out += chunk * 2;
+        frames -= chunk;
+        master_fx_countdown_ -= chunk;
     }
 }
 
@@ -4168,6 +4343,26 @@ void Engine::set_chain_volume_smooth(int chain, q15 volume) {
         current=(q15)(ramp.target+((int32_t)ramp.start-ramp.target)*ramp.remaining/128);
     ramp.start=current; ramp.target=volume; ramp.remaining=128;
     c.volume=volume;
+}
+
+uint8_t Engine::chain_audio_channels(int chain, int before_slot) const {
+    if (chain < 0 || chain >= NUM_CHAINS || before_slot < 0 || before_slot > UNITS_PER_CHAIN) return 0;
+    uint8_t channels = 1;
+    for (int slot = 0; slot < before_slot; ++slot) {
+        const Unit* u = chains[chain].units[slot];
+        if (!u) continue;
+        if (u->kind == UnitKind::Relic ||
+            (u->kind == UnitKind::Pent && uint8_t(static_cast<const PentUnit*>(u)->width) > 1)) return 0;
+        // These three processors own their bypass crossfade; REC captures even
+        // bypassed. All other bypassed cards really leave the pipe untouched.
+        if (u->bypass && u->kind != UnitKind::Recorder && u->kind != UnitKind::Comp &&
+            u->kind != UnitKind::Mouth && u->kind != UnitKind::Glitch) continue;
+        const uint8_t next = u->output_channels(channels);
+        if ((next != 1 && next != 2) || (next == 2 && !u->supports_stereo()) ||
+            (channels == 2 && next == 1 && !u->sequencer_properties().source)) return 0;
+        channels = next;
+    }
+    return channels;
 }
 
 void Engine::render(q15* out, int frames) {
@@ -4188,6 +4383,12 @@ void Engine::render(q15* out, int frames) {
                     if (play->preview_active()) {
                         if (recording_preview_guard) play->reset(); else play->release();
                     }
+                } else if (recording_preview_guard && unit && unit->kind == UnitKind::Rot) {
+                    // Reuse this existing bounded fragment scan. Covers public
+                    // REC writers and bypassed/unsupported ROT pipes too, before
+                    // any reader/capture. Ordinary musical tape stays untouched.
+                    auto* rot = static_cast<RotUnit*>(unit);
+                    if (rot->audition_) rot->reset();
                 }
         }
         if(scratch_gesture_.token && !scratch_gesture_active(scratch_gesture_.token))cancel_scratch_gesture();
@@ -4224,6 +4425,13 @@ void Engine::render(q15* out, int frames) {
         if (clock_runtime_ && live_retrigger_active_ && clock_roll_phase_ > clock_audio_phase_) {
             const uint64_t roll_frames = (clock_roll_phase_ - clock_audio_phase_ + clock_increment_ - 1) / clock_increment_;
             if (roll_frames < (uint64_t)n) n = (int)roll_frames;
+        } else if (!clock_runtime_ && live_retrigger_active_) {
+            // Legacy audio-frame deadlines have their own truncated-fpb law.
+            // Fire overdue work before samples, then stop exactly at the next
+            // deadline. The phase/q32 scheduler and its event order stay intact.
+            fire_live_retriggers();
+            const uint64_t roll_frames = live_retrigger_next_frame_ - audio_frame_;
+            if (roll_frames < (uint64_t)n) n = (int)roll_frames;
         }
 
         // clear the stereo block
@@ -4235,18 +4443,47 @@ void Engine::render(q15* out, int frames) {
             { q15 d = (q15)(chain_peak[ci] >> 6); chain_peak[ci] -= d ? d : (chain_peak[ci] ? 1 : 0); }
             const bool muted = c.mute;
             bool any = false;
+            uint8_t channels = 1;
             std::memset(c.scratch, 0, sizeof(c.scratch));
+            std::memset(c.stereo, 0, sizeof(c.stereo));
+            pent_render_source_[ci] = nullptr;
+            c.rendered_channels = chain_audio_channels(ci);
+            // Refuse before advancing ANY audio processor/writer. Control-rate
+            // modulation remains alive; no unprocessed stereo can escape to mix.
+            if (!c.rendered_channels) {
+                for (auto* u : c.units) if (u && u->kind == UnitKind::Recorder) static_cast<RecUnit*>(u)->stop();
+                if (ci == env_chain_) env_value_ = q15(env_value_ - (env_value_ >> 6));
+                chain_peak[ci] = 0;
+                continue;
+            }
+            auto process = [&](Unit* u) {
+                const uint8_t next = u->output_channels(channels);
+                if (next == 2) {
+                    if (channels == 1) for (int i = 0; i < n; ++i) c.stereo[i*2] = c.stereo[i*2+1] = c.scratch[i];
+                    if (!u->process_stereo(c.stereo, n)) return false;
+                } else u->process(c.scratch, n); // explicit mono source OVERWRITE, not folding
+                channels = next;
+                if (u->kind == UnitKind::Pent) {
+                    pent_render_source_[ci] = u;
+                    pent_render_width_[ci] = uint8_t(static_cast<const PentUnit*>(u)->width);
+                } else if (pent_render_source_[ci] && u->sequencer_properties().source) {
+                    pent_render_source_[ci] = nullptr; // a later overwrite source wins
+                }
+                return true;
+            };
             for (auto* u : c.units) {
                 if (!u) continue;
                 if (u->kind == UnitKind::Recorder) {
                     auto* recorder = static_cast<RecUnit*>(u);
                     // Capture follows transport even when the card is bypassed;
                     // bypass only skips REC's output monitor behavior.
-                    if (u->bypass) recorder->capture_input(c.scratch, n);
-                    else u->process(c.scratch, n);
+                    if (u->bypass) recorder->capture_input_channels(channels == 2 ? c.stereo : c.scratch, n, channels);
+                    else if (!process(u)) { c.rendered_channels = 0; break; }
                     any = true;
                     continue;
                 }
+                if(u->kind==UnitKind::Rot){for(int s=0;s<UNITS_PER_CHAIN;++s)if(c.units[s]==u)bind_rot(ci,s)->synchronize();}
+                if(u->kind==UnitKind::Rule){for(int s=0;s<UNITS_PER_CHAIN;++s)if(c.units[s]==u)bind_rule(ci,s)->synchronize();}
                 if(u->kind==UnitKind::Paul) {
                     for(int s=0;s<UNITS_PER_CHAIN;++s)if(c.units[s]==u)bind_paul(ci,s)->synchronize();
                 }
@@ -4295,7 +4532,7 @@ void Engine::render(q15* out, int frames) {
                     if (u->kind == UnitKind::Osc) static_cast<OscUnit*>(u)->set_visual_capture(false);
                     continue;
                 }
-                u->process(c.scratch, n);
+                if (!process(u)) { c.rendered_channels = 0; break; }
                 if (u->arp_voice.owner>=0) {
                     // One millisecond source edge, before any downstream effect.
                     // Q15 unity is 32768, so an open gate is bit-identical.
@@ -4303,16 +4540,25 @@ void Engine::render(q15* out, int frames) {
                         int gain=u->arp_voice.gain;
                         gain=u->arp_voice.gate ? std::min(32768,gain+1024) : std::max(0,gain-1024);
                         u->arp_voice.gain=uint16_t(gain);
-                        c.scratch[i]=q15((int32_t(c.scratch[i])*gain)>>15);
+                        if (channels == 2) for (int ch = 0; ch < 2; ++ch)
+                            c.stereo[i*2+ch]=q15((int32_t(c.stereo[i*2+ch])*gain)>>15);
+                        else c.scratch[i]=q15((int32_t(c.scratch[i])*gain)>>15);
                     }
                 }
                 any = true;
             }
+            if (!c.rendered_channels) {
+                std::memset(c.scratch, 0, sizeof c.scratch); std::memset(c.stereo, 0, sizeof c.stereo);
+                for (auto* u : c.units) if (u && u->kind == UnitKind::Recorder) static_cast<RecUnit*>(u)->stop();
+                chain_peak[ci] = 0; continue;
+            }
+            c.rendered_channels = channels;
+            const q15* tap = channels == 2 ? c.stereo : c.scratch;
             // Selected post-module/pre-volume tap; mute/empty releases to zero.
             if (ci == env_chain_) {
                 q31 peak = 0;
-                if (any && !muted) for (int i = 0; i < n; ++i) {
-                    q31 a = c.scratch[i] < 0 ? -c.scratch[i] : c.scratch[i];
+                if (any && !muted) for (int i = 0; i < n * channels; ++i) {
+                    q31 a = tap[i] < 0 ? -tap[i] : tap[i];
                     if (a > peak) peak = a;
                 }
                 const q31 delta = peak - env_value_;
@@ -4344,9 +4590,11 @@ void Engine::render(q15* out, int frames) {
             {
                 q31 pk = 0;
                 for (int i = 0; i < n; ++i) {
-                    q31 s = ((q31)c.scratch[i] * (ramping ? gains[i] : c.volume)) >> 15;
-                    if (s < 0) s = -s;
-                    if (s > pk) pk = s;
+                    for (int ch = 0; ch < channels; ++ch) {
+                        q31 s = ((q31)tap[i * channels + ch] * (ramping ? gains[i] : c.volume)) >> 15;
+                        if (s < 0) s = -s;
+                        if (s > pk) pk = s;
+                    }
                 }
                 if (pk > chain_peak[ci]) chain_peak[ci] = (q15)(pk > 32767 ? 32767 : pk);
             }
@@ -4362,8 +4610,8 @@ void Engine::render(q15* out, int frames) {
                     if (c.pan>0) lgain=(lgain*(32767-c.pan))/32767;
                     else if(c.pan<0) rgain=(rgain*(32767+c.pan))/32767;
                 }
-                q31 l_s = ((q31)c.scratch[i] * lgain) >> 15;
-                q31 r_s = ((q31)c.scratch[i] * rgain) >> 15;
+                q31 l_s = ((q31)tap[i * channels] * lgain) >> 15;
+                q31 r_s = ((q31)tap[i * channels + (channels == 2 ? 1 : 0)] * rgain) >> 15;
                 q31 l = (q31)out[(done + i) * 2]     + l_s;
                 q31 r = (q31)out[(done + i) * 2 + 1] + r_s;
                 out[(done + i) * 2]     = trackr::fx::soft_clip_q31(l);

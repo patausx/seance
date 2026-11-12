@@ -12,6 +12,7 @@
 #include "sequencer_step_edit.h"
 #include "sequencer_lock_format.h"
 #include "sequence_note.h"
+#include "sequencer_scale_menu.h"
 #include "sequencer_slices.h"
 #include "sequencer_cuts.h"
 #include "pcm_envelope.h"
@@ -20,9 +21,12 @@
 #include "module_fader.h"
 #include "inspector_gothic.h"
 #include "sequencer_wave.h"
+#include "sequencer_bank_panel.h"
 #include "../../core/engine/play_window.h"
 #include "../../core/ui/draw.h"
 #include "../../core/ui/font.h"
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -31,6 +35,7 @@ namespace seance::platform::ui3ds {
 namespace {
 using namespace seq_layout;
 namespace m = menu_style;
+namespace ui = sequencer_scale::drawing;
 constexpr int META_LOCK_SHIFT = 6;
 constexpr int META_TIMING_SHIFT = 9;
 constexpr int PATTERN_X0 = X0;
@@ -81,7 +86,8 @@ seq_edit::Scope g_copy_scope = seq_edit::Scope::Steps;
 int g_edit_bank=-1, g_history_chain=-1;
 uint64_t g_edit_signature=0, g_target_signature[NUM_CHAINS]={};
 int g_param_memory[NUM_CHAINS][UNITS_PER_CHAIN]={};
-bool g_offset=false, g_target_picker=false, g_tools=false, g_l_drain=false;
+bool g_offset=false, g_tools=false, g_l_drain=false;
+bool g_ring_dirty=false, g_freeze_without_address=false; // frozen disclosure backgrounds
 bool g_pad_center=false;
 int g_pad_direction=0, g_select_chain=-1, g_drag_origin_x=0;
 u32 g_pad_start=0;
@@ -96,10 +102,15 @@ uint8_t g_wave_accent=0; // frozen observed peak, shared by the entire trace
 static_assert(sizeof(g_score) <= 8192, "bounded static edit projection");
 bool g_b_pressed=false, g_b_open=false, g_b_drain=false;
 u32 g_b_start=0, g_b_repeat_start=0, g_b_repeat_key=0;
-int g_b_bank=0, g_b_chain=0, g_b_play=0;
-uint8_t g_b_length[NUM_PATTERNS]={};
-uint8_t g_b_direction[NUM_PATTERNS]={};
-uint8_t g_b_length_edits=0, g_b_direction_edits=0;
+int g_b_bank=0, g_b_track=0, g_b_play=0;
+// Staged per bank and track; committed when B is released, discarded by navigation.
+uint8_t g_b_length[NUM_PATTERNS][NUM_CHAINS]={};
+uint8_t g_b_direction[NUM_PATTERNS][NUM_CHAINS]={};
+uint8_t g_b_length_edits[NUM_CHAINS]={}, g_b_direction_edits[NUM_CHAINS]={}; // bit per bank
+int g_b_copy=-1, g_b_confirm=0, g_b_rail=-1; // copied bank / armed 1 paste 2 clear / dragged length rail
+bool g_b_dirty=false;
+char g_b_status[48]={};
+SequencerBankPanel g_bank_panel;
 static_assert(NUM_PATTERNS <= 8, "held-bank edit masks cover every bank");
 constexpr u32 B_HOLD_FRAMES=15; // ~250 ms at the existing 60 Hz UI cadence.
 constexpr u32 B_OWNED_KEYS=KEY_B|KEY_A|KEY_X|KEY_Y|KEY_L|KEY_R|
@@ -118,39 +129,6 @@ void capture_score_locked() {
     if (g_seq_bank < 0 || g_seq_bank >= NUM_PATTERNS) g_seq_bank=g_eng->active_pattern;
     g_score=g_ui_snapshot;
     g_eng->capture_sequence_snapshot(g_score,g_seq_bank);
-}
-void begin_bank_hold() {
-    sequencer_view_touch_release(false);
-    platform::AudioOut::Guard guard(*g_audio);
-    capture_score_locked();
-    g_eng->cancel_sequence_audition();
-    g_b_pressed=true;g_b_open=false;g_b_start=g_ui_frame;g_b_repeat_key=0;
-    g_b_bank=g_seq_bank;g_b_chain=g_seq_chain;g_b_play=g_score.active_pattern;
-    g_b_length_edits=g_b_direction_edits=0;
-    for(int bank=0;bank<NUM_PATTERNS;++bank) {
-        const auto& p=g_eng->sequence_pattern(bank);
-        g_b_length[bank]=p.length[g_b_chain];
-        g_b_direction[bank]=(uint8_t)p.direction[g_b_chain];
-    }
-}
-void finish_bank_hold(u32 held) {
-    if(g_b_open) {
-        platform::AudioOut::Guard guard(*g_audio);
-        bool changed=false;
-        for(int bank=0;bank<NUM_PATTERNS;++bank) {
-            const auto& p=g_eng->sequence_pattern(bank);
-            if((g_b_length_edits & (1u<<bank)) && p.length[g_b_chain]!=g_b_length[bank]) {
-                g_eng->set_sequence_length(g_b_chain,g_b_length[bank],bank);changed=true;
-            }
-            if((g_b_direction_edits & (1u<<bank)) && (int)p.direction[g_b_chain]!=g_b_direction[bank]) {
-                g_eng->set_sequence_direction(g_b_chain,(SequenceDirection)g_b_direction[bank],bank);changed=true;
-            }
-        }
-        g_seq_bank=g_b_bank;
-        if(changed)mark_project_mutated();
-    } else nudge_step_values(-1, false);
-    g_b_pressed=g_b_open=false;
-    g_b_drain=(held&(B_OWNED_KEYS&~KEY_B))!=0;
 }
 
 int g_cut_selected=0, g_cut_drag=-1, g_cut_confirm=0;
@@ -193,6 +171,7 @@ const char *mode_name(SeqMode mode) {
     return names[(int)mode];
 }
 void show_mode_ring(uint64_t now) {
+    if (!g_mode_ring) g_ring_dirty = true; // freeze the score behind the chooser once per opening
     g_mode_ring = true;
     g_ring_pointer.show(now);
 }
@@ -215,43 +194,12 @@ bool flow_chain(int chain) {
     return (SequenceLifecycle)g_score.sequence_lifecycle[chain] == SequenceLifecycle::Flow;
 }
 
-// B owns every score input until all participating controls have been released.
-// The initial press is provisional: only a short release decreases the focused value.
-bool bank_hold_buttons(u32 down,u32 held,u32 up) {
-    if(g_b_drain) {
-        g_touch_blocked_frame=true;
-        if(!(held&B_OWNED_KEYS))g_b_drain=false;
-        return true;
-    }
-    if(!g_b_pressed)return false;
-    g_touch_blocked_frame=true;g_l_held=false;
-    if(g_ui_frame-g_b_start>=B_HOLD_FRAMES)g_b_open=true;
-    if((up&KEY_B)||!(held&KEY_B)) { finish_bank_hold(held);return true; }
-    if(!g_b_open)return true;
-    u32 key=held&(KEY_DUP|KEY_DDOWN|KEY_DLEFT|KEY_DRIGHT);
-    // Opposing/simultaneous arrows do not produce an accidental extra operation.
-    if(key && (key&(key-1)))key=0;
-    bool repeat=false;
-    if(key!=g_b_repeat_key) { g_b_repeat_key=key;g_b_repeat_start=g_ui_frame; }
-    else if(key && g_ui_frame-g_b_repeat_start>=18 &&
-            (g_ui_frame-g_b_repeat_start-18)%5==0)repeat=true;
-    if(key && ((down&key)||repeat)) {
-        if(key==KEY_DUP)g_b_bank=(g_b_bank+NUM_PATTERNS-1)%NUM_PATTERNS;
-        else if(key==KEY_DDOWN)g_b_bank=(g_b_bank+1)%NUM_PATTERNS;
-        else {
-            int length=g_b_length[g_b_bank]+(key==KEY_DLEFT?-1:1);
-            length=length<1?1:length>SEQ_STEPS?SEQ_STEPS:length;
-            if(length!=g_b_length[g_b_bank]) {
-                g_b_length[g_b_bank]=(uint8_t)length;g_b_length_edits|=1u<<g_b_bank;
-            }
-        }
-    }
-    if(down&KEY_A) {
-        g_b_direction[g_b_bank]=(g_b_direction[g_b_bank]+1)%(int)SequenceDirection::Count;
-        g_b_direction_edits|=1u<<g_b_bank;
-    }
-    return true;
+// Trig layer on a constant source that has a level target: the row is its value curve.
+bool flow_row(int chain) {
+    return g_seq_mode == SeqMode::Trig && flow_chain(chain) &&
+           g_score.sequence_value_slot[chain] >= 0 && g_score.sequence_value_param[chain] >= 0;
 }
+bool flow_row() { return flow_row(g_seq_chain); }
 
 int pattern_x(int local) {
     return PATTERN_X0 + local * PITCH;
@@ -278,7 +226,7 @@ void bead(int x, int y, int radius, u32 color, bool filled = true) {
         for (int dy = -r; dy <= r; ++dy) {
             int dx = 0;
             while ((dx + 1) * (dx + 1) + dy * dy <= r * r) ++dx;
-            if (dx > 0) m::paper_rect(x - dx, y + dy, 2 * dx + 1, 1);
+            if (dx > 0) ui::paper_rect(x - dx, y + dy, 2 * dx + 1, 1);
         }
     }
 }
@@ -358,8 +306,10 @@ const char *source_name(int chain) {
         return m::module_name(UnitKind::Stranular);
     case UnitKind::MicIn:
         return "mic";
-    default:
+    case UnitKind::Empty:
         return "chain";
+    default: // newer sources (pent, rule, rot, scrt, paul) by their picker names
+        return m::module_name((UnitKind)g_score.sequence_source_kind[chain]);
     }
 }
 int value_percent(int chain, int step) {
@@ -679,7 +629,12 @@ q15 nudged_pitch(q15 current, int direction) {
     int next = current;
     if (sequence_note::absolute(kind, param)) {
         const int from = sequence_note::midi(kind, current);
-        const int to = std::max(sequence_note::minimum(kind), std::min(sequence_note::maximum(kind), from + direction));
+        const int low=sequence_note::minimum(kind),high=sequence_note::maximum(kind);
+        const int to = musical_scale::active(g_score.project_scale)
+            ? (from<low||from>high
+                ? musical_scale::snap_note(g_score.project_scale,std::max(low,std::min(high,from)),low,high)
+                : musical_scale::next_note(g_score.project_scale,from,direction,low,high))
+            : std::max(low,std::min(high,from+direction));
         if (to == from) return current;
         return sequence_note::value(kind, to, current);
     }
@@ -721,6 +676,10 @@ q15 nudged_pitch(q15 current, int direction) {
     return (q15)next;
 }
 void set_pitch_absolute(int tx) {
+    platform::AudioOut::Guard guard(*g_audio);
+    const auto signature=g_edit_signature;
+    capture_score_locked();sync_edit_context();
+    if(signature!=g_edit_signature)return; // a held stroke cannot retarget a replaced source
     const int slot = g_score.sequence_pitch_slot[g_seq_chain];
     const int param = g_score.sequence_pitch_param[g_seq_chain];
     if (slot < 0 || param < 0)
@@ -732,7 +691,9 @@ void set_pitch_absolute(int tx) {
     const UnitKind pitch_kind = (UnitKind)g_score.sequence_pitch_kind[g_seq_chain];
     if (sequence_note::absolute(pitch_kind, param)) {
         const int low=sequence_note::minimum(pitch_kind), high=sequence_note::maximum(pitch_kind);
-        const int note=low+((tx-VALUE_X0)*(high-low)+VALUE_TRAVEL/2)/VALUE_TRAVEL;
+        int note=low+((tx-VALUE_X0)*(high-low)+VALUE_TRAVEL/2)/VALUE_TRAVEL;
+        if(musical_scale::active(g_score.project_scale))
+            note=musical_scale::snap_note(g_score.project_scale,note,low,high);
         set_lock_value(slot,param,sequence_note::value(pitch_kind,note,edit_value(slot,param)));
         return;
     }
@@ -828,6 +789,24 @@ void browse_lock_param(int delta) {
     g_offset=false; g_edit_status[0]=0;
 }
 void remove_selected_lock() { edit_group_lock(0,false,true); finish_edit(); }
+// Bare X in the LOCK layer: only the selected target's lock, on the focused step
+// or on every step of the group; one undo entry. Nothing to remove writes nothing.
+void remove_target_lock() {
+    bool any = false;
+    {
+        platform::AudioOut::Guard guard(*g_audio);
+        sync_edit_context();
+        normalize_lock_target();
+        if (valid_lock_target(g_lock_slot, g_lock_param)) {
+            const auto targets = g_selection.targets(g_seq_col);
+            for (int s = 0; s < SEQ_STEPS && !any; ++s)
+                any = (targets & seq_edit::bit(s)) &&
+                      seq_edit::find(edit_pattern().steps[g_seq_chain][s], g_lock_slot, g_lock_param) >= 0;
+        }
+    }
+    if (!any) { edit_status("no lock to remove"); return; }
+    remove_selected_lock();
+}
 void set_lock_absolute(int tx) {
     platform::AudioOut::Guard guard(*g_audio);
     normalize_lock_target();
@@ -852,21 +831,26 @@ inline u32 seq_ink() { return m::ink(); }
 inline u32 seq_spot() { return m::spot(); }
 inline u32 seq_ghost() { return m::ghost(); }
 inline u32 seq_branch() { return m::branch(); }
+// Inactive / empty score marks: steps beyond the track length, the empty part of
+// the level meter, empty lock slots. Graphite branch (255) is brighter than ink
+// (244), so there they take the dark subdued role. Pink keeps branch: its
+// subdued sits almost on the pink paper and would read worse.
+inline u32 seq_inactive() { return palette::visual_graphite() ? palette::subdued() : seq_branch(); }
 
 // Only score foreground uses this sink. The ordinary pass still calls the real
 // UI primitives; the small second pass restores covered native ink, not a bitmap.
 namespace score_ink {
 void rect(int x, int y, int w, int h, u32 color) {
     if (!g_focus_inverse) ui::rect(x, y, w, h, color);
-    else step_focus::clipped_rect(g_focus_box, {x, y, w, h}, col_text_i());
+    else ui::clipped_rect(g_focus_box, {x, y, w, h}, col_text_i());
 }
 void text(int x, int y, const char* label, u32 color) {
     if (!g_focus_inverse) ui::text(x, y, label, color);
-    else step_focus::clipped_text(g_focus_box, x, y, label, col_text_i());
+    else ui::clipped_text(g_focus_box, x, y, label, col_text_i());
 }
 void line(int x0, int y0, int x1, int y1, u32 color, int thickness) {
     if (!g_focus_inverse) ui::line(x0, y0, x1, y1, color, thickness);
-    else step_focus::clipped_line(g_focus_box, x0, y0, x1, y1, col_text_i(), thickness);
+    else ui::clipped_line(g_focus_box, x0, y0, x1, y1, col_text_i(), thickness);
 }
 void frame(int x, int y, int w, int h, u32 color) {
     if (!g_focus_inverse) { ui::frame(x, y, w, h, color); return; }
@@ -925,7 +909,7 @@ u32 feedback_color(u32 base, float hit, float press) {
 }
 void draw_cell_backing(int chain, int step, int x, int y) {
     const float hit = playback_power(chain, step), press = edit_power(chain, step);
-    step_focus::fill(step_feedback::face({x, y, CELL_W, BADGE_H}, hit, press), feedback_color(col_cell(), hit, press));
+    ui::fill(step_feedback::face({x, y, CELL_W, BADGE_H}, hit, press), feedback_color(col_cell(), hit, press));
 }
 void draw_event_content(int chain, int step, int x, int y, u32 color, u32 detail) {
     namespace ui = score_ink;
@@ -961,7 +945,7 @@ void draw_event_content(int chain, int step, int x, int y, u32 color, u32 detail
         const int percent = value_percent(chain, step);
         std::snprintf(label, sizeof label, "%02d", percent);
         cell_label(x, y, label, color);
-        ui::rect(x + 2, y + 21, 13, 4, seq_branch());
+        ui::rect(x + 2, y + 21, 13, 4, seq_inactive());
         const int width = percent * 13 / 100;
         if (width) ui::rect(x + 2, y + 21, width, 4, detail);
         break;
@@ -1002,7 +986,7 @@ void draw_event_content(int chain, int step, int x, int y, u32 color, u32 detail
         std::snprintf(label, sizeof label, "%d", meta_locks(meta));
         cell_label(x, y, label, color);
         for (int i = 0; i < SEQ_LOCKS; ++i)
-            ui::rect(x + 2 + i * 3, y + 21, 2, 5, i < meta_locks(meta) ? detail : seq_branch());
+            ui::rect(x + 2 + i * 3, y + 21, 2, 5, i < meta_locks(meta) ? detail : seq_inactive());
         break;
     default:
         break;
@@ -1017,7 +1001,7 @@ void draw_event_cell(int chain, int step, int x, int y, bool selected) {
         const bool available = row.slot >= 0 && row.loaded && row.valid;
         const bool valid = cell.slice == 0 || (row.valid & (1u << (cell.slice - 1)));
         const bool active = step < g_score.sequence_length[chain];
-        const u32 color = !active || !available ? seq_branch() : cell.locked ? seq_ink() : seq_ghost();
+        const u32 color = !active || !available ? seq_inactive() : cell.locked ? seq_ink() : seq_ghost();
         if (!g_focus_inverse && (selected || meta_trig(meta) || cell.locked || playback_power(chain, step) > 0 || edit_power(chain, step) > 0))
             draw_cell_backing(chain, step, x, y);
         char label[4];
@@ -1028,7 +1012,7 @@ void draw_event_cell(int chain, int step, int x, int y, bool selected) {
         cell_label(x, y, label, face);
         if (cell.locked) ui::rect(x + 11, y + 2, 3, 1, face);
         // Tiny attack below the number: a slice lock is not itself a trigger.
-        if (meta_trig(meta)) ui::rect(x + 7, y + 21, 3, 2, active ? seq_ink() : seq_branch());
+        if (meta_trig(meta)) ui::rect(x + 7, y + 21, 3, 2, active ? seq_ink() : seq_inactive());
         return;
     }
     const bool automation = flow_chain(chain) &&
@@ -1040,7 +1024,7 @@ void draw_event_cell(int chain, int step, int x, int y, bool selected) {
     const bool active = meta_trig(meta) || meta_locks(meta) || automation || mode_data ||
                         (selected && g_seq_mode != SeqMode::Trig);
     const bool in_length = step < g_score.sequence_length[chain];
-    const u32 ink = !in_length ? seq_branch() : seq_ink();
+    const u32 ink = !in_length ? seq_inactive() : seq_ink();
     if (active) {
         if (!g_focus_inverse) draw_cell_backing(chain, step, x, y);
         const u32 face = ink;
@@ -1058,7 +1042,7 @@ void draw_event_cell(int chain, int step, int x, int y, bool selected) {
     } else {
         if (!g_focus_inverse && (playback_power(chain, step) > 0 || edit_power(chain, step) > 0))
             draw_cell_backing(chain, step, x, y);
-        ui::rect(x + 7, y + 7, 3, 3, in_length ? seq_ghost() : seq_branch());
+        ui::rect(x + 7, y + 7, 3, 3, in_length ? seq_ghost() : seq_inactive());
     }
     if (g_seq_mode == SeqMode::Trig &&
         (SequenceLifecycle)g_score.sequence_lifecycle[chain] == SequenceLifecycle::Loop &&
@@ -1071,21 +1055,7 @@ void draw_event_cell(int chain, int step, int x, int y, bool selected) {
         ui::line(end, y + 21, end, y + 25, ink, 1);
     }
 }
-void draw_flow_lane(int chain, int first, int y) {
-    namespace ui = score_ink;
-    const u32 color = chain == g_seq_chain ? seq_spot() : seq_ink();
-    int px = pattern_x(0) + 8, py = y + 26 - value_percent(chain, first) * 23 / 100;
-    for (int local = 0; local < PAGE_STEPS; ++local) {
-        const int step = first + local, x = pattern_x(local) + 8;
-        const int yy = y + 26 - value_percent(chain, step) * 23 / 100;
-        if (local)
-            ui::line(px, py, x, yy, step < g_score.sequence_length[chain] ? color : seq_ghost(), 1);
-        const bool selected = chain == g_seq_chain && step == g_seq_col;
-        score_ink::point(x, yy, 1, selected ? seq_spot() : seq_ghost());
-        px = x;
-        py = yy;
-    }
-}
+#include "sequencer_flow.inc"
 void draw_playhead() {
     if (!g_score.sequencer_enabled || !g_score.transport_playing)
         return;
@@ -1103,7 +1073,7 @@ void draw_playhead() {
 
 void draw_cuts() {
     const auto& c=g_cuts;const auto& d=g_slices;
-    m::paper(320);
+    ui::paper(320);
     char text[64];
     ui::text(20,9,"slice / cuts",seq_spot());ui::text(274,9,"done",seq_spot());
     std::snprintf(text,sizeof text,"chain %02d / s%02d",d.chain+1,c.sample);
@@ -1161,7 +1131,7 @@ void draw_cuts() {
     ui::text(91,207,"auto 8",c.confirm==8?seq_spot():enabled);
     ui::text(154,207,"auto 16",c.confirm==16?seq_spot():enabled);
     ui::text(238,207,"clear",c.confirm==255?seq_spot():enabled);
-    m::footer(320,"shared cuts / drag seam","b score");
+    ui::footer(320,"shared cuts / drag seam","b score");
 }
 void pad_lock_navigation() {
     circlePosition pos; hidCircleRead(&pos);
@@ -1201,6 +1171,11 @@ bool tools_touch(int tx,int ty) {
     } else g_tools=false;
     return true;
 }
+void lock_address(char* out,size_t size) {
+    const auto& d=g_inspector;
+    if(d.slot<0) std::snprintf(out,size,"no parameter");
+    else std::snprintf(out,size,"%02d %.6s / %.8s",d.slot+1,m::module_name(d.modules[d.slot].kind),d.modules[d.slot].params[d.param].name);
+}
 void draw_lock_editor() {
     const auto& d=g_inspector;
     char label[64];
@@ -1212,44 +1187,58 @@ void draw_lock_editor() {
         ui::text(265,198,"remove",seq_ink());
         ui::text(8,216,"x copy",seq_ink()); ui::text(84,216,"a paste",seq_ink());
         ui::text(166,216,"y undo",seq_ink()); ui::text(246,216,"b deselect",seq_ink());
-        m::footer(320,"l+^v group / <> range","clear clip");
+        ui::footer(320,"l+^v group / <> range","clear clip");
         return;
     }
-    if(d.slot<0) std::snprintf(label,sizeof label,"no parameter");
-    else std::snprintf(label,sizeof label,"%02d %.6s / %.8s",d.slot+1,m::module_name(d.modules[d.slot].kind),d.modules[d.slot].params[d.param].name);
-    ui::text(8,198,label,seq_ink());
+    lock_address(label,sizeof label);
     ui::text(267,198,"tools",seq_spot());
-    if(g_target_picker) {
-        const char* labels[]={"< mod","mod >","< prm","prm >","done"};
-        for(int i=0;i<5;++i) ui::text(8+i*62,216,labels[i],seq_spot());
-    } else if(d.slot>=0) {
+    // The address opens the module / parameter lists. Their frozen background
+    // leaves out the address and its value row: the sharp address follows the
+    // selection and no stale value stays blurred underneath.
+    if(g_freeze_without_address) return;
+    ui::text(8,198,label,seq_spot());
+    if(d.slot>=0) {
         const auto& mod=d.modules[d.slot]; const auto& p=mod.params[d.param];
-        seq_lock::format_value(mod.kind,mod.variant,d.param,d.rows[d.param].focused,label,sizeof label);
+        seq_lock::format_value(mod.kind,mod.variant,d.param,d.rows[d.param].focused,label,sizeof label,g_score.project_scale);
         ui::text(8,216,label,seq_ink());
         if(seq_lock::supports_offset(mod.kind,mod.variant,d.param)) {
             const int normalized=p.bipolar?(d.rows[d.param].focused+32767)/2:d.rows[d.param].focused;
             const int x=160+normalized*155/32767;
-            module_fader::horizontal(160,315,218,x,x,{},p.bipolar?237:-1);
+            ui::horizontal(160,315,218,x,x,{},p.bipolar?237:-1);
         } else { ui::text(172,216,"<",seq_spot()); ui::text(296,216,">",seq_spot()); }
     }
-    if(d.status[0]) m::footer(320,d.status,"");
+    if(d.status[0]) ui::footer(320,d.status,"");
     else {
         std::snprintf(label,sizeof label,"%d / touch %s",d.selected_count,g_offset?"offset":"set");
-        m::footer(320,label,"a+ b- / y listen");
+        ui::footer(320,label,"a+ b- / x remove / y listen");
     }
 }
 void draw_editor() {
     if(g_seq_mode==SeqMode::Lock || g_l_held || g_tools) { draw_lock_editor(); return; }
     const uint16_t meta = g_score.sequence_meta[g_seq_chain][g_seq_col];
-    ui::text(8, 199, mode_name(g_seq_mode), seq_spot());
+    const bool flow = flow_row();
+    ui::text(8, 199, flow ? "flow" : mode_name(g_seq_mode), seq_spot());
     char context[64];
-    std::snprintf(context, sizeof context, "%d:%02d", g_seq_chain + 1, g_seq_col + 1);
-    ui::text(56, 199, context, seq_ghost());
+    if (flow) {
+        // What the curve controls stands where the step address is elsewhere.
+        const int slot = g_score.sequence_value_slot[g_seq_chain], param = g_score.sequence_value_param[g_seq_chain];
+        const bool known = slot < UNITS_PER_CHAIN && param < g_inspector.modules[slot].count;
+        std::snprintf(context, sizeof context, "%.6s %.8s", known ? m::module_name(g_inspector.modules[slot].kind) : "level",
+                      known ? g_inspector.modules[slot].params[param].name : "");
+        ui::text(44, 199, context, seq_ghost());
+    } else {
+        std::snprintf(context, sizeof context, "%d:%02d", g_seq_chain + 1, g_seq_col + 1);
+        ui::text(56, 199, context, seq_ghost());
+    }
+    if(g_seq_mode==SeqMode::Note){
+        char scale[32];sequencer_scale::label(scale,sizeof scale,g_score.project_scale);
+        ui::text(sequencer_scale::kX,sequencer_scale::kY,scale,seq_spot());
+    }
     char value[32] = {};
-    if (g_seq_mode == SeqMode::Trig) {
+    if (g_seq_mode == SeqMode::Trig && !flow) {
         std::snprintf(value, sizeof value, "%s", meta_trig(meta) ? "event on" : "event off");
         ui::text(118, 216, "a on / b off", seq_ink());
-    } else if (g_seq_mode == SeqMode::Note || g_seq_mode == SeqMode::Level) {
+    } else if (flow || g_seq_mode == SeqMode::Note || g_seq_mode == SeqMode::Level) {
         const bool pitch_mode = g_seq_mode == SeqMode::Note;
         const int slot = pitch_mode ? g_score.sequence_pitch_slot[g_seq_chain]
                                     : g_score.sequence_value_slot[g_seq_chain];
@@ -1272,7 +1261,7 @@ void draw_editor() {
             } else
                 std::snprintf(value, sizeof value, "%d%%", value_percent(g_seq_chain, g_seq_col));
             const int x=VALUE_X0 + (normalized * VALUE_TRAVEL + 16383) / 32767;
-            module_fader::horizontal(VALUE_X0,VALUE_X1,VALUE_Y,x,x);
+            ui::horizontal(VALUE_X0,VALUE_X1,VALUE_Y,x,x);
         }
     } else if (g_seq_mode == SeqMode::Retrig) {
         std::snprintf(value, sizeof value, "%d hits", meta_retrig(meta));
@@ -1314,7 +1303,7 @@ void draw_editor() {
     } else if (g_seq_mode == SeqMode::Time) {
         std::snprintf(value, sizeof value, "%+d / 96", meta_timing(meta));
         const int x = VALUE_X0 + (meta_timing(meta) + SEQ_MICROTIMING_MAX) * VALUE_TRAVEL / (SEQ_MICROTIMING_MAX * 2);
-        module_fader::horizontal(VALUE_X0,VALUE_X1,VALUE_Y,x,x,{},160);
+        ui::horizontal(VALUE_X0,VALUE_X1,VALUE_Y,x,x,{},160);
     } else {
         const auto& detail = g_inspector;
         if (detail.slot < 0 || detail.param < 0) {
@@ -1331,7 +1320,7 @@ void draw_editor() {
                 }
             const int normalized = param.bipolar ? (current + 32767) / 2 : current;
             const int x=160 + normalized * 155 / 32767;
-            module_fader::horizontal(160,315,218,x,x,{},param.bipolar?237:-1);
+            ui::horizontal(160,315,218,x,x,{},param.bipolar?237:-1);
             std::snprintf(value, sizeof value, "%s %d / %d:%d", locked ? "lock" : "base",
                           (int)current * 100 / 32767, detail.lock_count, SEQ_LOCKS);
         }
@@ -1339,53 +1328,66 @@ void draw_editor() {
     if (g_seq_lock_flash > 0)
         std::snprintf(value, sizeof value, "lock slots full");
     ui::text(311 - ui::text_w(value), 199, value, seq_ink());
-    if(g_inspector.status[0]) m::footer(320,g_inspector.status,"");
-    else m::footer(320,"a+ b- / y listen","l tools / r mode");
+    if(g_inspector.status[0]) ui::footer(320,g_inspector.status,"");
+    else ui::footer(320,"a+ b- / y listen","l tools / r mode");
 }
 
+// Chooser-only layer marks: what each layer already draws in a cell (trig square,
+// level meter, retrig pips, time rail, four lock slots) or on the upper profile.
+void ring_icon(int mode, int cx, int cy, u32 c) {
+    switch ((SeqMode)mode) {
+    case SeqMode::Trig: ui::rect(cx - 3, cy - 3, 7, 7, c); break;
+    case SeqMode::Note:
+        ui::rect(cx - 4, cy + 2, 3, 2, c); ui::rect(cx - 1, cy - 1, 3, 2, c); ui::rect(cx + 2, cy - 4, 3, 2, c); break;
+    case SeqMode::Level:
+        ui::rect(cx - 4, cy - 2, 6, 5, c); ui::rect(cx + 2, cy - 2, 3, 1, c);
+        ui::rect(cx + 2, cy + 2, 3, 1, c); ui::rect(cx + 4, cy - 1, 1, 3, c); break;
+    case SeqMode::Retrig:
+        for (int i = -1; i <= 1; ++i) ui::rect(cx - 1 + i * 4, cy - 1 + i * 4, 2, 2, c);
+        break;
+    case SeqMode::When:
+        ui::rect(cx - 4, cy - 4, 3, 3, c); ui::rect(cx + 2, cy + 2, 3, 3, c);
+        for (int i = 0; i < 7; ++i) ui::rect(cx + 3 - i, cy - 3 + i, 1, 1, c);
+        break;
+    case SeqMode::Time:
+        ui::rect(cx - 4, cy, 9, 1, c); ui::rect(cx, cy - 3, 1, 7, c); ui::rect(cx + 2, cy - 1, 3, 3, c); break;
+    case SeqMode::Lock:
+        for (int i = 0; i < 4; ++i) ui::rect(cx - 5 + i * 3, cy - 2, 2, 5, c);
+        break;
+    case SeqMode::Slice:
+        ui::rect(cx - 4, cy - 1, 1, 3, c); ui::rect(cx - 2, cy - 3, 1, 7, c); ui::rect(cx, cy - 5, 1, 11, c);
+        ui::rect(cx + 2, cy - 2, 1, 5, c); ui::rect(cx + 4, cy - 1, 1, 3, c); break;
+    default: break;
+    }
+}
 void draw_mode_ring() {
-    // Geometry/labels stay still. Only the UI-captured pointer eases; no engine
-    // access, animation advance or input decisions in this drawing pass.
+    // Geometry and words stay still over the frozen blurred score. Only the
+    // UI-captured pointer eases; no engine access, animation advance or input
+    // decisions in this drawing pass.
     const auto& point = g_ring_pointer;
     auto fade = [&](u32 color, float strength = 1.f) {
         return (color & 0x00ffffffu) | (u32(255 * point.opacity * strength) << 24);
     };
-    ui::circle(RING_X, RING_Y, RING_RADIUS, fade(seq_ghost(), .5f), false);
+    ui::circle(RING_X, RING_Y, RING_RADIUS, fade(seq_ghost(), .38f), false);
     for (int i = 0; i < MODE_COUNT; ++i) {
         const bool active = point.candidate == i;
-        const int x = SPOKE_X[i], y = SPOKE_Y[i], label_y = mode_label_y(i);
         const char* name = mode_name((SeqMode)i);
-        const int w = ui::text_w(name), left = x - w / 2;
-        ui::circle(x, y, active ? 4 : 2, fade(active ? seq_spot() : seq_ghost()), false);
-        if (active) ui::rect(left-3, label_y-2, w+6, 12, fade(seq_spot()));
-        ui::text(left, label_y, name, fade(active ? palette::inverse() : seq_ink()));
-        // Committed mode has a small, separate square; the moving dot is only
-        // the candidate. Browsing never disguises the still-active mode.
-        if (g_seq_mode == (SeqMode)i) ui::rect(left-8, label_y+3, 2, 2, fade(seq_ink()));
+        const int w = ui::text_w(name), left = SPOKE_X[i] - w / 2, label_y = mode_label_y(i);
+        // Candidate: spot and the shared word underline of the exact text width.
+        // The still-committed layer keeps ink; browsing never disguises it.
+        const u32 color = fade(active ? seq_spot() : g_seq_mode == (SeqMode)i ? seq_ink() : seq_ghost());
+        ring_icon(i, SPOKE_X[i], SPOKE_Y[i], color);
+        ui::text(left, label_y, name, color);
+        if (active) ui::rect(left, label_y + 12, w - 1, 1, color);
     }
-    const char* name = point.candidate >= 0 ? mode_name((SeqMode)point.candidate) : "mode";
-    ui::text(RING_X-ui::text_w(name, 2)/2, 88, name, fade(seq_spot()), 2);
-    static const char* descriptions[MODE_COUNT] = {
-        "step triggers", "step pitch", "step level", "step repeats",
-        "step condition", "step timing", "step parameters", "sample slices"
-    };
-    static const char* shortcuts[MODE_COUNT] = {
-        "r + x", "r + up", "r + right", "r + down", "r + y", "r + left", "r + a", "r + l"
-    };
-    const char* detail = point.candidate >= 0 ? descriptions[point.candidate] : "move to a node";
-    ui::text(RING_X-ui::text_w(detail)/2, 123, detail, fade(seq_ghost()));
+    // The centre names what releasing R gives.
+    const char* name = mode_name(point.candidate >= 0 ? (SeqMode)point.candidate : g_seq_mode);
+    ui::text(RING_X - ui::text_w(name, 2) / 2, RING_Y - 8, name,
+             fade(point.candidate >= 0 ? seq_spot() : seq_ghost()), 2);
     if (point.candidate >= 0) {
-        const char* shortcut = shortcuts[point.candidate];
-        ui::text(RING_X-ui::text_w(shortcut)/2, 141, shortcut, fade(seq_ghost()));
         if (point.pulse > 0) ui::circle(SPOKE_X[point.candidate], SPOKE_Y[point.candidate],
-            6 + 3 * (1-point.pulse), fade(seq_spot(), point.pulse * .65f), false);
-    }
-    ui::circle(point.x, point.y, 3, fade(seq_spot()), true);
-    const char* hint = point.candidate >= 0 ? "choice held / release r" : "circle pad / release r";
-    ui::text(RING_X-ui::text_w(hint)/2, 220, hint, fade(seq_ghost()));
-    char current[24]; std::snprintf(current, sizeof current, "now %s", mode_name(g_seq_mode));
-    ui::text(12, 232, current, fade(seq_ghost()));
-    ui::text(260, 232, "b cancel", fade(seq_ghost()));
+            9 + 3 * (1-point.pulse), fade(seq_spot(), point.pulse * .65f), false);
+    } else ui::circle(point.x, point.y, 3, fade(seq_spot()), true); // free pointer; a captured one is its icon
 }
 void draw_wave(bool dim=false) {
     u32 color=seq_wave::ink(seq_ink(),seq_spot(),g_wave_accent);
@@ -1397,56 +1399,7 @@ void draw_wave(bool dim=false) {
         previous_x=x;
     }
 }
-void draw_bank_hold() {
-    m::paper(320);
-    // Bounded defocused score silhouette from the frozen committed snapshot.
-    // Two low-alpha footprints per real occupied cell: no framebuffer readback,
-    // texture allocation, per-frame Gaussian, moving playhead or PCM scan.
-    draw_wave(true);
-    const int first=g_seq_page*PAGE_STEPS;
-    for(int c=0;c<NUM_CHAINS;++c)for(int i=0;i<PAGE_STEPS;++i) {
-        const auto meta=g_score.sequence_meta[c][first+i];
-        const int x=pattern_x(i),y=PATTERN_ROWS[c];
-        if(meta_trig(meta)||meta_locks(meta)||flow_chain(c)) {
-            const u32 ink=((c==g_seq_chain&&first+i==g_seq_col?seq_spot():seq_ink())&0xffffffu);
-            ui::rect(x,y,CELL_W,BADGE_H,ink|0x09000000u);
-            ui::rect(x+2,y+2,CELL_W-4,BADGE_H-4,ink|0x09000000u);
-        }
-    }
-    m::heading(16,18,"bank",seq_ink());
-    ui::text(268,22,"hold b",seq_spot());
-    ui::text(118,46,"up/down bank",seq_ghost());
-    for(int b=0;b<NUM_PATTERNS;++b) {
-        const int center=48+(b%4)*74;
-        const int baseline=(b<4)?88:148;
-        const int caption_x=b<4?center-11:center+18;
-        const int caption_y=b<4?104:baseline-7;
-        const char text[2]={(char)('1'+b),0};
-        const auto* glyph=inspector_gothic::digit(text[0]);
-        // Approved native 1x numerals; only color marks the edit candidate.
-        inspector_gothic::draw_numeric(center-glyph->width/2,baseline,text,
-            b==g_b_bank?seq_spot():seq_ghost(),seq_spot(),1);
-        // Independent passive mark, including edit == play. Top-row native ink
-        // is centered; the lower row keeps it beside the digit, clear of length.
-        if(b==g_b_play)ui::text(caption_x,caption_y,"play",seq_ghost());
-    }
-    char text[40];
-    std::snprintf(text,sizeof text,"chain %d / %s",g_b_chain+1,source_name(g_b_chain));
-    ui::text(16,176,text,seq_ink());
-    ui::text(144,176,"<",seq_ghost());
-    std::snprintf(text,sizeof text,"%02u",g_b_length[g_b_bank]);
-    inspector_gothic::draw_numeric(172,190,text,seq_ink(),seq_spot());
-    ui::text(243,176,">",seq_ghost());ui::text(266,176,"steps",seq_ghost());
-    ui::text(16,211,"a:",seq_ghost());
-    static const char* names[]={"forward","reverse","ping-pong"};
-    for(int d=0;d<3;++d) {
-        const int x=52+d*84;const bool selected=g_b_direction[g_b_bank]==d;
-        ui::text(x,211,names[d],selected?seq_spot():seq_ghost());
-        if(selected)ui::rect(x,223,ui::text_w(names[d])-1,1,seq_spot());
-    }
-    ui::text(16,232,"left/right: length",seq_ghost());
-    ui::text(232,232,"release: keep",seq_ghost());
-}
+#include "sequencer_bank_hold.inc"
 void draw_extent_marks(int chain,int first,int y) {
     namespace ui = score_ink;
     const int length=g_score.sequence_length[chain];
@@ -1454,22 +1407,22 @@ void draw_extent_marks(int chain,int first,int y) {
         if (first+local>=length) {
             const int x=pattern_x(local);
             // Slash is an inactivity mark, not a deleted event: all data remains editable.
-            ui::line(x+6,y+21,x+10,y+19,seq_branch(),1);
+            ui::line(x+6,y+21,x+10,y+19,seq_inactive(),1);
         }
     }
     // No end post at 16-step page edges (or inside a page). Length remains in
     // held B / upper inspector; inactive cells keep their dim ink and slash.
 }
-void draw_score() {
+// The real score stream: wave, cells, focus, selection, playhead and editor.
+// Drawn natively, or into the shared cache as a disclosure's frozen background.
+void draw_score_surface() {
     const int first = g_seq_page * PAGE_STEPS;
-    m::paper(320);
-    // The chooser owns this surface. Do not leave translucent score glyphs
-    // underneath its labels (dense slice numbers otherwise show through).
-    if (g_mode_ring) { draw_mode_ring(); return; }
-    g_feedback_now = osGetTime();
+    if(!ui::pen.cache)g_feedback_now = osGetTime();
     g_feedback_visible = g_overlay == Overlay::None && g_view == View::Sequencer;
-    if (g_feedback_visible) g_step_press.update(g_feedback_now, feedback_context());
-    else g_step_press.reset();
+    if(!ui::pen.cache){
+        if (g_feedback_visible) g_step_press.update(g_feedback_now, feedback_context());
+        else g_step_press.reset();
+    }
     draw_wave();
     for (int chain = 0; chain < NUM_CHAINS; ++chain) {
         const int y = PATTERN_ROWS[chain];
@@ -1485,10 +1438,15 @@ void draw_score() {
     if (g_overlay == Overlay::None && g_view == View::Sequencer &&
         flow_chain(g_seq_chain) && g_seq_mode == SeqMode::Trig) {
         g_step_focus.reset();
-        const int x = pattern_x(g_seq_col % PAGE_STEPS), y = PATTERN_ROWS[g_seq_chain];
-        const int cy = y + 26 - value_percent(g_seq_chain, g_seq_col) * 23 / 100;
-        g_focus_box = {x, cy - 5, CELL_W, 10};
-        step_focus::fill(g_focus_box, seq_spot());
+        const int y = PATTERN_ROWS[g_seq_chain];
+        // The plate travels along the stored curve in the event plate's 100ms; a
+        // stylus stroke owns it directly. The selection itself is already live.
+        const float target = float(pattern_x(g_seq_col % PAGE_STEPS) + 8);
+        const float xc = ui::pen.cache ? target :
+            g_flow_focus.update(g_feedback_now, feedback_context() * NUM_CHAINS + g_seq_chain, target, g_paint_active);
+        g_focus_box = {int(std::floor(xc + .5f)) - 8,
+                       int(std::floor(flow_curve_y(g_seq_chain, first, xc, y) + .5f)) - 5, CELL_W, 10};
+        ui::fill(g_focus_box, seq_spot());
         // Original native curve, clipped to the fill; never a synthetic contour.
         g_focus_inverse = true;
         draw_flow_lane(g_seq_chain, first, y);
@@ -1498,7 +1456,9 @@ void draw_score() {
     // column rejection keeps this bounded to at most a handful of native cells.
     // No editor, wave, playhead or score state is advanced by the animation.
     else if (g_overlay == Overlay::None && g_view == View::Sequencer) {
-        g_focus_box = g_step_focus.update(g_feedback_now, feedback_context(), g_seq_chain, g_seq_col % PAGE_STEPS);
+        g_flow_focus.reset();
+        if(!ui::pen.cache)g_focus_box = g_step_focus.update(g_feedback_now, feedback_context(), g_seq_chain, g_seq_col % PAGE_STEPS);
+        else if(!g_focus_box.w)g_focus_box=step_focus::raster(step_focus::target(g_seq_chain,g_seq_col%PAGE_STEPS));
         const auto target = step_focus::raster(step_focus::target(g_seq_chain, g_seq_col % PAGE_STEPS));
         const bool arrived = g_focus_box.x == target.x && g_focus_box.y == target.y &&
             g_focus_box.w == target.w && g_focus_box.h == target.h;
@@ -1506,7 +1466,7 @@ void draw_score() {
         // at its old location. Focus motion wins until it actually arrives.
         const float hit = arrived ? playback_power(g_seq_chain, g_seq_col) : 0;
         const float press = arrived ? edit_power(g_seq_chain, g_seq_col) : 0;
-        step_focus::fill(step_feedback::face(g_focus_box, hit, press), feedback_color(seq_spot(), hit, press));
+        ui::fill(step_feedback::face(g_focus_box, hit, press), feedback_color(seq_spot(), hit, press));
         // Keep the original inverse mask, NOT the smaller backing. Thus every
         // native glyph retains its exact coordinates and selected ink color.
         g_focus_inverse = true;
@@ -1521,17 +1481,47 @@ void draw_score() {
             draw_extent_marks(chain, first, y);
         }
         g_focus_inverse = false;
-    } else g_step_focus.reset();
+    } else { g_step_focus.reset(); g_flow_focus.reset(); }
     for(int local=0;local<PAGE_STEPS;++local) {
         const int x=pattern_x(local), y=PATTERN_ROWS[g_seq_chain], step=first+local;
         if(g_inspector.selection&seq_edit::bit(step))
             ui::frame(x,y-2,CELL_W,CELL_H+2,seq_spot());
+        // Paste destination: the free row just under the 18px plate, clear of the
+        // octave digit (y+23..30), the level meter and the lock slots.
         if((g_l_held||g_tools) && (g_inspector.paste_mask&seq_edit::bit(step)))
-            ui::line(x+4,y+27,x+13,y+27,seq_ghost(),1);
+            ui::line(x+4,y+19,x+13,y+19,seq_ghost(),1);
     }
     draw_playhead();
+    draw_flow_live(first);
     draw_editor();
 }
+void draw_score() {
+    // The chooser owns this surface over the frozen blurred score: no live
+    // translucent glyphs under its words (dense slice numbers showed through).
+    if (g_mode_ring && !ui::pen.cache) {
+        if (!sigil_surface::bottom_cache.draw()) ui::paper(320);
+        draw_mode_ring();
+        return;
+    }
+    ui::paper(320);
+    draw_score_surface();
+}
+// One CPU pass of the real score into the shared half-resolution cache, outside
+// the GPU frame and any audio guard. The existing sigils_gpu_frame uploads it.
+void freeze_score() {
+    auto& cache = sigil_surface::bottom_cache;
+    cache.clear();
+    ui::pen = {&cache}; ui::paper(320); draw_score_surface(); ui::pen = {};
+    cache.finish();
+}
+void ring_capture() {
+    if (!g_mode_ring || !g_ring_dirty) return;
+    g_ring_dirty = false;
+    freeze_score();
+}
+
+#include "sequencer_scale_menu.inc"
+#include "sequencer_lock_menu.inc"
 
 void clear_step() {
     platform::AudioOut::Guard guard(*g_audio);
@@ -1623,7 +1613,7 @@ void capture_slices_locked() {
     }
     if(g_cuts_open)values[PlayUnit::P_SLICE]=seq_slice::encode(g_cut_selected);
     const auto window = play.edit_source_matches() ? sequence_note::play_window(sample, values,
-        play.pitch_quantize, play.modern(), play.edit_state(), play.pitch_mode()) : PlayWindow{};
+        play.pitch_quantize, play.modern(), play.edit_state(), play.pitch_mode(), g_score.project_scale) : PlayWindow{};
     out.window_valid = window.valid; out.applied = window.slice;
     out.window_begin = (uint16_t)((uint64_t)window.start*32767/out.frames);
     out.window_end = (uint16_t)((uint64_t)window.end*32767/out.frames);
@@ -1633,7 +1623,7 @@ void capture_slices_locked() {
 }
 } // namespace
 
-void sequencer_capture_inspector() {
+static void capture_inspector_detail() {
     if(g_b_pressed)return; // freeze committed context and real trace throughout the hold
     // Existing worker-published, post-limiter master LEFT samples (every 8th
     // frame, ~50ms total). Bounded projection outside Guard and before GPU;
@@ -1742,7 +1732,7 @@ void sequencer_capture_inspector() {
                 if (values[p] < low) values[p] = (q15)low;
             }
             const auto window = play.edit_source_matches() ? sequence_note::play_window(trackr::synth::SampleBank::instance().slot(play.sample_slot),
-                values, play.pitch_quantize, play.modern(), play.edit_state(), play.pitch_mode()) : PlayWindow{};
+                values, play.pitch_quantize, play.modern(), play.edit_state(), play.pitch_mode(), g_score.project_scale) : PlayWindow{};
             out.valid = window.valid;
             out.loop = values[PlayUnit::P_LOOP] > (32767 / 2);
             out.start = window.normalized_start; out.end = window.normalized_end;
@@ -1751,10 +1741,15 @@ void sequencer_capture_inspector() {
         }
     }
 }
+void sequencer_capture_inspector() {
+    capture_inspector_detail();scale_capture();lock_menu_capture();ring_capture();bank_capture();
+}
+const SequencerBankPanel& sequencer_bank_panel() { return g_bank_panel; }
 const SequencerInspector& sequencer_inspector() { return g_inspector; }
 const seq_slice::Frame& sequencer_slices() { return g_slices; }
 const seq_cuts::Frame& sequencer_cuts() { return g_cuts; }
 const EngineUiSnapshot& sequencer_snapshot() { return g_score; }
+word_menu::Frame sequencer_scale::motion(int group) { return g_scale_menu.frame[group==0?0:1]; }
 int sequencer_edit_bank() { return g_seq_bank; }
 int sequencer_selected_chain() {
     return g_seq_chain;
@@ -1766,7 +1761,7 @@ int sequencer_selected_layer() {
     return (int)g_seq_mode;
 }
 const char *sequencer_selected_layer_name() {
-    return mode_name(g_seq_mode);
+    return flow_row() ? "flow" : mode_name(g_seq_mode); // both screens name the row the same way
 }
 int sequencer_current_page() {
     return g_seq_page;
@@ -1775,6 +1770,7 @@ void sequencer_selected_pitch_text(char *out, int capacity) {
     pitch_text(g_seq_chain, g_seq_col, out, capacity);
 }
 void sequencer_forget_pins() {
+    scale_cancel();
     g_ring_pointer.reset();
     g_mode_ring = g_r_pressed = g_r_choice = false;
     g_step_focus.reset();
@@ -1782,22 +1778,29 @@ void sequencer_forget_pins() {
     g_clipboard.clear(); g_selection.clear(); g_history.clear();
     g_edit_bank=g_history_chain=-1; g_edit_signature=0;
     for(auto& signature:g_target_signature) signature=0;
-    g_target_picker=g_tools=g_l_drain=false; g_pad_center=false;
+    lock_menu_cancel(); g_tools=g_l_drain=false; g_pad_center=false;
+    g_flow_focus.reset(); g_flow_live.reset(); g_flow_touch=false;
+    g_b_copy=-1; g_b_rail=-1; g_b_confirm=0; g_bank_panel.open=false;
     g_seq_bank=-1;
+    // A loaded or new project starts on trig, step 1, page 1 and the first target.
+    g_seq_mode=g_ring_mode=SeqMode::Trig; g_seq_col=g_seq_page=0;
+    g_lock_slot=g_lock_param=0; g_offset=false; g_edit_status[0]=0;
     g_b_drain=g_b_drain||g_b_pressed;
     g_b_pressed=g_b_open=false;
     g_cut_context=false;g_cuts_open=false;g_cut_add=false;g_cut_drag=-1;g_cut_confirm=0;
 }
 
 void sequencer_view_cancel_input() {
+    scale_cancel();
     if(g_seq_mode==SeqMode::Lock) cancel_edit(); else finish_edit();
     g_pad_center=false; g_pad_direction=0;
     g_l_drain=g_l_drain||g_l_held;
-    g_target_picker=g_tools=false;
+    lock_menu_cancel(); g_tools=false;
     g_step_focus.reset();
     g_step_press.reset();
     g_b_drain=g_b_drain||g_b_pressed;
     g_b_pressed=g_b_open=false; // navigation cancels staged values
+    g_b_rail=-1; g_b_confirm=0; g_bank_panel.open=false;
 
     g_cuts_open=false;g_cut_context=false;g_cut_add=false;g_cut_drag=-1;g_cut_confirm=0;
     if (g_audio && g_eng) {
@@ -1821,11 +1824,15 @@ void sequencer_view_enter() {
     g_seq_chain = g_sel_chain;
     if (g_seq_chain < 0 || g_seq_chain >= NUM_CHAINS)
         g_seq_chain = 0;
-    g_seq_col = g_seq_page = 0;
-    g_seq_mode = g_ring_mode = SeqMode::Trig;
+    // Layer, step, page and lock target stay as they were left in this project
+    // (project load / new resets them in sequencer_forget_pins). The capture below
+    // validates the lock target against the chain as it is now.
+    if (g_seq_col < 0 || g_seq_col >= SEQ_STEPS) g_seq_col = 0;
+    g_seq_page = g_seq_col / PAGE_STEPS;
+    if ((int)g_seq_mode >= (int)SeqMode::Count) g_seq_mode = SeqMode::Trig;
+    g_ring_mode = g_seq_mode;
     g_r_cancel = false;
     g_touch_blocked_frame = false;
-    g_lock_slot = g_lock_param = 0;
     sequencer_capture_inspector();
 }
 void sequencer_open_slices(int chain) {
@@ -1837,12 +1844,15 @@ void sequencer_open_slices(int chain) {
     g_cuts_open=false;g_touch_blocked_frame=true;
 }
 bool sequencer_view_back() {
+    if(g_scale_menu.open||g_scale_menu.press){scale_cancel();g_touch_blocked_frame=true;return true;}
     if(g_b_pressed){sequencer_view_cancel_input();return true;}
     if(!g_cuts_open)return false;
     close_cuts();g_touch_blocked_frame=true;return true;
 }
 void sequencer_view_touch_down(int tx, int ty) {
+    if(g_scale_menu.open||g_scale_menu.drain){scale_touch(tx,ty);return;}
     sequencer_view_touch_release(false);
+    if(lock_menu_touch(tx,ty))return;
     if (g_r_pressed) {
         if (g_r_cancel)
             return;
@@ -1860,20 +1870,16 @@ void sequencer_view_touch_down(int tx, int ty) {
         sync_ring_choice();
         return;
     }
+    if(g_b_pressed && g_b_open && !g_b_drain){bank_touch_down(tx,ty);return;} // the held panel is touchable
     if (g_b_pressed || g_b_drain || g_r_cancel || g_touch_blocked_frame)
         return;
     if(g_cuts_open){cuts_touch(tx,ty);return;}
     { platform::AudioOut::Guard guard(*g_audio);capture_score_locked();sync_edit_context(); }
+    if(scale_touch(tx,ty))return;
     if(tools_touch(tx,ty)) return;
     if(g_seq_mode==SeqMode::Lock && ty>=194 && ty<211) {
-        if(tx>=258) g_tools=true; else g_target_picker=!g_target_picker;
-        return;
-    }
-    if(g_seq_mode==SeqMode::Lock && g_target_picker && ty>=211 && ty<229) {
-        const int action=(tx-8)/62;
-        if(action==0) browse_lock_module(-1); else if(action==1) browse_lock_module(1);
-        else if(action==2) browse_lock_param(-1); else if(action==3) browse_lock_param(1);
-        else g_target_picker=false;
+        if(tx>=258) g_tools=true;
+        else g_lock_menu.press=g_lock_menu.armed=true; // the address opens module / parameter lists on lift
         return;
     }
     if(g_seq_mode==SeqMode::Slice && hit(tx,ty,118,194,44,16)){open_cuts();return;}
@@ -1903,6 +1909,9 @@ void sequencer_view_touch_down(int tx, int ty) {
             g_pending_chain = chain;
             g_pending_step = g_seq_col;
             g_paint_value = !meta_trig(g_score.sequence_meta[chain][g_seq_col]);
+            // On a flow row a stroke draws the value curve; the tap still toggles the trig.
+            g_flow_touch = flow_row(chain);
+            g_touch_origin_y = ty;
         }
         return;
     }
@@ -1918,13 +1927,14 @@ void sequencer_view_touch_down(int tx, int ty) {
     }
     // Labels/help are not invisible sliders.
     if(g_selection.mask && g_seq_mode!=SeqMode::Lock) { edit_status("group values: l+up/down"); return; }
-    const bool value_rail=g_seq_mode==SeqMode::Note || g_seq_mode==SeqMode::Level || g_seq_mode==SeqMode::Time;
+    const bool value_rail=g_seq_mode==SeqMode::Note || g_seq_mode==SeqMode::Level || g_seq_mode==SeqMode::Time || flow_row();
     if (ty < 210 || ty >= 227 || tx < (value_rail?VALUE_X0:70) || tx > (value_rail?VALUE_X1:315))
         return;
     begin_edit();
     switch (g_seq_mode) {
     case SeqMode::Trig:
-        toggle_trig();
+        if (flow_row()) { set_level_absolute(tx); g_value_drag = true; } // the selected point of the curve
+        else toggle_trig();
         break;
     case SeqMode::Note:
         set_pitch_absolute(tx);
@@ -1960,6 +1970,10 @@ void sequencer_view_touch_down(int tx, int ty) {
     }
 }
 void sequencer_view_touch_hold(int tx, int ty) {
+    if(g_scale_menu.open||g_scale_menu.press||g_scale_menu.drain){scale_hold(tx,ty);return;}
+    if(g_b_pressed && g_b_open && !g_b_drain){bank_touch_hold(tx,ty);return;}
+    if(g_lock_menu.open){lock_menu_hold(tx,ty);return;}
+    if(g_lock_menu.press){if(!lock_address_hit(tx,ty))g_lock_menu.armed=false;return;} // dragged off: no menu
     if (g_b_pressed || g_b_drain || g_r_pressed || g_r_cancel || g_touch_blocked_frame)
         return;
     if(g_cuts_open){if(g_cut_drag>=0)cut_wave_touch(tx,ty,true);return;}
@@ -1983,10 +1997,13 @@ void sequencer_view_touch_hold(int tx, int ty) {
             set_timing(-SEQ_MICROTIMING_MAX + (tx - VALUE_X0) * SEQ_MICROTIMING_MAX * 2 / VALUE_TRAVEL);
         else if (g_seq_mode == SeqMode::Lock)
             set_lock_absolute(tx);
+        else if (flow_row())
+            set_level_absolute(tx);
         return;
     }
     if (g_pending_step < 0 || g_seq_mode != SeqMode::Trig)
         return;
+    if (g_flow_touch) { flow_draw_hold(tx, ty); return; }
     const int movement = tx > g_touch_origin_x ? tx - g_touch_origin_x : g_touch_origin_x - tx;
     if (chain_from_touch(ty) != g_pending_chain || tx < PATTERN_X0 || tx > PATTERN_X1 + 1)
         return;
@@ -2016,6 +2033,17 @@ void sequencer_view_touch_hold(int tx, int ty) {
     mark_project_mutated();
 }
 void sequencer_view_touch_release(bool commit_taps) {
+    if(scale_release(commit_taps))return;
+    if(g_lock_menu.close_on_lift) {
+        g_lock_menu.close_on_lift=false;
+        if(commit_taps)lock_menu_cancel(); // lifted on a parameter word: chosen
+    }
+    if(g_lock_menu.press) {
+        const bool open=commit_taps && g_lock_menu.armed && !g_touch_blocked_frame;
+        g_lock_menu.press=g_lock_menu.armed=false;
+        if(open && g_seq_mode==SeqMode::Lock && !g_l_held && !g_tools)lock_menu_open();
+    }
+    g_b_rail=-1;
     if(!commit_taps && g_history.active) {
         if(g_seq_mode==SeqMode::Lock) cancel_edit(); else finish_edit();
     }
@@ -2028,7 +2056,7 @@ void sequencer_view_touch_release(bool commit_taps) {
         begin_edit(); toggle_trig();
     }
     g_pending_chain = g_pending_step = -1;
-    g_value_drag = g_paint_active = false;
+    g_value_drag = g_paint_active = g_flow_touch = false;
     g_paint_last_step = -1;
     finish_edit();
 }
@@ -2044,11 +2072,13 @@ void sequencer_view_buttons(unsigned int down, unsigned int held, unsigned int u
         sequencer_view_cancel_input();
         return;
     }
+    if(scale_buttons(down,held,up))return;
+    if(lock_menu_buttons(down,held))return;
     if(bank_hold_buttons(down,held,up))return;
     { platform::AudioOut::Guard guard(*g_audio);capture_score_locked();sync_edit_context(); }
     if (down & KEY_R) {
         g_pad_center=false; g_pad_direction=0;
-        g_target_picker=g_tools=false;
+        g_tools=false;
         if(g_cuts_open)close_cuts();
         sequencer_view_touch_release(false);
         g_r_pressed = true;
@@ -2185,8 +2215,11 @@ void sequencer_view_buttons(unsigned int down, unsigned int held, unsigned int u
     }
     if (down & KEY_X) {
         sequencer_view_touch_release(false);
-        g_selection.clear(); // bare X is always just the focused step
-        begin_edit(); clear_step(); finish_edit();
+        if (g_seq_mode == SeqMode::Lock) remove_target_lock(); // the selected target only, step or group
+        else {
+            g_selection.clear(); // bare X elsewhere is always just the focused step
+            begin_edit(); clear_step(); finish_edit();
+        }
     }
     if (down & KEY_START) {
         platform::AudioOut::Guard guard(*g_audio);
@@ -2208,7 +2241,9 @@ void sequencer_view_draw() {
         g_step_focus.reset();
         g_step_press.reset();
     }
-    if(g_b_open)draw_bank_hold();
+    if(g_scale_menu.open)scale_draw();
+    else if(g_lock_menu.open)lock_menu_draw();
+    else if(g_b_open)draw_bank_hold();
     else if(g_cuts.active&&!g_mode_ring)draw_cuts();else draw_score();
 }
 } // namespace seance::platform::ui3ds

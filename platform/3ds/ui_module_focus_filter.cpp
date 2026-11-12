@@ -24,7 +24,7 @@ using C=FilterUnit;
 using T=trackr::dsp::FilterType;
 struct Frame {
     uint16_t mod_links=0;
-    bool valid=false,bypass=false,mute=false,lock=false,lock_full=false,lock_invalid=false,lens=false;
+    bool valid=false,bypass=false,mute=false,lens=false;
     bool different=false,live_changed=false,limited=false,below_axis=false;
     int8_t chain=0,slot=0,selected=0;
     T type=T::LPF;
@@ -38,8 +38,7 @@ struct Frame {
 static_assert(sizeof(Frame)<=640 && std::is_trivially_copyable<Frame>::value,
               "bounded pointer-free filter frame; never reads audio in draw");
 int selected=C::P_CUTOFF,drag_param=-1,origin_x=0,origin_y=0,last_axis=0;
-int origin_chain=-1,origin_slot=-1,origin_step=-1,origin_lock_chain=-1,origin_bank=-1;
-bool origin_locked=false;
+int origin_chain=-1,origin_slot=-1,origin_bank=-1;
 View origin_view=View::Chains;
 uintptr_t origin_unit=0;
 Engine* origin_engine=nullptr;
@@ -52,24 +51,19 @@ int clamp(int v) { return std::max(0,std::min(32767,v)); }
 int percent(q15 v) {return (clamp(v)*100+16383)/32767;}
 bool capture_context() {
     return g_eng && g_audio && g_overlay==Overlay::Editor &&
-        (g_view==View::Chains || (g_view==View::Sequencer && g_seq_lock_armed)) &&
+        g_view==View::Chains &&
         g_edit_chain>=0 && g_edit_chain<NUM_CHAINS && g_edit_slot>=0 && g_edit_slot<UNITS_PER_CHAIN;
 }
 // The module stays visible beneath permanent MOD; only its controls are blocked.
 bool context() { return !param_lens_is_open() && capture_context(); }
-bool lock_context() {
-    return g_seq_lock_armed && g_seq_lock_chain==g_edit_chain &&
-        g_seq_lock_step>=0 && g_seq_lock_step<SEQ_STEPS;
-}
 bool owns(const C& u) {
     return origin_engine==g_eng && origin_unit==uintptr_t(&u) &&
         origin_chain==g_edit_chain && origin_slot==g_edit_slot && origin_view==g_view &&
         g_eng->chains[g_edit_chain].units[g_edit_slot]==&u &&
-        origin_bank==g_eng->active_pattern && origin_locked==g_seq_lock_armed &&
-        (!origin_locked || (lock_context() && origin_step==g_seq_lock_step && origin_lock_chain==g_seq_lock_chain));
+        origin_bank==g_eng->active_pattern;
 }
 q15 edit_value(const C& u,int p) {
-    return lock_context()?seq_display_value(g_edit_slot,p,u.params[p].base):u.params[p].base;
+    return u.params[p].base;
 }
 u32 color(int p) { return frame.selected==p?m::spot():m::ghost(); }
 bool dry() {return frame.bypass || frame.type==T::Off;}
@@ -264,30 +258,24 @@ bool filter_focus_touch_body(C& u,int tx,int ty) {
     platform::AudioOut::Guard guard(*g_audio);
     if(g_eng->chains[g_edit_chain].units[g_edit_slot]!=&u)return false;
     if(ty<24) {
-        if(!g_seq_lock_armed && interaction::bypass.contains(tx,ty)) {u.bypass=!u.bypass;mark_project_mutated();}
+        if(interaction::bypass.contains(tx,ty)) {u.bypass=!u.bypass;mark_project_mutated();}
         return true;
     }
     for(int i=0;i<5;++i) {
         if(!interaction::mode(i).contains(tx,ty))continue;
-        if(!g_seq_lock_armed && u.type!=T(i)) {u.type=T(i);u.reset();mark_project_mutated();}
+        if(u.type!=T(i)) {u.type=T(i);u.reset();mark_project_mutated();}
         return true;
     }
-    int p=-1;bool name=false;
-    if(interaction::cutoff.contains(tx,ty)){p=C::P_CUTOFF;name=interaction::cutoff_name.contains(tx,ty);}
-    else if(interaction::resonance.contains(tx,ty)){p=C::P_RES;name=interaction::resonance_name.contains(tx,ty);}
-    else if(interaction::drive.contains(tx,ty)){p=C::P_DRIVE;name=interaction::drive_name.contains(tx,ty);}
-    else if(interaction::morph.contains(tx,ty)){p=C::P_MORPH;name=interaction::morph_name.contains(tx,ty);}
+    int p=-1;
+    if(interaction::cutoff.contains(tx,ty))p=C::P_CUTOFF;
+    else if(interaction::resonance.contains(tx,ty))p=C::P_RES;
+    else if(interaction::drive.contains(tx,ty))p=C::P_DRIVE;
+    else if(interaction::morph.contains(tx,ty))p=C::P_MORPH;
     if(p>=0) {
         selected=p;
-        if(g_seq_lock_armed && !lock_context())return true;
-        if(lock_context() && name) {
-            if(g_eng->remove_step_lock(g_seq_lock_chain,g_seq_lock_step,g_edit_slot,p))mark_project_mutated();
-            return true;
-        }
         drag_param=p;origin_x=tx;origin_y=ty;last_axis=p==C::P_RES?ty:tx;origin_value=edit_value(u,p);
         origin_unit=uintptr_t(&u);origin_engine=g_eng;origin_chain=g_edit_chain;origin_slot=g_edit_slot;
         origin_view=g_view;origin_bank=g_eng->active_pattern;
-        origin_locked=g_seq_lock_armed;origin_step=g_seq_lock_step;origin_lock_chain=g_seq_lock_chain;
         g_drag=DRAGS[p];
     }
     return true; // inert gaps never leak into hidden legacy rows
@@ -308,8 +296,7 @@ void filter_focus_drag(C& u,int tx,int ty) {
     if(axis==last_axis)return; // external edits survive identical-axis HID reports
     last_axis=axis;
     if(next==edit_value(u,drag_param))return;
-    if(g_seq_lock_armed)seq_record_lock(g_edit_slot,drag_param,next);
-    else {u.params[drag_param].base=next;mark_project_mutated();}
+    u.params[drag_param].base=next;mark_project_mutated();
 }
 
 void filter_focus_capture() {
@@ -325,8 +312,6 @@ void filter_focus_capture() {
         if(drag_param>=0 && !owns(u))filter_focus_release();
         frame.valid=true;frame.type=unsigned(u.type)<=unsigned(T::Off)?u.type:T::LPF;
         frame.bypass=u.bypass;frame.mute=chain.mute;frame.lens=param_lens_is_open();
-        frame.lock=lock_context();frame.lock_full=frame.lock && g_seq_lock_flash>0;
-        frame.lock_invalid=g_seq_lock_armed && !frame.lock;
         frame.chain=g_edit_chain;frame.slot=g_edit_slot;frame.selected=selected;
         frame.mod_links=focus_mod_links(u);
         for(int p=0;p<4;++p) {frame.edit[p]=edit_value(u,p);frame.live[p]=u.params[p].effective;}
@@ -356,10 +341,7 @@ void filter_focus_draw(const C&) {
         std::snprintf(text,sizeof text,"%d%%",percent(frame.edit[p]));right(x+125,188,text,m::ink());
         rail(p,x+4,119,211);
     }
-    if(frame.lock || frame.lock_invalid) {
-        ui::text(m::kLeft,m::kTextY,frame.lock_invalid?"lock unavailable":frame.lock_full?"lock full":"p-lock / name: remove",m::ghost());
-        right(m::right_edge(320),m::kTextY,"b back",m::ghost());
-    } else {ui::text(m::kLeft,m::kTextY,"b back",m::ghost());right(m::right_edge(320),m::kTextY,"l: mod >",m::ghost());}
+    ui::text(m::kLeft,m::kTextY,"b back",m::ghost());right(m::right_edge(320),m::kTextY,"l: mod >",m::ghost());
 }
 
 bool filter_focus_draw_top() {
@@ -377,20 +359,17 @@ bool filter_focus_draw_top() {
     right(382,48,meaning,m::ghost());
     std::snprintf(text,sizeof text,"res %d%% / drive %d%%",percent(frame.edit[1]),percent(frame.edit[2]));right(382,64,text,m::ghost());
     const bool linked=frame.mod_links || frame.live_changed;
-    if(frame.lock_invalid)std::snprintf(text,sizeof text,"lock unavailable");
-    else if(frame.lock_full)std::snprintf(text,sizeof text,"lock full / base unchanged");
-    else if(frame.bypass)std::snprintf(text,sizeof text,"bypassed / dry");
+    if(frame.bypass)std::snprintf(text,sizeof text,"bypassed / dry");
     else if(frame.mute)std::snprintf(text,sizeof text,"muted / model only");
     else if(frame.type==T::Off)std::snprintf(text,sizeof text,"off / exact dry");
     else if(frame.lens)std::snprintf(text,sizeof text,"mod / stored edit + live");
-    else if(frame.lock)std::snprintf(text,sizeof text,"p-lock edit / live separate");
     else if(linked && frame.selected!=0)std::snprintf(text,sizeof text,"live %s %d%%",NAMES[frame.selected],percent(frame.live[frame.selected]));
     else std::snprintf(text,sizeof text,"morph %d%%",percent(frame.edit[3]));
     right(382,80,text,linked && !dry() && !frame.mute?m::spot():m::ghost());
     plot(true);
     if(frame.below_axis || frame.limited)
-        std::snprintf(text,sizeof text,"%s %shz / raw%d",frame.lock?"lock":"edit",frame.cutoff,int(frame.edit[0]));
-    else std::snprintf(text,sizeof text,"%s %shz",frame.lock?"lock":"edit",frame.cutoff);
+        std::snprintf(text,sizeof text,"edit %shz / raw%d",frame.cutoff,int(frame.edit[0]));
+    else std::snprintf(text,sizeof text,"edit %shz",frame.cutoff);
     ui::text(20,214,text,m::ghost());
     if(linked && frame.limited)std::snprintf(text,sizeof text,"live %shz / 85%% ceiling",frame.live_cutoff);
     else if(linked && frame.below_axis)std::snprintf(text,sizeof text,"live %shz / <20hz edge",frame.live_cutoff);

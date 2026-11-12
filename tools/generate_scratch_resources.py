@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
+from module_catalogue import active_kind_ids, same_members
 
 ROOT = Path(__file__).resolve().parents[1]
 FONT = ROOT / 'assets/fonts/Gossip-MedPixel.otf'
@@ -80,6 +81,8 @@ def retained_bitmap(path):
 
 def retained_heading():
     """Canonical generator output, using checked original retained masks offline."""
+    entries = re.findall(r'^PICKER_ENTRY\((\w+), "([^"]+)"', META.read_text(), re.M)
+    same_members([k for k, _ in entries], active_kind_ids((ROOT/'core/engine/unit.h').read_text(), META.read_text()), 'retained heading catalogue')
     g=glyphs();text,raw=retained_bitmap(ROOT/'platform/3ds/module_heading_data.h')
     masks={kind:(name,int(w),int(h),raw[int(off):int(off)+(int(w)+7)//8*int(h)])
            for kind,name,off,w,h in re.findall(r'\{UnitKind::(\w+), "([^"]+)", (\d+), (\d+), (\d+)\}',text)}
@@ -87,13 +90,18 @@ def retained_heading():
     paul=glyphs('paul')[28]
     masks['Paul']=('paul',paul[0],paul[1],paul[3])
     data=[];rows=[]
-    for kind,name in re.findall(r'^PICKER_ENTRY\((\w+), "([^"]+)"',META.read_text(),re.M):
+    for kind,name in entries:
         name='filter' if kind=='Filter' else name
+        if kind not in masks:
+            rendered=glyphs(name)[28]
+            masks[kind]=(name,rendered[0],rendered[1],rendered[3])
         label,w,h,bitmap=masks[kind];assert label==name
+        assert 0<w<=57 and 0<h<=25
         rows.append(f'    {{UnitKind::{kind}, "{name}", {len(data)}, {w}, {h}}},');data.extend(bitmap)
     prefix=text[:text.index('inline constexpr uint8_t bitmap[] = {')]
     prefix=re.sub(r'// Catalogue SHA256: [0-9a-f]+','// Catalogue SHA256: '+hashlib.sha256(META.read_bytes()).hexdigest(),prefix)
-    tail=text[text.index('constexpr bool complete()'):]
+    from generate_module_heading import completion
+    tail=completion()
     return prefix+'inline constexpr uint8_t bitmap[] = {\n'+''.join('    '+','.join(f'0x{v:02x}' for v in data[i:i+20])+',\n' for i in range(0,len(data),20))+'};\ninline constexpr Label labels[] = {\n'+'\n'.join(rows)+'\n};\n'+tail
 
 
@@ -112,10 +120,15 @@ def retained_picker():
         if not line.startswith('PICKER_ENTRY('):continue
         match=re.fullmatch(r'PICKER_ENTRY\((\w+), ("[^"]*"), ("[^"]*"), (\w+), ("[^"]*")\)',line)
         kind,short,name,group,description=match.groups();records.append((kind,json.loads(short),json.loads(name),group,json.loads(description)))
+    same_members([r[0] for r in records], active_kind_ids((ROOT/'core/engine/unit.h').read_text(), META.read_text()), 'retained picker catalogue')
     data=[];labels=[];rows={}
     def label(name):
         w,h,dy,bitmap=masks[name];labels.append(f'inline constexpr Label {name} = {{{len(data)}, {w}, {h}, {dy}}};');data.extend(bitmap)
     for kind,short,name,group,description in sorted(records,key=lambda e:(e[2],e[0])):
+        if kind+'_row' not in masks or kind+'_title' not in masks:
+            rendered=glyphs(name)
+            masks[kind+'_row']=rendered[28]
+            masks[kind+'_title']=rendered[40] if rendered[40][0]<=248 else rendered[28]
         label(kind+'_row');label(kind+'_title')
         desc=textwrap.wrap(description,40,break_long_words=True,break_on_hyphens=False);assert len(desc)<=2;desc+=['']*(2-len(desc))
         rows[kind]='    {UnitKind::%s, %s, %s, Group::%s, {%s, %s}, %s, %s},'%(kind,json.dumps(short),json.dumps(name),group,json.dumps(desc[0]),json.dumps(desc[1]),kind+'_row',kind+'_title')
@@ -123,7 +136,8 @@ def retained_picker():
     prefix=text[:text.index('inline constexpr uint8_t bitmap[] = {')]
     prefix=re.sub(r'// Metadata SHA256: [0-9a-f]+','// Metadata SHA256: '+hashlib.sha256(META.read_bytes()).hexdigest(),prefix)
     structure=text[text.index('struct Entry {'):text.index('inline constexpr Entry entries[] = {')]
-    tail=text[text.index('inline constexpr int count ='):]
+    from generate_picker_labels import completion
+    tail=completion()
     return prefix+'inline constexpr uint8_t bitmap[] = {\n'+''.join('    '+','.join('0x%02x'%v for v in data[i:i+20])+',\n' for i in range(0,len(data),20))+'};\n'+'\n'.join(labels)+'\n'+structure+'inline constexpr Entry entries[] = {\n'+'\n'.join(rows[e[0]] for e in records)+'\n};\n'+tail
 
 

@@ -20,6 +20,8 @@ constexpr int MODE_X[MODE_COUNT] = {85, 136, 208, 187, 187, 64, 85, 136};
 constexpr int MODE_Y[MODE_COUNT] = {39, 18, 90, 151, 39, 90, 151, 172};
 constexpr int MODE_W = 48, MODE_H = 34;
 constexpr int mode_label_y(int mode) {
-    return SPOKE_Y[mode] + (SPOKE_Y[mode] <= RING_Y ? -17 : 10);
+    // Upper words sit three pixels higher: their selection underline (y+12)
+    // must clear the layer icon that now marks the node.
+    return SPOKE_Y[mode] + (SPOKE_Y[mode] <= RING_Y ? -20 : 10);
 }
 } // namespace seance::platform::ui3ds::seq_layout

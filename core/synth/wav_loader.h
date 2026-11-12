@@ -25,6 +25,7 @@ enum class WavLoadResult : int8_t {
     UnsupportedBits    = -7,    // 4-bit, 64-bit etc
     UnsupportedChannels = -8,   // >2 channels
     MemoryBudget       = -9,    // validated decode workspace limit exceeded
+    InvalidChunks      = -10,   // truncated/duplicate RIFF chunks or cue records
     Truncated          = 1,     // ok but truncated to max_frames
 };
 
@@ -34,7 +35,8 @@ struct WavDecodeLimits {
     // PCM workspace: frame-aligned source window (<=64 KiB) + staged q15 output.
     // Tight budgets shrink the window down to the former <=4 KiB requirement;
     // increasing preferred IO size does not reject previously fitting imports.
-    // Does not include the caller's retained destination or stdio/metadata.
+    // Does not include the caller's retained destination or stdio. Cue metadata
+    // has an independent fixed MAX_CHOPS-record (64-byte) global bound.
     // Zero disables this cap; max_frames still bounds the output allocation.
     std::size_t workspace_bytes = 0;
     // New exact editors/export explicitly retain the final native-rate frame.
@@ -44,7 +46,9 @@ struct WavDecodeLimits {
 
 
 // loads a WAV into a Sample (data + channels + root_note + chops/loops cleared)
-// returns Ok or Truncated on success, negative on error
+// returns Ok or Truncated on success, negative on error (destination unchanged).
+// Multiple cue chunks contribute only the first MAX_CHOPS raw records globally;
+// sorting/dedup/source-range filtering retain the historical marker semantics.
 WavLoadResult load_wav_to_sample(const char* path, Sample& dst,
                                   int target_sr, int max_frames,
                                   WavDecodeLimits limits = {});

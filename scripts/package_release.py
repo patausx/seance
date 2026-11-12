@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build deterministic Seance release archives from verified workspace artifacts."""
+"""Package deterministic release archives from existing bytes; does not verify build origin."""
 
 from __future__ import annotations
 

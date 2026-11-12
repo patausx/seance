@@ -32,7 +32,7 @@ struct Frame {
     uint8_t kinds[UNITS_PER_CHAIN] = {};
     bool bypassed[UNITS_PER_CHAIN] = {};
     q15 edit = 0;
-    bool lock = false, lock_full = false, lens = false, mute = false, gain_only = false;
+    bool lens = false, mute = false, gain_only = false;
     uint16_t delay_frames = 0;
     bool delay_hold = false, delay_ready = false, modern_delay = false;
     DelayUnit::VisualState delay = {};
@@ -145,7 +145,6 @@ void hero(const char* value) {
 }
 const char* explanation() {
     const auto& d = frame.detail;
-    if (frame.lock_full) return "lock bank full / existing locks still editable";
     if (frame.bypassed[d.slot]) return "bypassed / live is parameter, not audio";
     if (frame.mute) return "chain muted / live is parameter, not audio";
     if (d.temp) return "temporary / release l restores stored base";
@@ -335,6 +334,9 @@ const char* explanation() {
 } // namespace
 
 bool module_inspector_supports(UnitKind kind) {
+    if (kind == UnitKind::Rot) return true;
+    if (kind == UnitKind::Rule) return true;
+    if (kind == UnitKind::Pent) return true;
     if (kind == UnitKind::Paul) return true;
     if (kind == UnitKind::Scratch) return true;
     if (kind == UnitKind::Inst) return true;
@@ -348,6 +350,9 @@ bool module_inspector_supports(UnitKind kind) {
     return kind == UnitKind::Osc || kind == UnitKind::Grain || kind == UnitKind::Motor || kind == UnitKind::SamplePlayer || kind == UnitKind::Vca || kind == UnitKind::Chorus || kind == UnitKind::Delay || kind == UnitKind::Filter || kind == UnitKind::Fold || kind == UnitKind::Bitcrush || kind == UnitKind::Tilt || kind == UnitKind::Ring || kind == UnitKind::Strain || kind == UnitKind::MicIn || kind == UnitKind::Recorder || kind == UnitKind::Noise;
 }
 int module_inspector_selected(UnitKind kind) {
+    if (kind == UnitKind::Rot) return rot_focus_selected();
+    if (kind == UnitKind::Rule) return rule_focus_selected();
+    if (kind == UnitKind::Pent) return pent_focus_selected();
     if (kind == UnitKind::Paul) return paul_focus_selected();
     if (kind == UnitKind::Scratch) return scratch_focus_selected();
     if (kind == UnitKind::Inst) return inst_focus_selected();
@@ -377,6 +382,9 @@ int module_inspector_selected(UnitKind kind) {
     return -1;
 }
 void module_inspector_select(UnitKind kind, int param) {
+    if (kind == UnitKind::Rot) { rot_focus_select(param); return; }
+    if (kind == UnitKind::Rule) { rule_focus_select(param); return; }
+    if (kind == UnitKind::Pent) { pent_focus_select(param); return; }
     if (kind == UnitKind::Paul) { paul_focus_select(param); return; }
     if (kind == UnitKind::Scratch) { scratch_focus_select(param); return; }
     if (kind == UnitKind::Inst) { inst_focus_select(param); return; }
@@ -404,8 +412,11 @@ void module_inspector_select(UnitKind kind, int param) {
     if (kind == UnitKind::MicIn) { mic_focus_select(param); return; }
     if (kind == UnitKind::Chorus && param >= 0 && param < ChorusUnit::P_COUNT) chorus_focus_select(param);
 }
-void module_inspector_value_text(char* out, size_t size, UnitKind kind, int param, q15 value, bool flexible_vca, bool modern_delay, bool modern_tilt, bool legacy_tilt_zero, bool modern_play, bool quantize_play) {
+void module_inspector_value_text(char* out, size_t size, UnitKind kind, int param, q15 value, bool flexible_vca, bool modern_delay, bool modern_tilt, bool legacy_tilt_zero, bool modern_play, bool quantize_play, MusicalScale scale) {
     if (!out || !size) return;
+    if (kind == UnitKind::Rot) { rot_focus_value_text(out,size,param,value); return; }
+    if (kind == UnitKind::Rule) { rule_focus_value_text(out,size,param,value); return; }
+    if (kind == UnitKind::Pent) { pent_focus_value_text(out,size,param,value); return; }
     if (kind == UnitKind::Paul) { paul_focus_value_text(out,size,param,value); return; }
     if (kind == UnitKind::Scratch) { scratch_focus_value_text(out,size,param,value); return; }
     if (kind == UnitKind::Inst) { inst_readout::value_text(out,size,param,value); return; }
@@ -432,7 +443,7 @@ void module_inspector_value_text(char* out, size_t size, UnitKind kind, int para
         } else std::snprintf(out,size,"%u%%",unsigned((uint32_t(uni(value))*100+16383)/32767));
         return;
     }
-    if (kind == UnitKind::SamplePlayer) { play_readout::value_text(out,size,param,value,modern_play,quantize_play); return; }
+    if (kind == UnitKind::SamplePlayer) { play_readout::value_text(out,size,param,value,modern_play,quantize_play,PlayUnit::PitchMode::Legacy,scale); return; }
     const int count = kind == UnitKind::Chorus ? ChorusUnit::P_COUNT : kind == UnitKind::Shift ? ShiftUnit::P_COUNT : kind == UnitKind::Osc ? OscUnit::P_COUNT : kind == UnitKind::Grain ? GrainUnit::P_COUNT : kind == UnitKind::Motor ? MotorUnit::P_COUNT : kind == UnitKind::Noise ? NoiseUnit::P_COUNT : kind == UnitKind::Ring ? (ring_focus_modern()?RingUnit::P_COUNT:RingUnit::LEGACY_COUNT) : kind == UnitKind::Strain ? (strain_focus_modern()?StrainUnit::P_COUNT:StrainUnit::LEGACY_COUNT) : kind == UnitKind::Tilt ? (modern_tilt?6:5) : kind == UnitKind::Bitcrush ? (bit_focus_modern()?BitUnit::P_COUNT:BitUnit::LEGACY_COUNT) : kind == UnitKind::Fold ? (fold_focus_modern()?FoldUnit::P_COUNT:FoldUnit::LEGACY_COUNT) : kind == UnitKind::Filter ? 4 : kind == UnitKind::Delay ? (modern_delay?DelayUnit::P_COUNT:6) : kind == UnitKind::Vca && flexible_vca ? VcaUnit::P_COUNT : 3;
     if (!module_inspector_supports(kind) || param < 0 || param >= count) {
         std::snprintf(out, size, "--"); return;
@@ -619,58 +630,65 @@ void module_inspector_value_text(char* out, size_t size, UnitKind kind, int para
     }
 }
 
+UnitKind module_capture_visible_kind() {
+    if (!g_eng || g_view != View::Chains || g_overlay != Overlay::Editor ||
+        g_edit_chain < 0 || g_edit_chain >= NUM_CHAINS ||
+        g_edit_slot < 0 || g_edit_slot >= UNITS_PER_CHAIN) return UnitKind::Empty;
+    // Chain slots are written only by this UI thread (structural edits, under the guard).
+    const Unit* unit = g_eng->chains[g_edit_chain].units[g_edit_slot];
+    return unit ? unit->kind : UnitKind::Empty;
+}
+
+void module_capture_runs(const ModuleCapture* list, size_t count) {
+    const UnitKind shown = module_capture_visible_kind();
+    for (size_t i = 0; i < count;) {
+        if (!g_audio || list[i].kind == shown) { list[i].capture(); ++i; continue; }
+        platform::AudioOut::Guard guard(*g_audio);
+        for (; i < count && list[i].kind != shown; ++i) list[i].capture();
+    }
+}
+
 void module_inspector_capture() {
     frame = {};
-    paul_focus_capture();
-    scratch_focus_capture();
-    inst_focus_capture();
-    glitch_focus_capture();
-    arp_focus_capture();
-    mouth_focus_capture();
-    comp_focus_capture();
-    fract_focus_capture();
-    vca_focus_capture();
-    filter_focus_capture();
-    fold_focus_capture();
-    bit_focus_capture();
-    tilt_focus_capture();
-    ring_focus_capture();
-    bird_focus_capture();
-    shift_focus_capture();
-    strain_focus_capture();
-    mic_focus_capture();
-    recorder_focus_capture();
-    noise_focus_capture();
-    motor_focus_capture();
-    grain_focus_capture();
-    osc_focus_capture();
-    if (!g_eng || !g_audio || g_overlay != Overlay::Editor ||
+    static constexpr ModuleCapture captures[] = {
+        {UnitKind::Relic, relic_focus_capture}, {UnitKind::Rot, rot_focus_capture},
+        {UnitKind::Rule, rule_focus_capture}, {UnitKind::Pent, pent_focus_capture},
+        {UnitKind::Paul, paul_focus_capture}, {UnitKind::Scratch, scratch_focus_capture},
+        {UnitKind::Inst, inst_focus_capture}, {UnitKind::Glitch, glitch_focus_capture},
+        {UnitKind::Arp, arp_focus_capture}, {UnitKind::Mouth, mouth_focus_capture},
+        {UnitKind::Comp, comp_focus_capture}, {UnitKind::Fract, fract_focus_capture},
+        {UnitKind::Vca, vca_focus_capture}, {UnitKind::Filter, filter_focus_capture},
+        {UnitKind::Fold, fold_focus_capture}, {UnitKind::Bitcrush, bit_focus_capture},
+        {UnitKind::Tilt, tilt_focus_capture}, {UnitKind::Ring, ring_focus_capture},
+        {UnitKind::Bird, bird_focus_capture}, {UnitKind::Shift, shift_focus_capture},
+        {UnitKind::Strain, strain_focus_capture}, {UnitKind::MicIn, mic_focus_capture},
+        {UnitKind::Recorder, recorder_focus_capture}, {UnitKind::Noise, noise_focus_capture},
+        {UnitKind::Motor, motor_focus_capture}, {UnitKind::Grain, grain_focus_capture},
+        {UnitKind::Osc, osc_focus_capture},
+    };
+    constexpr size_t count = sizeof captures / sizeof captures[0];
+    const UnitKind shown = module_capture_visible_kind();
+    size_t tail = 0;  // first capture after the visible editor's own one
+    for (size_t i = 0; i < count; ++i) if (captures[i].kind == shown) tail = i + 1;
+    module_capture_runs(captures, tail);
+    if (!g_audio) { module_capture_runs(captures + tail, count - tail); return; }
+    // The captures after the visible one share their entry with the inspector copy below.
+    platform::AudioOut::Guard guard(*g_audio);
+    for (size_t i = tail; i < count; ++i) captures[i].capture();
+    if (!g_eng || g_overlay != Overlay::Editor ||
         g_edit_chain < 0 || g_edit_chain >= NUM_CHAINS ||
         g_edit_slot < 0 || g_edit_slot >= UNITS_PER_CHAIN) return;
-    platform::AudioOut::Guard guard(*g_audio);
     const auto& chain = g_eng->chains[g_edit_chain];
     const Unit* unit = chain.units[g_edit_slot];
-    if (!unit || !module_inspector_supports(unit->kind) || unit->kind == UnitKind::Paul || unit->kind == UnitKind::Scratch || unit->kind == UnitKind::Inst || unit->kind == UnitKind::Glitch || unit->kind == UnitKind::Arp || unit->kind == UnitKind::Mouth || unit->kind == UnitKind::Shift || unit->kind == UnitKind::Comp || unit->kind == UnitKind::Fract || unit->kind == UnitKind::Bird || unit->kind == UnitKind::Vca || unit->kind == UnitKind::SamplePlayer) return;
-    if ((unit->kind == UnitKind::Osc || unit->kind == UnitKind::Grain || unit->kind == UnitKind::Motor || unit->kind == UnitKind::Filter || unit->kind == UnitKind::Fold || unit->kind == UnitKind::Bitcrush || unit->kind == UnitKind::Tilt || unit->kind == UnitKind::Ring || unit->kind == UnitKind::Strain || unit->kind == UnitKind::MicIn || unit->kind == UnitKind::Recorder || unit->kind == UnitKind::Noise) && g_view != View::Chains &&
-        !(g_view == View::Sequencer && g_seq_lock_armed)) return;
+    if (!unit || !module_inspector_supports(unit->kind) || unit->kind == UnitKind::Rot || unit->kind == UnitKind::Rule || unit->kind == UnitKind::Pent || unit->kind == UnitKind::Paul || unit->kind == UnitKind::Scratch || unit->kind == UnitKind::Inst || unit->kind == UnitKind::Glitch || unit->kind == UnitKind::Arp || unit->kind == UnitKind::Mouth || unit->kind == UnitKind::Shift || unit->kind == UnitKind::Comp || unit->kind == UnitKind::Fract || unit->kind == UnitKind::Bird || unit->kind == UnitKind::Vca || unit->kind == UnitKind::SamplePlayer) return;
+    if ((unit->kind == UnitKind::Osc || unit->kind == UnitKind::Grain || unit->kind == UnitKind::Motor || unit->kind == UnitKind::Filter || unit->kind == UnitKind::Fold || unit->kind == UnitKind::Bitcrush || unit->kind == UnitKind::Tilt || unit->kind == UnitKind::Ring || unit->kind == UnitKind::Strain || unit->kind == UnitKind::MicIn || unit->kind == UnitKind::Recorder || unit->kind == UnitKind::Noise) && g_view != View::Chains) return;
     if(unit->kind==UnitKind::Delay || unit->kind==UnitKind::Chorus)return; // each has one dedicated shared dual-screen capture
     const int selected = module_inspector_selected(unit->kind);
     if (selected < 0 || selected >= unit->num_params) return;
     g_eng->capture_param_inspector(g_edit_chain, g_edit_slot, selected, frame.detail);
     if (!frame.detail.valid) return;
     frame.lens = false; // L is a lower overlay; keep the ordinary upper composition.
-    frame.lock = g_seq_lock_armed && g_seq_lock_chain == g_edit_chain &&
-        g_seq_lock_step >= 0 && g_seq_lock_step < SEQ_STEPS;
-    frame.lock_full = frame.lock && g_eng->pattern.steps[g_edit_chain][g_seq_lock_step].lock_count >= SEQ_LOCKS;
-    frame.edit = frame.lock ? seq_display_value(g_edit_slot, selected, frame.detail.base) : frame.detail.base;
-    if((unit->kind==UnitKind::Motor||unit->kind==UnitKind::Noise||unit->kind==UnitKind::Bitcrush||unit->kind==UnitKind::Strain||unit->kind==UnitKind::Ring||unit->kind==UnitKind::Fold) && frame.lock){
-        const int b=sequencer_edit_bank(),bank=b>=0&&b<NUM_PATTERNS?b:g_eng->active_pattern;
-        const auto& step=g_eng->sequence_pattern(bank).steps[g_edit_chain][g_seq_lock_step];
-        frame.lock_full=step.lock_count>=SEQ_LOCKS;
-        frame.edit=frame.detail.base;
-        for(int i=0;i<std::min(int(step.lock_count),SEQ_LOCKS);++i)
-            if(step.locks[i].slot==g_edit_slot&&step.locks[i].param==selected){frame.edit=step.locks[i].value;break;}
-    }
+    frame.edit = frame.detail.base;
     frame.mute = chain.mute;
     if(unit->kind==UnitKind::Osc) {
         const auto& osc=static_cast<const OscUnit&>(*unit);
@@ -687,11 +705,7 @@ void module_inspector_capture() {
     if(unit->kind==UnitKind::Noise) {
         const auto& noise=*static_cast<const NoiseUnit*>(unit);
         const auto noise_value=[&](int p){
-            if(frame.lock){const int b=sequencer_edit_bank(),bank=b>=0&&b<NUM_PATTERNS?b:g_eng->active_pattern;
-                const auto& step=g_eng->sequence_pattern(bank).steps[g_edit_chain][g_seq_lock_step];
-                for(int i=0;i<std::min(int(step.lock_count),SEQ_LOCKS);++i)
-                    if(step.locks[i].slot==g_edit_slot&&step.locks[i].param==p)return step.locks[i].value;}
-            return frame.lock?unit->params[p].base:noise.modern()?noise.control_value(p):unit->params[p].effective;
+            return noise.modern()?noise.control_value(p):unit->params[p].effective;
         };
         frame.noise_colour=noise_value(NoiseUnit::P_COLOUR);
         frame.noise_mode=noise_value(NoiseUnit::P_MODE);
@@ -703,26 +717,15 @@ void module_inspector_capture() {
         if(tilt.extended())frame.detail.effective=tilt.control_value(selected);
         for(int p=0;p<6;++p){
             frame.tilt_values[p]=p<unit->num_params?tilt.control_value(p):tilt_eq::TRIM_UNITY;
-            if(frame.lock&&p<unit->num_params){
-                frame.tilt_values[p]=unit->params[p].base;
-                const int b=sequencer_edit_bank(),bank=b>=0&&b<NUM_PATTERNS?b:g_eng->active_pattern;
-                const auto& step=g_eng->sequence_pattern(bank).steps[g_edit_chain][g_seq_lock_step];
-                for(int i=0;i<std::min(int(step.lock_count),SEQ_LOCKS);++i)
-                    if(step.locks[i].slot==g_edit_slot&&step.locks[i].param==p)frame.tilt_values[p]=step.locks[i].value;
-            }
         }
         frame.legacy_tilt_zero=!frame.modern_tilt && unit->params[TiltUnit::P_RANGE].effective==0;
         frame.legacy_tilt_base_zero=!frame.modern_tilt && unit->params[TiltUnit::P_RANGE].base==0;
-        frame.legacy_tilt_edit_zero=!frame.modern_tilt && (frame.lock?frame.tilt_values[TiltUnit::P_RANGE]:unit->params[TiltUnit::P_RANGE].base)==0;
+        frame.legacy_tilt_edit_zero=!frame.modern_tilt && unit->params[TiltUnit::P_RANGE].base==0;
     }
     if (unit->kind == UnitKind::Fold) {
         const auto& fold=*static_cast<const FoldUnit*>(unit);
         frame.detail.effective=fold.control_value(selected);
-        frame.fold_mode=frame.lock?unit->params[FoldUnit::P_MODE].base:fold.control_value(FoldUnit::P_MODE);
-        if(frame.lock){const int b=sequencer_edit_bank(),bank=b>=0&&b<NUM_PATTERNS?b:g_eng->active_pattern;
-            const auto& step=g_eng->sequence_pattern(bank).steps[g_edit_chain][g_seq_lock_step];
-            for(int i=0;i<std::min(int(step.lock_count),SEQ_LOCKS);++i)
-                if(step.locks[i].slot==g_edit_slot&&step.locks[i].param==FoldUnit::P_MODE){frame.fold_mode=step.locks[i].value;break;}}
+        frame.fold_mode=fold.control_value(FoldUnit::P_MODE);
     }
     if (unit->kind == UnitKind::Filter) {
         const auto& filter=*static_cast<const FilterUnit*>(unit);
@@ -768,7 +771,7 @@ void osc_inspector() {
     const bool shape=d.param==OscUnit::P_SHAPE;
     const bool legacy=shape&&!frame.osc_morph;
     const q15 shown=legacy?frame.edit:d.temp?d.control:frame.edit;
-    const char* label=legacy?"legacy":frame.lock?"edit lock":d.temp?"temporary":"base";
+    const char* label=legacy?"legacy":d.temp?"temporary":"base";
     char value[32],live[32],text[80];
     format(shown,value,sizeof value);
     format(d.effective,live,sizeof live);
@@ -831,7 +834,7 @@ void osc_inspector() {
             !d.mod_enabled?" / muted":d.clip_low||d.clip_high?" / range clamps":"");
     }
     ui::text(14,214,text,d.source==ModSource::None || !d.mod_enabled?m::ghost():m::spot());
-    const char* status=frame.lock_full?"lock bank full / existing locks editable":
+    const char* status=
         frame.bypassed[d.slot]?"bypassed":frame.mute?"chain muted":d.temp?"release l / restore stored base":
         frame.lens?"b / return to osc":legacy?"touch shape to enable morph":
         d.param==OscUnit::P_PW?"width acts on the pulse component":
@@ -848,7 +851,7 @@ void motor_inspector() {
     const bool word=source||d.param==MotorUnit::P_NOTE||d.param==MotorUnit::P_MODE;
     const q15 shown=d.temp?d.control:frame.edit;
     char value[24],live[24],text[80];format(shown,value,sizeof value);format(d.effective,live,sizeof live);
-    ui::text(14,module_heading::kDetailY,names[d.param],m::spot());right(386,module_heading::kDetailY,frame.lock?"edit lock":d.temp?"temporary":"base",m::ghost());
+    ui::text(14,module_heading::kDetailY,names[d.param],m::spot());right(386,module_heading::kDetailY,d.temp?"temporary":"base",m::ghost());
     if(word)m::heading(14,84,value,m::ink());
     else {
         int width=0;
@@ -885,7 +888,7 @@ void motor_inspector() {
         "post-resonator gain / native reset model", "core source / native reset model",
         "pulse/mix duty / saw inactive", "slave/master ratio / not tempo", "seeded target update rate",
         "absolute root note / arp passive", "free or note / arp passive"};
-    const char* status=frame.lock_full?"lock bank full / existing locks editable":
+    const char* status=
         frame.bypassed[d.slot]?"bypassed / model is not output audio":frame.mute?"chain muted / model is not output audio":
         d.temp?"release l / restore stored base":frame.lens?"b / return to motor":notes[d.param];
     ui::text(m::kLeft,m::kTextY,status,m::ghost());
@@ -893,6 +896,10 @@ void motor_inspector() {
 } // namespace
 
 bool module_inspector_draw_top() {
+    if (rot_focus_draw_top()) return true;
+    if (rule_focus_draw_top()) return true;
+    if (pent_focus_draw_top()) return true;
+    if (relic_focus_draw_top()) return true;
     if (paul_focus_draw_top()) return true;
     if (scratch_focus_draw_top()) return true;
     if (fold_focus_draw_top()) return true;
@@ -955,7 +962,7 @@ bool module_inspector_draw_top() {
     if(osc) { osc_inspector();return true; }
     if(UnitKind(d.kind)==UnitKind::Motor) { motor_inspector();return true; }
     ui::text(14, module_heading::kDetailY, title(UnitKind(d.kind), d.param), m::spot());
-    const char* hero_label = frame.lock ? "edit lock" : d.temp ? "temporary" : "base";
+    const char* hero_label = d.temp ? "temporary" : "base";
     ui::text(14, 64, hero_label, m::ghost());
     format(d.temp ? d.control : frame.edit, value, sizeof value,!d.temp); hero(value);
     format(d.base, value, sizeof value,2);
@@ -1026,7 +1033,7 @@ bool module_inspector_draw_top() {
         ui::text(14,217,text,m::ghost());
     } else if (tilt) {
         if(frame.lens)std::snprintf(text,sizeof text,"mod / b: return to tilt");
-        else if(!frame.modern_tilt)std::snprintf(text,sizeof text,(frame.lock?frame.legacy_tilt_edit_zero:frame.legacy_tilt_zero)?"legacy coefficient law / model, not audio":"legacy stepped shelves / model, not audio");
+        else if(!frame.modern_tilt)std::snprintf(text,sizeof text,frame.legacy_tilt_zero?"legacy coefficient law / model, not audio":"legacy stepped shelves / model, not audio");
         else if(d.param==TiltUnit::P_TRIM)std::snprintf(text,sizeof text,"linear eq / fixed scale / not captured audio");
         else {
             uint32_t low,high;tilt_eq::shelf_gains(frame.tilt_values[0],frame.tilt_values[4],true,low,high);
@@ -1034,22 +1041,22 @@ bool module_inspector_draw_top() {
         }
         ui::text(14,217,text,m::ghost());
     } else if (osc) {
-        ui::text(14,217,frame.lens?"mod / b: return to osc":frame.lock?
-            "lock draft / normalized reset model, not audio":"two-cycle reset model / fixed scale / not live pcm",m::ghost());
+        ui::text(14,217,frame.lens?"mod / b: return to osc":
+            "two-cycle reset model / fixed scale / not live pcm",m::ghost());
     } else if (gran) {
-        ui::text(14,217,frame.lens?"mod / b: return to gran":frame.lock?
-            "lock draft / waveform and heads remain actual":"solid: next start / hollow: stored / lines: grains",m::ghost());
+        ui::text(14,217,frame.lens?"mod / b: return to gran":
+            "solid: next start / hollow: stored / lines: grains",m::ghost());
     } else if (rec) {
         ui::text(14,217,recorder_focus_status(),m::ghost());
     } else if (mic) {
         ui::text(14,217,frame.lens?"mod / b: return to mic":
-            frame.lock?"lock draft does not replace raw input history":"input relief is before gain / cut / source mute",m::ghost());
+            "input relief is before gain / cut / source mute",m::ghost());
     } else if (strain) {
         ui::text(14,217,frame.lens?"mod / b: return to strain":
-            frame.lock?"lock reset 32ms reference / not live audio":"reset 32ms burst + silence / not live audio",m::ghost());
+            "reset 32ms burst + silence / not live audio",m::ghost());
     } else if (ring) {
         ui::text(14,217,frame.lens?"mod / b: return to ring":
-            frame.lock?"lock reset 32ms reference / not live audio":"reset 32ms reference / not live audio",m::ghost());
+            "reset 32ms reference / not live audio",m::ghost());
     } else if (UnitKind(d.kind)==UnitKind::Bitcrush) {
         ui::text(14,217,frame.lens?"mod / b: return to bit":"fixed triangle / reset-state model, not live audio",m::ghost());
     } else if (fold) {
@@ -1057,7 +1064,7 @@ bool module_inspector_draw_top() {
                           frame.fold_mode<16384?"fold > wrap":"wrap > diode";
         if(frame.lens)std::snprintf(text,sizeof text,"mod / b: return to fold");
         else if(frame.bypassed[d.slot])std::snprintf(text,sizeof text,"bypassed / dry reference, not captured audio");
-        else std::snprintf(text,sizeof text,"%s / %s test model, not audio",shape,frame.lock?"lock draft":frame.mute?"muted":"effective");
+        else std::snprintf(text,sizeof text,"%s / %s test model, not audio",shape,frame.mute?"muted":"effective");
         ui::text(14,217,text,m::ghost());
     } else if (filter) {
         static const char* modes[]={"low pass / removes upper frequencies", "high pass / removes lower frequencies",

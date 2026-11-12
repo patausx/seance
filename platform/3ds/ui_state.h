@@ -8,7 +8,7 @@ namespace seance::platform::ui3ds {
 enum class View : u8 { Chains, Sequencer, Performance, Sigils, Bounce, Patchbay };
 enum class Overlay : u8 { None, Picker, Editor, SampleBrowser, PatchBrowser, ConfirmDiscard };
 // UI gesture tokens only; never persisted. Pages with one capture reuse a single token.
-enum class Drag : u8 { None, ParamBase, PlaySpeed, PlayStart, PlayLength, PlayGain, PlayModDepth, PlaySliceSeam, GrainPosition, NoiseDensity, FmPitch, FmRatio, FmIndex, FmFeedback, FmDecay, FmGain, FmIndexFall, FmAttack, FmRatioFine, FmFeedbackFall, FmModDepth, MotorRpm, VcaGain, VcaAttack, VcaDecay, FilterCutoff, FilterResonance, FilterDrive, FilterMorph, FoldDrive, FoldTrim, FoldMode, FoldBias, FoldMix, ReverbSize, ChorusRate, ChorusDepth, ChorusMix, TiltBalance, TiltPivot, TiltDrive, TiltMix, TiltRange, TiltModDepth, RingFreq, RingDepth, RingFeedback, RingDiode, RingMix, RingFollow, GhostTone, GhostDecay, GhostSmear, GhostDrift, GhostFreeze, GhostMix, GhostFine, GhostRate, MicGain, RecLength, BitBits, BitRate, BitMix, BitJitter, BitDropout, BitDrift, BitComp, StrainParam, StrnPitch, PerformanceMorph, SigCanvas, SigRate, SigDepth, SigModDepth, OscShape, ShiftParam, BirdParam, FractParam, FractGrab, CompParam, MouthParam, ArpParam, GlitchParam, GlitchCell, InstParam, ScratchParam, PaulParam };
+enum class Drag : u8 { None, ParamBase, PlaySpeed, PlayStart, PlayLength, PlayGain, PlayModDepth, PlaySliceSeam, GrainPosition, NoiseDensity, FmPitch, FmRatio, FmIndex, FmFeedback, FmDecay, FmGain, FmIndexFall, FmAttack, FmRatioFine, FmFeedbackFall, FmModDepth, MotorRpm, VcaGain, VcaAttack, VcaDecay, FilterCutoff, FilterResonance, FilterDrive, FilterMorph, FoldDrive, FoldTrim, FoldMode, FoldBias, FoldMix, ReverbSize, ChorusRate, ChorusDepth, ChorusMix, TiltBalance, TiltPivot, TiltDrive, TiltMix, TiltRange, TiltModDepth, RingFreq, RingDepth, RingFeedback, RingDiode, RingMix, RingFollow, GhostTone, GhostDecay, GhostSmear, GhostDrift, GhostFreeze, GhostMix, GhostFine, GhostRate, MicGain, RecLength, BitBits, BitRate, BitMix, BitJitter, BitDropout, BitDrift, BitComp, StrainParam, StrnPitch, PerformanceMorph, SigCanvas, SigRate, SigDepth, SigModDepth, OscShape, ShiftParam, BirdParam, FractParam, FractGrab, CompParam, MouthParam, ArpParam, GlitchParam, GlitchCell, InstParam, ScratchParam, PaulParam, RelicParam, PentParam, RuleParam, RotParam };
 extern Engine* g_eng; extern platform::AudioOut* g_audio; extern bool g_has_dsp;
 extern bool g_mic_ok; extern q15 g_mic_peak;
 extern EngineUiSnapshot g_ui_snapshot;
@@ -21,9 +21,7 @@ extern const char *SAMPLE_DIR,*RECORDING_DIR,*SCREENSHOT_DIR; extern bool g_scre
 extern Unit* g_clip_unit; extern q15 g_sigil_undo[NUM_SIGILS][SIGIL_POINTS]; extern bool g_sigil_undo_valid[NUM_SIGILS]; extern q15 g_sigil_clip[SIGIL_POINTS]; extern bool g_sigil_clip_valid; extern bool g_sig_canvas_mutated;
 extern u32 g_ui_rng;
 extern u32 g_ui_frame;
-extern bool g_seq_lock_armed; extern int g_seq_lock_chain,g_seq_lock_step,g_seq_lock_flash;
-bool seq_record_lock(int slot,int param,q15 value);
-q15 seq_display_value(int slot,int param,q15 fallback);
+extern int g_seq_lock_flash; // sequencer "lock slots full" hint, frames remaining
 constexpr int CARD_W=50,CARD_H=40,CARD_X0=4,CARD_Y0=4,CARD_SX=52,CARD_SY=42;
 constexpr int PICK_X=30,PICK_Y=40,PICK_W=260,PICK_H=160;
 constexpr int TAB_X0=4,TAB_Y=8,TAB_W=24,TAB_H=24,TAB_SX=36;

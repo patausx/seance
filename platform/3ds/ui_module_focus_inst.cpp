@@ -34,7 +34,7 @@ enum Ink : uint8_t { Rail, Ghost, Solid, Accent };
 struct Stroke { uint8_t x0,y0,x1,y1,ink; };
 struct Frame {
     bool valid=false, bypass=false, mute=false, shadowed=false, gated=false;
-    bool lock=false, full=false, lens=false, queued=false, audible=false;
+    bool lens=false, queued=false, audible=false;
     uint8_t chain=0, slot=0, selected=I::P_RELEASE, instrument=0, hero=0, note=60;
     int8_t voice=-1;
     uint8_t kinds[UNITS_PER_CHAIN]={};
@@ -59,75 +59,43 @@ int selected=I::P_HARDNESS;
 bool envelope_page=false;
 int last_bank=0;
 bool blocked_frame=false;
-enum class Action : uint8_t { None, Previous, Next, Bypass, Back, Play, Mod, Remove, Bank, Model, Sound, Env };
+enum class Action : uint8_t { None, Previous, Next, Bypass, Back, Play, Mod, Bank, Model, Sound, Env };
 struct Gesture {
     Engine* engine=nullptr;
     uintptr_t unit=0;
-    int chain=-1,slot=-1,step=-1,bank=-1,lock_chain=-1,param=-1;
+    int chain=-1,slot=-1,param=-1;
     int x=0,y=0,x0=0,y0=0,w=0,h=0;
     q15 value=0,value2=0,instrument=0;
     View view=View::Chains;
     Action action=Action::None;
-    bool lock=false,bypass=false,env=false,surface=false;
+    bool bypass=false,env=false,surface=false;
 } gesture;
 static_assert(sizeof(Gesture)<=112,"small INST input identity/capture");
 int clamp(int v,int lo,int hi) {return std::max(lo,std::min(hi,v));}
 bool context() {
     return g_eng && g_audio && g_overlay==Overlay::Editor &&
-        (g_view==View::Chains || (g_view==View::Sequencer && g_seq_lock_armed)) &&
+        g_view==View::Chains &&
         g_edit_chain>=0 && g_edit_chain<NUM_CHAINS && g_edit_slot>=0 && g_edit_slot<UNITS_PER_CHAIN;
 }
-bool lock_context() {
-    return g_seq_lock_armed && g_seq_lock_chain==g_edit_chain &&
-        g_seq_lock_step>=0 && g_seq_lock_step<SEQ_STEPS;
-}
-int edit_bank() {
-    const int bank=sequencer_edit_bank();
-    return bank>=0 && bank<NUM_PATTERNS ? bank : g_eng->active_pattern;
-}
-// Explicit edit-bank lookup. Never let a queued audio bank replace the bank
-// whose step the user opened, and never use a playing step's effective value.
 q15 edit_value(const I& u,int p) {
-    if(lock_context()) {
-        const auto& step=g_eng->sequence_pattern(edit_bank()).steps[g_edit_chain][g_seq_lock_step];
-        for(int i=0;i<std::min(int(step.lock_count),SEQ_LOCKS);++i)
-            if(step.locks[i].slot==g_edit_slot && step.locks[i].param==p)return step.locks[i].value;
-    }
     return u.params[p].base;
 }
 void change(I& u,int p,q15 value) {
     if(edit_value(u,p)==value)return;
-    if(g_seq_lock_armed) {
-        if(!lock_context())return;
-        // Same bounded, guarded selected-bank write as the score controller.
-        // Engine::set_step_lock is deliberately active-bank-only.
-        auto& step=g_eng->sequence_pattern(edit_bank()).steps[g_edit_chain][g_seq_lock_step];
-        const int count=std::min(int(step.lock_count),SEQ_LOCKS);
-        int found=-1;
-        for(int i=0;i<count;++i)if(step.locks[i].slot==g_edit_slot && step.locks[i].param==p) {found=i;break;}
-        if(found>=0)step.locks[found].value=value;
-        else {
-            if(count>=SEQ_LOCKS) {g_seq_lock_flash=90;return;}
-            step.locks[count]={uint8_t(g_edit_slot),uint8_t(p),value};
-            step.lock_count=uint8_t(count+1);
-        }
-    } else u.params[p].base=value;
+    u.params[p].base=value;
     mark_project_mutated();
 }
 bool owns(const I& u) {
     return context() && gesture.unit==uintptr_t(&u) && gesture.engine==g_eng &&
         gesture.chain==g_edit_chain && gesture.slot==g_edit_slot && gesture.view==g_view &&
-        g_eng->chains[g_edit_chain].units[g_edit_slot]==&u && gesture.lock==g_seq_lock_armed &&
+        g_eng->chains[g_edit_chain].units[g_edit_slot]==&u &&
         gesture.bypass==u.bypass && gesture.env==envelope_page && (gesture.param==I::P_INSTRUMENT ||
-            gesture.instrument==edit_value(u,I::P_INSTRUMENT)) &&
-        (!gesture.lock || (lock_context() && gesture.step==g_seq_lock_step &&
-            gesture.lock_chain==g_seq_lock_chain && gesture.bank==edit_bank()));
+            gesture.instrument==edit_value(u,I::P_INSTRUMENT));
 }
 void start(I& u,int p,int tx,int ty,Action action=Action::None,int x=0,int y=0,int w=0,int h=0) {
     gesture={};gesture.engine=g_eng;gesture.unit=uintptr_t(&u);
     gesture.chain=g_edit_chain;gesture.slot=g_edit_slot;gesture.view=g_view;
-    gesture.lock=g_seq_lock_armed;gesture.lock_chain=g_seq_lock_chain;
-    gesture.step=g_seq_lock_step;gesture.bank=edit_bank();gesture.param=p;
+    gesture.param=p;
     gesture.x=tx;gesture.y=ty;gesture.value=p>=0?edit_value(u,p):0;
     gesture.instrument=edit_value(u,I::P_INSTRUMENT);gesture.bypass=u.bypass;gesture.env=envelope_page;
     gesture.action=action;gesture.x0=x;gesture.y0=y;gesture.w=w;gesture.h=h;
@@ -135,22 +103,7 @@ void start(I& u,int p,int tx,int ty,Action action=Action::None,int x=0,int y=0,i
     g_drag=Drag::InstParam;
 }
 bool model_edit(const I& u) {return I::instrument_index(edit_value(u,I::P_INSTRUMENT))==I::MODEL_INSTRUMENT;}
-// A two-axis move is atomic with respect to the four-lock capacity. No partial
-// X mutation when adding Y would overflow, and no playing-bank redirection.
 void change_surface(I& u,q15 position,q15 hardness) {
-    if(lock_context()) {
-        const auto& step=g_eng->sequence_pattern(edit_bank()).steps[g_edit_chain][g_seq_lock_step];
-        const int count=std::min(int(step.lock_count),SEQ_LOCKS);
-        int needed=0;
-        for(const auto p:{I::P_POSITION,I::P_HARDNESS}) {
-            const q15 value=p==I::P_POSITION?position:hardness;
-            if(edit_value(u,p)==value)continue;
-            bool found=false;
-            for(int i=0;i<count;++i)if(step.locks[i].slot==g_edit_slot && step.locks[i].param==p)found=true;
-            if(!found)++needed;
-        }
-        if(count+needed>SEQ_LOCKS) {g_seq_lock_flash=90;return;}
-    }
     change(u,I::P_POSITION,position);change(u,I::P_HARDNESS,hardness);
 }
 struct ModelField {int param,x,y,width;};
@@ -316,24 +269,21 @@ bool inst_focus_touch_body(I& u,int tx,int ty) {
     platform::AudioOut::Guard guard(*g_audio);
     inst_focus_release();
     if(g_eng->chains[g_edit_chain].units[g_edit_slot]!=&u)return false;
-    if(g_seq_lock_armed && !lock_context())return true;
     const auto button=[&](Action a,int x,int y,int w,int h,int p=-1){
         if(!hit(tx,ty,x,y,w,h))return false;
         start(u,p,tx,ty,a,x,y,w,h);return true;
     };
     if(hit(tx,ty,266,5,48,31)) {
-        if(!g_seq_lock_armed)button(Action::Bypass,266,5,48,31);
+        button(Action::Bypass,266,5,48,31);
         return true;
     }
     if(button(Action::Bank,12,39,42,18,I::P_INSTRUMENT) ||
        button(Action::Model,54,39,60,18,I::P_INSTRUMENT))return true;
     if(model_edit(u)) {
         if(button(Action::Sound,196,39,52,18) || button(Action::Env,266,39,44,18))return true;
-        if(lock_context() && button(Action::Remove,116,58,88,30,I::P_INSTRUMENT))return true;
         const auto field_touch=[&](const ModelField& f) {
             if(!hit(tx,ty,f.x-4,f.y-4,f.width+8,f.width<100?38:30))return false;
             selected=f.param;
-            if(lock_context() && button(Action::Remove,f.x-4,f.y-4,54,14,f.param))return true;
             start(u,f.param,tx,ty);return true;
         };
         if(envelope_page) {for(const auto& f:env_fields)if(field_touch(f))return true;}
@@ -343,7 +293,6 @@ bool inst_focus_touch_body(I& u,int tx,int ty) {
                 const int x=p==I::P_HARDNESS?12:172;
                 if(hit(tx,ty,x,120,136,15)) {
                     selected=p;
-                    if(lock_context() && button(Action::Remove,x,120,62,14,p))return true;
                     start(u,p,tx,ty);return true;
                 }
             }
@@ -353,24 +302,21 @@ bool inst_focus_touch_body(I& u,int tx,int ty) {
             }
         }
         if(button(Action::Back,8,222,80,18) || button(Action::Play,112,222,90,18))return true;
-        if(!g_seq_lock_armed)button(Action::Mod,218,222,96,18);
+        button(Action::Mod,218,222,96,18);
         return true;
     }
     if(button(Action::Previous,8,58,28,38,I::P_INSTRUMENT) ||
        button(Action::Next,280,58,32,38,I::P_INSTRUMENT)) {selected=I::P_INSTRUMENT;return true;}
     if(hit(tx,ty,36,58,244,38)) {selected=I::P_INSTRUMENT;start(u,selected,tx,ty);return true;}
-    // Tapping a label removes only this parameter's stored lock, on real lift.
-    if(lock_context() && button(Action::Remove,12,94,74,14,I::P_INSTRUMENT))return true;
     for(int i=0;i<6;++i) {
         const int p=i+1,x=16+(i%2)*152,y=108+(i/2)*38;
         if(!hit(tx,ty,x-4,y-4,142,35))continue;
         selected=p;
-        if(lock_context() && button(Action::Remove,x-4,y-4,56,14,p))return true;
         if(p==I::P_LENGTH && I::instrument_index(edit_value(u,I::P_INSTRUMENT))==5)return true;
         start(u,p,tx,ty);return true;
     }
     if(button(Action::Back,8,222,80,18) || button(Action::Play,112,222,90,18))return true;
-    if(!g_seq_lock_armed)button(Action::Mod,218,222,96,18);
+    button(Action::Mod,218,222,96,18);
     return true;
 }
 void inst_focus_drag(I& u,int tx,int ty) {
@@ -425,20 +371,17 @@ void inst_focus_touch_release() {
                 } else if(action==Action::Sound || action==Action::Env) {
                     envelope_page=action==Action::Env;
                     selected=envelope_page?I::P_DECAY:I::P_HARDNESS;
-                } else if(action==Action::Bypass && !g_seq_lock_armed) {
+                } else if(action==Action::Bypass) {
                     u.bypass=!u.bypass;mark_project_mutated();
-                } else if(action==Action::Remove && lock_context()) {
-                    if(g_eng->remove_step_lock(g_edit_chain,g_seq_lock_step,g_edit_slot,gesture.param,edit_bank()))mark_project_mutated();
                 } else if(action==Action::Play && !u.bypass && !g_eng->chains[g_edit_chain].mute) {
-                    if(lock_context())g_eng->audition_sequence_step(g_edit_chain,g_seq_lock_step,edit_bank());
-                    else g_eng->request_chain_trigger(g_edit_chain,g_eng->launch_quantize);
+                    g_eng->request_chain_trigger(g_edit_chain,g_eng->launch_quantize);
                 }
             }
         }
     }
     inst_focus_release();
     if(action==Action::Back) {
-        g_overlay=Overlay::None;g_seq_lock_armed=false;g_seq_lock_flash=0;g_drag=Drag::None;
+        g_overlay=Overlay::None;g_seq_lock_flash=0;g_drag=Drag::None;
     } else if(action==Action::Mod) {
         // Deliberately outside our guard; the shared controller owns its own guard.
         param_lens_touch_down(250,232);
@@ -456,8 +399,8 @@ void inst_focus_capture() {
         if(!unit || unit->kind!=UnitKind::Inst) {inst_scope::recorder.select(nullptr);inst_focus_release();return;}
         const auto& u=*static_cast<const I*>(unit);
         if(gesture.unit && (!owns(u) || param_lens_is_open() || g_drag!=Drag::InstParam))inst_focus_release();
-        frame.valid=true;frame.bypass=u.bypass;frame.mute=chain.mute;frame.lock=lock_context();
-        frame.full=frame.lock && g_seq_lock_flash>0;frame.lens=false;
+        frame.valid=true;frame.bypass=u.bypass;frame.mute=chain.mute;
+        frame.lens=false;
         frame.chain=uint8_t(g_edit_chain);frame.slot=uint8_t(g_edit_slot);frame.selected=uint8_t(selected);
         frame.queued=(g_eng->pending_triggers&(1u<<g_edit_chain))!=0;
         frame.gated=u.arp_voice.owner>=0 && !u.arp_voice.gate;
@@ -563,7 +506,6 @@ void inst_focus_draw(const I&) {
     source_tabs();
     if(frame.instrument==I::MODEL_INSTRUMENT) {
         inst_model_heading::draw_vibes(160-inst_model_heading::VIBES_W/2,62,m::spot());
-        if(frame.full)ui::text(16,82,"lock full / 4 per step",m::ghost());
         if(frame.env) {
             for(const auto& f:env_fields)model_field(f);
             ui::text(16,163,"amp envelope",m::ghost());
@@ -572,8 +514,8 @@ void inst_focus_draw(const I&) {
             model_surface();
         }
         ui::text(m::kLeft,m::kTextY,"b back",m::ghost());
-        ui::text(124,m::kTextY,frame.lock?"listen":frame.queued?"queued":"a play",m::ghost());
-        right(m::right_edge(320),m::kTextY,frame.lock?"lock edit":"l: mod >",m::ghost());
+        ui::text(124,m::kTextY,frame.queued?"queued":"a play",m::ghost());
+        right(m::right_edge(320),m::kTextY,"l: mod >",m::ghost());
         return;
     }
     ui::text(16,98,"instrument",frame.selected==I::P_INSTRUMENT?m::spot():m::ghost());
@@ -584,11 +526,9 @@ void inst_focus_draw(const I&) {
     const int next=I::instrument_index(frame.routes[I::P_INSTRUMENT].target);
     if(next!=frame.instrument) {std::snprintf(text,sizeof text,"next %s",I::instrument_name(next));right(274,87,text,m::ghost());}
     for(int i=0;i<6;++i)field(i);
-    if(frame.full)ui::text(16,215,"lock full / 4 per step",m::ghost());
-    else if(frame.lock)ui::text(16,215,"label: remove lock",m::ghost());
     ui::text(m::kLeft,m::kTextY,"b back",m::ghost());
-    ui::text(124,m::kTextY,frame.lock?"listen":frame.queued?"queued":"a play",m::ghost());
-    right(m::right_edge(320),m::kTextY,frame.lock?"lock edit":"l: mod >",m::ghost());
+    ui::text(124,m::kTextY,frame.queued?"queued":"a play",m::ghost());
+    right(m::right_edge(320),m::kTextY,"l: mod >",m::ghost());
 }
 bool inst_focus_draw_top() {
     if(!frame.valid)return false;
@@ -600,7 +540,7 @@ bool inst_focus_draw_top() {
     ui::text(16,139,frame.status,m::ghost());
     const int p=frame.selected;
     ui::text(16,165,p==I::P_NOTE && frame.instrument==5?"sound":p==I::P_TONE && frame.instrument!=I::MODEL_INSTRUMENT?"tone":NAMES[p],m::spot());
-    right(120,165,frame.lock?"lock":"edit",m::ghost());
+    right(120,165,"edit",m::ghost());
     if(p==I::P_LENGTH && frame.instrument==5)ui::text(16,193,"one-shot",m::ghost());
     else {
         const auto number=inspector_gothic::draw_numeric(16,213,frame.values[p],m::ink(),m::spot());

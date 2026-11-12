@@ -21,7 +21,7 @@ namespace m=editor_style;
 using F=FmUnit;
 struct Frame {
     uint16_t mod_links=0;
-    bool valid=false,bypass=false,mute=false,lock=false,full=false,drone=false;
+    bool valid=false,bypass=false,mute=false,drone=false;
     bool phase_reset=false,alias_safe=false,telemetry=false,audible=false,extended=false,harmonic=false;
     F::Wave carrier_wave=F::Wave::Sine,mod_wave=F::Wave::Sine;
     int8_t chain=0,slot=0,selected=F::P_INDEX,page=0;
@@ -57,9 +57,8 @@ constexpr int wave_x[]={84,144,204,274};
 bool harmonic_edit=false;
 
 int selected=F::P_INDEX,page=0,drag_param=-1,origin_x=0,origin_last_x=0,origin_chain=-1,origin_slot=-1;
-int origin_step=-1,origin_lock_chain=-1,origin_bank=-1,origin_page=-1;
+int origin_bank=-1,origin_page=-1;
 Engine* origin_engine=nullptr;
-bool origin_locked=false;
 View origin_view=View::Chains;
 uintptr_t origin_unit=0;
 q15 origin_value=0;
@@ -67,45 +66,29 @@ q15 origin_value=0;
 int clamp_uni(int v){return std::max(0,std::min(32767,v));}
 bool inside(int px,int py,int x,int y,int w,int h){return px>=x&&px<x+w&&py>=y&&py<y+h;}
 bool capture_context(){return g_eng&&g_audio&&g_overlay==Overlay::Editor&&
-    (g_view==View::Chains||(g_view==View::Sequencer&&g_seq_lock_armed))&&
+    g_view==View::Chains&&
     g_edit_chain>=0&&g_edit_chain<NUM_CHAINS&&g_edit_slot>=0&&g_edit_slot<UNITS_PER_CHAIN;}
 bool context(){return !param_lens_is_open() && capture_context();}
-bool lock_context(){return g_seq_lock_armed&&g_seq_lock_chain==g_edit_chain&&g_seq_lock_step>=0&&g_seq_lock_step<SEQ_STEPS;}
 bool motion_param(int p){return p==F::P_ATTACK||p==F::P_DECAY||p==F::P_INDEX_FALL||p==F::P_FEEDBACK_FALL||p==F::P_PITCH_ENV||p==F::P_PITCH_TIME;}
 bool dormant(const F&u,int p){return (u.drone&&motion_param(p))||p>=u.num_params;}
 int page_for(int p){return motion_param(p)?1:0;}
 bool bipolar(int p){return p==F::P_RATIO_FINE||p==F::P_PITCH_ENV;}
 q15 harmonic_value(int raw){
-    // Editing aid only: never quantizes existing values, fine, locks or Sigils on its own.
+    // Editing aid only: never quantizes existing values, fine or Sigils on its own.
     constexpr int ratios[]={2048,4096,6144,8192,12288,16384,20480,24576,32768};
     int best=0,distance=65536;
     for(int q12:ratios){const int v=((q12-2048)*32767+30719)/30720;const int d=std::abs(raw-v);if(d<distance){best=v;distance=d;}}
     return q15(best);
 }
-int edit_bank(){const int b=sequencer_edit_bank();return b>=0&&b<NUM_PATTERNS?b:g_eng->active_pattern;}
-int gesture_bank(){return g_seq_lock_armed?edit_bank():g_eng->active_pattern;}
 q15 edit_value(const F&u,int p){
-    if(lock_context()){
-        const auto& step=g_eng->sequence_pattern(edit_bank()).steps[g_edit_chain][g_seq_lock_step];
-        for(int i=0;i<std::min(int(step.lock_count),SEQ_LOCKS);++i)
-            if(step.locks[i].slot==g_edit_slot&&step.locks[i].param==p)return step.locks[i].value;
-    }
     return u.params[p].base;
 }
 bool owns(const F&u){return origin_engine==g_eng&&origin_unit==(uintptr_t)&u&&origin_chain==g_edit_chain&&origin_slot==g_edit_slot&&origin_view==g_view&&
-    origin_bank==gesture_bank()&&origin_page==page&&drag_param==selected&&
-    g_eng->chains[g_edit_chain].units[g_edit_slot]==&u&&origin_locked==g_seq_lock_armed&&
-    (!origin_locked||(lock_context()&&origin_step==g_seq_lock_step&&origin_lock_chain==g_seq_lock_chain));}
+    origin_bank==g_eng->active_pattern&&origin_page==page&&drag_param==selected&&
+    g_eng->chains[g_edit_chain].units[g_edit_slot]==&u;}
 void set_value(F&u,int p,q15 value){
-    if((g_seq_lock_armed&&!lock_context())||edit_value(u,p)==value)return;
-    if(g_seq_lock_armed){
-        auto& step=g_eng->sequence_pattern(edit_bank()).steps[g_edit_chain][g_seq_lock_step];
-        const int count=std::min(int(step.lock_count),SEQ_LOCKS);int found=-1;
-        for(int i=0;i<count;++i)if(step.locks[i].slot==g_edit_slot&&step.locks[i].param==p){found=i;break;}
-        if(found>=0)step.locks[found].value=value;
-        else {if(count>=SEQ_LOCKS){g_seq_lock_flash=90;return;}
-            step.locks[count]={uint8_t(g_edit_slot),uint8_t(p),value};step.lock_count=uint8_t(count+1);}
-    }else u.params[p].base=value;
+    if(edit_value(u,p)==value)return;
+    u.params[p].base=value;
     mark_project_mutated();
 }
 void right(int x,int y,const char*text,u32 color){ui::text(x-ui::text_w(text),y,text,color);}
@@ -114,16 +97,9 @@ Drag drag_kind(int p){switch(p){case F::P_PITCH:return Drag::FmPitch;case F::P_R
     case F::P_FEEDBACK:return Drag::FmFeedback;case F::P_DECAY:return Drag::FmDecay;case F::P_GAIN:return Drag::FmGain;
     case F::P_INDEX_FALL:return Drag::FmIndexFall;case F::P_ATTACK:return Drag::FmAttack;case F::P_RATIO_FINE:return Drag::FmRatioFine;
     case F::P_FEEDBACK_FALL:return Drag::FmFeedbackFall;default:return Drag::FmModDepth;}}
-bool name_touch(const Control&c,int tx,int ty){
-    if(!inside(tx,ty,c.x+3,c.y+4,c.w-6,16))return false;
-    selected=c.param;
-    page=page_for(selected);
-    if(lock_context()&&g_eng->remove_step_lock(g_seq_lock_chain,g_seq_lock_step,g_edit_slot,selected,edit_bank()))mark_project_mutated();
-    return true;
-}
 void begin(F&u,const Control&c,int tx){drag_param=c.param;origin_x=origin_last_x=tx;origin_value=edit_value(u,c.param);
-    origin_unit=(uintptr_t)&u;origin_chain=g_edit_chain;origin_slot=g_edit_slot;origin_view=g_view;origin_locked=g_seq_lock_armed;
-    origin_step=g_seq_lock_step;origin_lock_chain=g_seq_lock_chain;origin_engine=g_eng;origin_bank=gesture_bank();origin_page=page;
+    origin_unit=(uintptr_t)&u;origin_chain=g_edit_chain;origin_slot=g_edit_slot;origin_view=g_view;
+    origin_engine=g_eng;origin_bank=g_eng->active_pattern;origin_page=page;
     g_drag=drag_kind(c.param);g_drag_param=c.param;}
 
 uint32_t pitch_increment(q15 pitch){int note100=2400+int((int64_t(uint16_t(pitch))*7200)>>15);note100=((note100+50)/100)*100;
@@ -195,7 +171,7 @@ void draw_header(){
 void operators(){
     if(!frame.extended){
         ui::text(14,59,"legacy sound preserved",m::ink());
-        ui::text(14,82,"enable extended >",frame.lock?m::ghost():m::spot());
+        ui::text(14,82,"enable extended >",m::spot());
         ui::text(14,103,"adds shapes + pitch envelope",m::ghost());
         ui::text(14,119,"existing ten controls stay intact",m::ghost());
     }else{
@@ -266,18 +242,16 @@ bool fm_focus_touch_body(F&u,int tx,int ty){if(!context()){fm_focus_release();re
     if(g_eng->chains[g_edit_chain].units[g_edit_slot]!=&u)return false;
     fm_focus_page(u);
     if(ty<25){
-        if(!g_seq_lock_armed&&inside(tx,ty,126,0,48,25)){u.drone=!u.drone;mark_project_mutated();}
-        else if(!g_seq_lock_armed&&inside(tx,ty,242,0,44,25)){u.bypass=!u.bypass;mark_project_mutated();}
+        if(inside(tx,ty,126,0,48,25)){u.drone=!u.drone;mark_project_mutated();}
+        else if(inside(tx,ty,242,0,44,25)){u.bypass=!u.bypass;mark_project_mutated();}
         return true;
     }
     if(ty<49){if(tx>=8&&tx<312){page=tx<108?0:tx<214?1:2;
         if(page<2&&page_for(selected)!=page)selected=page==1?F::P_DECAY:F::P_INDEX;
     }return true;}
-    if(g_seq_lock_armed&&!lock_context())return true;
     if(page==2){
         if(inside(tx,ty,116,151,77,24)){harmonic_edit=false;return true;}
         if(inside(tx,ty,196,151,112,24)){harmonic_edit=true;return true;}
-        if(g_seq_lock_armed)return true;
         if(!u.extended&&inside(tx,ty,8,74,204,23)){
             // Explicit upgrade only. Stale old ParamBank slots never become new routes.
             F defaults;u.params[F::P_PITCH_ENV]=defaults.params[F::P_PITCH_ENV];u.params[F::P_PITCH_TIME]=defaults.params[F::P_PITCH_TIME];
@@ -294,7 +268,6 @@ bool fm_focus_touch_body(F&u,int tx,int ty){if(!context()){fm_focus_release();re
     if(page==0)touch(voice_controls);else touch(motion_controls);
     if(!found||found->param>=u.num_params)return true;
     selected=found->param;
-    if(lock_context()&&name_touch(*found,tx,ty))return true;
     if(dormant(u,selected))return true;
     begin(u,*found,tx);
     return true;
@@ -320,10 +293,12 @@ void fm_focus_drag(F&u,int tx,int){
     }
     set_value(u,drag_param,next);
 }
-void fm_focus_capture(){frame={};if(!capture_context()){fm_focus_release();return;}{
+// Another module's editor: no guard entry. Chain slots are written only by this UI thread.
+void fm_focus_capture(){frame={};if(!capture_context()){fm_focus_release();return;}
+    {const Unit*unit=g_eng->chains[g_edit_chain].units[g_edit_slot];if(!unit||unit->kind!=UnitKind::Fm){fm_focus_release();return;}}{
         platform::AudioOut::Guard guard(*g_audio);const auto&chain=g_eng->chains[g_edit_chain];const Unit*unit=chain.units[g_edit_slot];
         if(!unit||unit->kind!=UnitKind::Fm){fm_focus_release();return;}const auto&u=*static_cast<const F*>(unit);if(drag_param>=0&&!owns(u))fm_focus_release();
-        frame.valid=true;frame.bypass=u.bypass;frame.mute=chain.mute;frame.lock=lock_context();frame.full=frame.lock&&g_seq_lock_flash>0;
+        frame.valid=true;frame.bypass=u.bypass;frame.mute=chain.mute;
         frame.extended=u.extended;frame.carrier_wave=u.carrier_wave;frame.mod_wave=u.mod_wave;frame.harmonic=harmonic_edit;
         frame.mod_links=focus_mod_links(u);
         fm_focus_page(u);
@@ -339,8 +314,7 @@ void fm_focus_draw(const F&){
     if(frame.page==0){for(const auto&c:voice_controls)draw_control(c);ui::text(14,213,frame.harmonic?"ratio edit: harmonic":"ratio edit: free",m::ghost());}
     else if(frame.page==1){for(const auto&c:motion_controls)draw_control(c);}
     else operators();
-    if(frame.lock)m::footer(320,frame.full?"lock full":"p-lock / name: remove","b back");
-    else m::footer(320,frame.mute?"chain muted":frame.bypass?"bypassed":frame.page==1?(frame.drone?"drone / envelopes held":"motion"):frame.page==2?"operators":"voice","l: mod >");
+    m::footer(320,frame.mute?"chain muted":frame.bypass?"bypassed":frame.page==1?(frame.drone?"drone / envelopes held":"motion"):frame.page==2?"operators":"voice","l: mod >");
 }
 
 } // namespace seance::platform::ui3ds

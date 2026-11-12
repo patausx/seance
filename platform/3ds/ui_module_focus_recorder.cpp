@@ -29,8 +29,8 @@ struct Token {
     int chain=-1,slot=-1,sample=-1;uint64_t session=0,state=0;uint32_t take=0,generation=0;
 };
 struct Gesture {
-    Token owner{};Action action=Action::None;geo::Box box{};int x=0,step=-1,bank=-1,lock_chain=-1;
-    View view=View::Chains;bool lock=false,setup=false,drag=false;q15 value=0;
+    Token owner{};Action action=Action::None;geo::Box box{};int x=0;
+    View view=View::Chains;bool setup=false,drag=false;q15 value=0;
 } gesture;
 struct Choice {
     Modal kind=Modal::None;Token owner{};int target=-1,pressed=-1;bool touching=false;
@@ -38,10 +38,11 @@ struct Choice {
 } choice;
 struct Visit {Token rec{};uintptr_t mic=0;int slot=-1;bool visible=false,pressed=false;} visit;
 struct Frame {
-    bool valid=false,lens=false,lock=false,full=false,setup=false,active=false,paused=false,pending=false;
+    bool valid=false,lens=false,setup=false,active=false,paused=false,pending=false;
     bool unsaved=false,wave=false,bypass=false,mute=false,dirty=false,return_mic=false;
     uint16_t links=0;int chain=0,slot=0,sample=0,selected=C::P_LEN,mic=-1,target_chain=-1;
     q15 edit[3]={},live[3]={};uint32_t frames=0,wave_frames=0,target=0;int8_t wave_y[POINTS]={};uint8_t gain=1;
+    uint8_t channels=1;
     Modal modal=Modal::None;Command command=Command::None;LaunchQuantize clock=LaunchQuantize::Immediate;
     char duration[16]={},timer[16]={},length[16]={},status[64]={},notice[64]={},destination[64]={},timing[48]={};
 } frame;
@@ -50,23 +51,22 @@ bool setup=false,quarantine=false,blocked_frame=false;int selected=C::P_LEN;
 Engine* page_engine=nullptr;uintptr_t page_unit=0;int page_chain=-1,page_slot=-1;
 const char* notice=nullptr;
 bool context(){return g_eng&&g_audio&&g_overlay==Overlay::Editor&&
-    (g_view==View::Chains||(g_view==View::Sequencer&&g_seq_lock_armed))&&
+    g_view==View::Chains&&
     g_edit_chain>=0&&g_edit_chain<NUM_CHAINS&&g_edit_slot>=0&&g_edit_slot<UNITS_PER_CHAIN;}
 C* current(){if(!context())return nullptr;Unit*u=g_eng->chains[g_edit_chain].units[g_edit_slot];return u&&u->kind==UnitKind::Recorder?static_cast<C*>(u):nullptr;}
-bool locked(){return g_seq_lock_armed&&g_seq_lock_chain==g_edit_chain&&g_seq_lock_step>=0&&g_seq_lock_step<SEQ_STEPS;}
 bool pending(){return g_eng->recorder_record_pending(g_edit_chain,g_edit_slot)||g_eng->chain_record_pending(g_edit_chain);}
 bool busy(const C&u){return u.writer_open()||pending();}
 void sync_clip(){g_eng->set_external_sample_slot(sample_ownership::unit_slot(g_clip_unit));}
 Token token(const C&u){return {g_eng,g_audio,uintptr_t(&u),g_edit_chain,g_edit_slot,u.sample_slot,u.session_token(),u.state_token(),u.take_generation(),Bank::instance().generation(u.sample_slot)};}
-C* owner(const Token&t,bool ordinary=true){C*u=current();if(!u||t.engine!=g_eng||t.audio!=g_audio||t.unit!=uintptr_t(u)||
+C* owner(const Token&t){C*u=current();if(!u||t.engine!=g_eng||t.audio!=g_audio||t.unit!=uintptr_t(u)||
     t.chain!=g_edit_chain||t.slot!=g_edit_slot||t.sample!=u->sample_slot||t.session!=u->session_token()||
     t.state!=u->state_token()||t.take!=u->take_generation()||t.generation!=Bank::instance().generation(u->sample_slot)||
-    param_lens_is_open()||(ordinary&&g_seq_lock_armed))return nullptr;
+    param_lens_is_open())return nullptr;
     return u;}
 void page_context(const C&u){if(page_engine!=g_eng||page_unit!=uintptr_t(&u)||page_chain!=g_edit_chain||page_slot!=g_edit_slot){
     setup=false;notice=nullptr;page_engine=g_eng;page_unit=uintptr_t(&u);page_chain=g_edit_chain;page_slot=g_edit_slot;}}
-q15 edit_value(const C&u,int p){return locked()?seq_display_value(g_edit_slot,p,u.params[p].base):u.params[p].base;}
-void change(C&u,int p,q15 v){if(v==edit_value(u,p))return;if(g_seq_lock_armed)seq_record_lock(g_edit_slot,p,v);else{u.params[p].base=v;mark_project_mutated();}}
+q15 edit_value(const C&u,int p){return u.params[p].base;}
+void change(C&u,int p,q15 v){if(v==edit_value(u,p))return;u.params[p].base=v;mark_project_mutated();}
 void result(Result r){module_focus_show_sample_result(r);if(r==Result::Ok)notice=nullptr;}
 void modal(Modal kind,C&u,int target=-1,UnitKind dest=UnitKind::Empty){choice={};choice.kind=kind;choice.owner=token(u);choice.target=target;choice.destination=dest;gesture={};g_drag=Drag::None;notice=nullptr;}
 int input_mic(int chain,int rec_slot){
@@ -79,10 +79,14 @@ int input_mic(int chain,int rec_slot){
     return mic;
 }
 void open_editor(int chain,int slot){editor_cancel_input();param_lens_cancel();g_edit_chain=g_sel_chain=chain;g_edit_slot=g_sel_slot=slot;
-    g_overlay=Overlay::Editor;g_view=View::Chains;g_seq_lock_armed=false;g_drag=Drag::None;g_last_px=-1;g_smooth_active=false;}
+    g_overlay=Overlay::Editor;g_view=View::Chains;g_drag=Drag::None;g_last_px=-1;g_smooth_active=false;}
+// UI-only half of valid_visit(): false means the visit is invalid without reading the engine.
+bool visit_reachable(){
+    return context()&&!param_lens_is_open()&&visit.rec.engine==g_eng&&visit.rec.audio==g_audio&&
+       g_edit_chain==visit.rec.chain&&g_edit_slot==visit.slot&&visit.rec.slot>=0;
+}
 bool valid_visit(){
-    if(!context()||g_seq_lock_armed||param_lens_is_open()||visit.rec.engine!=g_eng||visit.rec.audio!=g_audio||
-       g_edit_chain!=visit.rec.chain||g_edit_slot!=visit.slot||visit.rec.slot<0)return false;
+    if(!visit_reachable())return false;
     Unit*mic=g_eng->chains[g_edit_chain].units[g_edit_slot];Unit*rec=g_eng->chains[g_edit_chain].units[visit.rec.slot];
     return mic&&mic->kind==UnitKind::MicIn&&uintptr_t(mic)==visit.mic&&rec&&rec->kind==UnitKind::Recorder&&
         uintptr_t(rec)==visit.rec.unit&&static_cast<C*>(rec)->session_token()==visit.rec.session&&input_mic(g_edit_chain,visit.rec.slot)==visit.slot;
@@ -102,12 +106,12 @@ bool destination_current(const Destination&d){Destination now;return destination
 Result send_to(UnitKind kind,int target){
     Token source;Destination dest;bool save=false;
     {platform::AudioOut::Guard guard(*g_audio);C*u=current();
-        if(!u||g_seq_lock_armed||param_lens_is_open()||busy(*u)||!u->recorded_frames()||g_eng->play_editor_busy())return Result::Busy;
+        if(!u||param_lens_is_open()||busy(*u)||!u->recorded_frames()||g_eng->play_editor_busy())return Result::Busy;
         if(!destination(target,dest))return Result::NoFreeSlot;
         source=token(*u);save=u->take_needs_save();}
     Unit*created=make_unit(kind);if(!created)return Result::MemoryBudget;
     if(kind==UnitKind::SamplePlayer){auto*p=static_cast<PlayUnit*>(created);p->sample_slot=source.sample;p->set_pitch_mode(PlayUnit::PitchMode::Normal);}
-    else static_cast<GrainUnit*>(created)->sample_slot=source.sample;
+    else{auto*g=static_cast<GrainUnit*>(created);g->sample_slot=source.sample;g->apply_new_card_start();}
     if(save){export_current_sample();if(!g_export_ok){delete created;notice="wav save failed / take kept";return Result::Busy;}}
     int inserted=-1;
     {platform::AudioOut::Guard guard(*g_audio);C*u=owner(source);if(u&&!busy(*u)&&!u->take_needs_save()&&!g_eng->play_editor_busy()&&destination_current(dest)){
@@ -118,7 +122,7 @@ Result send_to(UnitKind kind,int target){
 }
 Result fresh(C&rec,bool restart,bool discard,int target=-1){
     RecWorkspacePlan plan;Token source;Result r;
-    {platform::AudioOut::Guard guard(*g_audio);if(current()!=&rec||g_seq_lock_armed||param_lens_is_open()||busy(rec))return Result::Busy;source=token(rec);sync_clip();
+    {platform::AudioOut::Guard guard(*g_audio);if(current()!=&rec||param_lens_is_open()||busy(rec))return Result::Busy;source=token(rec);sync_clip();
         r=g_eng->plan_recorder(rec,true,plan,target);plan.discard_unsaved=discard;}
     if(r==Result::Ok)r=Engine::stage_recorder(plan);
     if(r==Result::Ok){platform::AudioOut::Guard guard(*g_audio);if(!owner(source)||busy(rec))return Result::Busy;sync_clip();
@@ -157,13 +161,13 @@ RecorderFocusAction recorder_focus_action_at(int x,int y){
 Result recorder_focus_send_recording_to(UnitKind destination_kind){
     if(destination_kind!=UnitKind::SamplePlayer&&destination_kind!=UnitKind::Grain)return Result::InvalidSlot;
     int target=-1;
-    {platform::AudioOut::Guard guard(*g_audio);C*u=current();if(!u||g_seq_lock_armed||busy(*u)||!u->recorded_frames())return Result::Busy;
+    {platform::AudioOut::Guard guard(*g_audio);C*u=current();if(!u||busy(*u)||!u->recorded_frames())return Result::Busy;
         if(same_chain_safe())target=g_edit_chain;else{modal(Modal::Destination,*u,empty_destination(),destination_kind);return Result::Ok;}}
     return send_to(destination_kind,target);
 }
 void recorder_focus_command(C&rec,Action a){
     bool open=false,waiting=false,unsaved=false,paused=false;uint32_t frames=0;int sample=0;
-    {platform::AudioOut::Guard guard(*g_audio);if(current()!=&rec||g_seq_lock_armed||param_lens_is_open())return;
+    {platform::AudioOut::Guard guard(*g_audio);if(current()!=&rec||param_lens_is_open())return;
         open=rec.writer_open();waiting=pending();unsaved=rec.take_needs_save();paused=rec.is_paused();frames=rec.recorded_frames();sample=rec.sample_slot;}
     if(a==Action::Setup){setup=true;return;}if(a==Action::Back){setup=false;return;}
     if(a==Action::Record||a==Action::Stop){
@@ -190,12 +194,15 @@ void recorder_focus_command(C&rec,Action a){
 int recorder_focus_selected(){return selected;}
 void recorder_focus_select(int p){if(p!=C::P_LEN&&p!=C::P_MON)return;if(selected!=p)recorder_focus_release();selected=p;}
 void recorder_focus_release(){gesture={};visit.pressed=false;if(g_drag==Drag::RecLength)g_drag=Drag::None;}
+void recorder_focus_cancel_lifecycle(){recorder_focus_release();choice={};quarantine=false;blocked_frame=false;}
 bool recorder_focus_back(){if(setup&&current()){setup=false;recorder_focus_release();return true;}return false;}
 bool recorder_focus_confirming(){return choice.kind!=Modal::None;}
 bool recorder_focus_input(u32&down,u32 held,bool blocked){
     blocked_frame=blocked;if(!(held&KEY_TOUCH))quarantine=false;
-    if(g_audio){platform::AudioOut::Guard guard(*g_audio);visit.visible=valid_visit();if(!visit.visible)visit={};
-        if(gesture.owner.unit&&(!owner(gesture.owner,false)||gesture.lock!=g_seq_lock_armed||gesture.view!=g_view||blocked||(down&~(KEY_TOUCH|KEY_ZL)))){
+    // No gesture owner and no reachable visit: same result as the guarded branch, without its entry.
+    if(g_audio&&!gesture.owner.unit&&!visit_reachable())visit={};
+    else if(g_audio){platform::AudioOut::Guard guard(*g_audio);visit.visible=valid_visit();if(!visit.visible)visit={};
+        if(gesture.owner.unit&&(!owner(gesture.owner)||gesture.view!=g_view||blocked||(down&~(KEY_TOUCH|KEY_ZL)))){
             recorder_focus_release();quarantine=(held&KEY_TOUCH)!=0;}}
     if(!recorder_focus_confirming())return quarantine;
     bool valid=false;if(g_audio){platform::AudioOut::Guard guard(*g_audio);C*u=owner(choice.owner);valid=u&&!busy(*u);}
@@ -220,17 +227,14 @@ bool recorder_focus_touch_body(C&u,int x,int y){
     if(!context()||param_lens_is_open()||blocked_frame)return false;
     if(recorder_focus_confirming()){recorder_focus_confirm_touch(true,true,x,y);return true;}
     recorder_focus_release();platform::AudioOut::Guard guard(*g_audio);if(current()!=&u)return false;page_context(u);
-    const bool params=setup||g_seq_lock_armed;
-    const geo::Box len=g_seq_lock_armed?geo::Box{8,27,194,38}:geo::row(2);
-    const geo::Box mon=g_seq_lock_armed?geo::Box{216,27,96,38}:geo::row(1);
+    const bool params=setup;
+    const geo::Box len=geo::row(2);
+    const geo::Box mon=geo::row(1);
     if(params&&(len.has(x,y)||mon.has(x,y))){const bool length=len.has(x,y);selected=length?C::P_LEN:C::P_MON;
-        if(g_seq_lock_armed&&!locked())return true;
-        if(locked()&&(length?hit(x,y,11,28,42,16):y<44)){if(g_eng->remove_step_lock(g_seq_lock_chain,g_seq_lock_step,g_edit_slot,selected))mark_project_mutated();return true;}
         if(busy(u))return true;
-        gesture.owner=token(u);gesture.x=x;gesture.value=edit_value(u,selected);gesture.lock=g_seq_lock_armed;gesture.view=g_view;
-        gesture.step=g_seq_lock_step;gesture.bank=g_eng->active_pattern;gesture.lock_chain=g_seq_lock_chain;gesture.setup=setup;g_drag=Drag::RecLength;
+        gesture.owner=token(u);gesture.x=x;gesture.value=edit_value(u,selected);gesture.view=g_view;
+        gesture.setup=setup;g_drag=Drag::RecLength;
         gesture.drag=length;gesture.action=length?Action::None:Action::Monitor;gesture.box=mon;return true;}
-    if(g_seq_lock_armed)return true;
     const Action a=recorder_focus_action_at(x,y);if(a==Action::None)return true;
     if(a!=Action::Setup&&a!=Action::Back){if(a==Action::Stop){if(!busy(u))return true;}
         else if(a==Action::Record){if(pending())return true;}else if(busy(u))return true;}
@@ -242,19 +246,16 @@ bool recorder_focus_touch_body(C&u,int x,int y){
 void recorder_focus_drag(C&u,int x,int y){
     if(!gesture.owner.unit)return;
     platform::AudioOut::Guard guard(*g_audio);
-    if(!owner(gesture.owner,false)||current()!=&u||g_drag!=Drag::RecLength||gesture.setup!=setup||gesture.view!=g_view||gesture.lock!=g_seq_lock_armed||
-       (gesture.lock&&(!locked()||gesture.step!=g_seq_lock_step||gesture.bank!=g_eng->active_pattern||gesture.lock_chain!=g_seq_lock_chain))){recorder_focus_release();return;}
+    if(!owner(gesture.owner)||current()!=&u||g_drag!=Drag::RecLength||gesture.setup!=setup||gesture.view!=g_view){recorder_focus_release();return;}
     if(!gesture.drag){if(!gesture.box.has(x,y))recorder_focus_release();return;}
     if(busy(u)){recorder_focus_release();return;}
-    change(u,C::P_LEN,q15(std::max(0,std::min(32767,int(gesture.value)+(x-gesture.x)*32767/(gesture.lock?170:280)))));
+    change(u,C::P_LEN,q15(std::max(0,std::min(32767,int(gesture.value)+(x-gesture.x)*32767/280))));
 }
 void recorder_focus_touch_release(){
     if(visit.pressed){bool valid;{platform::AudioOut::Guard guard(*g_audio);valid=valid_visit();}const int c=visit.rec.chain,s=visit.rec.slot;visit={};if(valid)open_editor(c,s);return;}
     Action a=Action::None;C*u=nullptr;
-    if(g_audio){platform::AudioOut::Guard guard(*g_audio);u=owner(gesture.owner,false);
-        if(u&&!blocked_frame&&g_drag==Drag::RecLength&&gesture.setup==setup&&gesture.view==g_view&&gesture.lock==g_seq_lock_armed&&
-            (!gesture.lock||(locked()&&gesture.step==g_seq_lock_step&&gesture.bank==g_eng->active_pattern&&gesture.lock_chain==g_seq_lock_chain)))a=gesture.action;
-        if(a==Action::Monitor&&gesture.lock){if(!busy(*u))change(*u,C::P_MON,edit_value(*u,C::P_MON)>16383?0:32767);a=Action::None;}}
+    if(g_audio){platform::AudioOut::Guard guard(*g_audio);u=owner(gesture.owner);
+        if(u&&!blocked_frame&&g_drag==Drag::RecLength&&gesture.setup==setup&&gesture.view==g_view)a=gesture.action;}
     recorder_focus_release();if(u&&a!=Action::None)recorder_focus_command(*u,a);
 }
 bool recorder_focus_return_touch(int x,int y,bool down){if(!visit.visible)return false;
@@ -267,13 +268,14 @@ void recorder_focus_capture(){
     q15 wave[POINTS]={};
     {platform::AudioOut::Guard guard(*g_audio);C*u=current();if(!u){if(gesture.owner.unit)recorder_focus_release();choice={};page_unit=0;return;}page_context(*u);
         if(choice.kind!=Modal::None&&!owner(choice.owner))choice={};
-        frame.valid=true;frame.lens=param_lens_is_open();frame.lock=g_seq_lock_armed;frame.full=frame.lock&&g_seq_lock_flash>0;frame.setup=setup;
+        frame.valid=true;frame.lens=param_lens_is_open();frame.setup=setup;
         frame.chain=g_edit_chain;frame.slot=g_edit_slot;frame.sample=u->sample_slot;frame.mic=input_mic(g_edit_chain,g_edit_slot);frame.selected=selected;
         frame.bypass=u->bypass;frame.mute=g_eng->chains[g_edit_chain].mute;frame.links=focus_mod_links(*u);frame.dirty=project_is_dirty();
         for(int p=0;p<3;++p){frame.edit[p]=edit_value(*u,p);frame.live[p]=u->params[p].effective;}
         frame.active=u->is_recording();frame.paused=u->is_paused();frame.pending=pending();frame.command=g_eng->recorder_pending_command(g_edit_chain,g_edit_slot);
         if(frame.command==Command::None&&frame.pending)frame.command=g_eng->chain_record_pending_start(g_edit_chain)?Command::Start:Command::Stop;
         frame.unsaved=u->take_needs_save();frame.frames=u->recorded_frames();frame.target=u->writer_open()?u->active_target_frames():u->target_frames();frame.clock=g_eng->launch_quantize;
+        frame.channels=frame.frames?Bank::instance().slot(u->sample_slot).channels:g_eng->chain_audio_channels(g_edit_chain,g_edit_slot);
         frame.modal=choice.kind;frame.target_chain=choice.target;
         if(choice.kind==Modal::Destination&&choice.target>=0){const auto&ch=g_eng->chains[choice.target];
             std::snprintf(frame.destination,sizeof frame.destination,"ch%02d / %s / level %u%%",choice.target+1,ch.mute?"muted":"unmuted",unsigned(std::max(0,int(ch.volume)))*100/32767);
@@ -293,10 +295,10 @@ void recorder_focus_capture(){
     if(msg)std::snprintf(frame.notice,sizeof frame.notice,"%.63s",msg);
 }
 bool recorder_focus_draw_top(){
-    if(!frame.valid||frame.lock||frame.lens)return false;
+    if(!frame.valid||frame.lens)return false;
     m::paper(400);char text[64];
     module_heading::header(UnitKind::Recorder,m::spot());
-    std::snprintf(text,sizeof text,"%s / ch%02d / %02d",frame.mic>=0?"mic":"chain input",frame.chain+1,frame.slot+1);right(m::right_edge(400),m::kHeaderTextY,text,m::ghost());
+    std::snprintf(text,sizeof text,"%s / ch%02d / %02d",frame.mic>=0?"mic":frame.channels==2?"stereo chain":!frame.channels?"unsupported":"chain input",frame.chain+1,frame.slot+1);right(m::right_edge(400),m::kHeaderTextY,text,m::ghost());
     center(200,62,frame.status,frame.active||frame.paused||frame.pending?m::spot():m::ghost());geo::timer(200,119,frame.timer,m::ink());center(200,139,"recorded time",m::ghost());
     if(frame.wave)for(int i=1;i<POINTS;++i)ui::line(20+(i-1)*359/(POINTS-1),181-frame.wave_y[i-1],20+i*359/(POINTS-1),181-frame.wave_y[i],m::ink());
     else ui::line(20,181,379,181,m::branch());
@@ -307,13 +309,8 @@ bool recorder_focus_draw_top(){
     ui::text(m::kLeft,m::kTextY,hint,m::ghost());return true;
 }
 void recorder_focus_draw(const C&,const char*){
-    m::paper(320);if(!frame.valid)return;char text[64];const bool busy=frame.active||frame.paused||frame.pending;
+    m::paper(320);if(!frame.valid)return;const bool busy=frame.active||frame.paused||frame.pending;
     module_heading::header(UnitKind::Recorder,m::spot());
-    if(frame.lock){ui::text(54,m::kHeaderTextY,"p-lock",m::spot());const u32 lc=frame.selected==C::P_LEN?m::spot():m::ink();
-        module_inspector_value_text(text,sizeof text,UnitKind::Recorder,C::P_LEN,frame.edit[C::P_LEN]);ui::text(14,32,"length",lc);right(184,32,text,lc);
-        module_fader::horizontal(14,184,54,14+int(frame.edit[C::P_LEN])*170/32767,14+int(frame.live[C::P_LEN])*170/32767,{bool(frame.links&(1u<<C::P_LEN)),busy,frame.bypass||frame.mute});
-        ui::text(230,32,"monitor",frame.selected==C::P_MON?m::spot():m::ghost());ui::text(230,50,frame.edit[C::P_MON]>16383?"on":"off",m::ink());
-        m::footer(320,frame.full?"lock full":"p-lock / name: remove","b back");return;}
     if(frame.modal!=Modal::None){
         if(frame.modal==Modal::Destination){ui::text(14,64,"keep the existing chain intact",m::ink());ui::text(14,84,"send to a completely empty chain",m::ghost());
             ui::text(14,110,frame.target_chain>=0?frame.destination:"no empty chain / take kept",m::spot());
@@ -332,7 +329,7 @@ void recorder_focus_draw(const C&,const char*){
             const char*v=i==0?(frame.mic>=0?"mic >":"chain input"):i==1?(frame.edit[C::P_MON]>16383?"on":"off"):i==2?frame.length:i==3?clock_name(frame.clock):i==4?(busy?"stop first":frame.frames?(frame.unsaved?"unsaved take":"saved / export copy"):"empty"):"confirm >";
             right(304,y,v,m::ghost());}
         center(160,m::kTextY,"back",m::ink());return;}
-    ui::text(54,m::kHeaderTextY,frame.mic>=0?"mic":"chain input",m::ghost());center(269,m::kHeaderTextY,"setup",m::ink());
+    ui::text(54,m::kHeaderTextY,frame.mic>=0?"mic":frame.channels==2?"stereo chain":!frame.channels?"unsupported":"chain input",m::ghost());center(269,m::kHeaderTextY,"setup",m::ink());
     const bool stop_enabled=(frame.active||frame.paused||frame.pending)&&(!frame.pending||frame.command==Command::Start);
     const u32 sc=stop_enabled?m::ink():m::ghost(),dc=frame.pending?m::ghost():m::spot();
     ui::rect(70,69,27,27,sc);for(int dy=-15;dy<=15;++dy){int half=0;while((half+1)*(half+1)+dy*dy<=225)++half;ui::rect(237-half,82+dy,2*half+1,1,dc);}

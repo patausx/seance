@@ -11,7 +11,7 @@ bool Engine::bounce_storage_valid() const {
     if (!bounce_source_valid(v.source) || v.slot < 0 || v.slot >= trackr::synth::SAMPLE_BANK_SIZE) return false;
     const auto& bank = trackr::synth::SampleBank::instance();
     const auto& sample = bank.slot(v.slot);
-    return bank.generation(v.slot) == v.slot_generation && sample.channels == bounce_channels(v.source) &&
+    return bank.generation(v.slot) == v.slot_generation && sample.channels == bounce_channels(v) &&
         sample.num_frames() >= v.target_frames && sample.logical_frames == v.frames;
 }
 BounceSnapshot Engine::bounce_snapshot() const {
@@ -36,7 +36,8 @@ BounceResult Engine::plan_bounce(int bars, BouncePlan& out, BounceSource source)
         ? (beats * CLOCK_BEAT + clock_increment_ - 1) / clock_increment_
         : beats * frames_per_beat();
     auto& bank = SampleBank::instance();
-    const uint8_t channels = bounce_channels(source);
+    const uint8_t channels = source == BounceSource::Master ? 2 : chain_audio_channels(int(source) - 1);
+    if (!channels) return BounceResult::UnsafeChain;
     if (!capacity || capacity > BOUNCE_MAX_FRAMES || capacity * channels * sizeof(q15) > bank.pcm_budget_bytes())
         return BounceResult::MemoryBudget;
     int target = -1;
@@ -51,6 +52,7 @@ BounceResult Engine::plan_bounce(int bars, BouncePlan& out, BounceSource source)
     if (!bank.can_replace(target, (size_t)capacity * channels)) return BounceResult::MemoryBudget;
     out.owner = this;
     out.source = source;
+    out.channels = channels;
     out.generation = bounce_.view.generation;
     out.slot_generation = bank.generation(target);
     out.capacity_frames = (uint32_t)capacity;
@@ -69,7 +71,8 @@ BounceResult Engine::stage_bounce(BouncePlan& plan) {
         return BounceResult::Invalid;
     // Same allocation policy as REC/decoded SampleBank vectors. The checked bank
     // budget is an admission bound; std::vector allocation happens outside guard.
-    const uint8_t channels = bounce_channels(plan.source);
+    const uint8_t channels = plan.channels;
+    if (channels != 1 && channels != 2) return BounceResult::Invalid;
     plan.staged.channels = channels;
     plan.staged.logical_frames = 0;
 #if defined(__cpp_exceptions)
@@ -94,7 +97,11 @@ BounceResult Engine::commit_bounce(BouncePlan& plan, bool start_if_stopped) {
     if (plan.slot < 0 || plan.slot >= SAMPLE_BANK_SIZE ||
         bank.generation(plan.slot) != plan.slot_generation || bank.slot(plan.slot).has_storage() ||
         sample_slot_refs(plan.slot).total()) return BounceResult::Stale;
-    const uint8_t channels = bounce_channels(plan.source);
+    const uint8_t channels = plan.channels;
+    if (channels != 1 && channels != 2) return BounceResult::Invalid;
+    if (plan.source == BounceSource::Master && channels != 2) return BounceResult::Invalid;
+    if (plan.source != BounceSource::Master && channels != chain_audio_channels(int(plan.source) - 1))
+        return BounceResult::Stale;
     const size_t elements = (size_t)plan.capacity_frames * channels;
     if (plan.staged.channels != channels || plan.staged.logical_frames != 0 ||
         plan.staged.data.size() != elements) return BounceResult::Invalid;
@@ -128,6 +135,7 @@ BounceResult Engine::commit_bounce(BouncePlan& plan, bool start_if_stopped) {
     ++v.generation;
     v.slot = plan.slot;
     v.source = plan.source;
+    v.channels = channels;
     v.slot_generation = bank.generation(plan.slot);
     v.status = BounceStatus::Armed;
     v.reason = BounceReason::None;
@@ -172,7 +180,7 @@ const trackr::synth::Sample* Engine::bounce_sample(const BounceSnapshot& token) 
     if (!v.take() || !token.take() || !bounce_storage_valid() ||
         token.generation != v.generation || token.slot != v.slot ||
         token.slot_generation != v.slot_generation || token.frames != v.frames ||
-        !bounce_source_valid(token.source) || token.source != v.source) return nullptr;
+        !bounce_source_valid(token.source) || token.source != v.source || bounce_channels(token) != bounce_channels(v)) return nullptr;
     return &trackr::synth::SampleBank::instance().slot(v.slot);
 }
 bool Engine::start_bounce_preview() {
@@ -207,7 +215,7 @@ void Engine::process_bounce_preview(q15* stereo, int frames) {
     }
     const uint32_t count = std::min<uint32_t>((uint32_t)frames,
         bounce_preview_take_.frames - bounce_preview_frame_);
-    const uint8_t channels = bounce_channels(bounce_preview_take_.source);
+    const uint8_t channels = bounce_channels(bounce_preview_take_);
     const q15* source = sample->data.data() + (size_t)bounce_preview_frame_ * channels;
     if (channels == 2) std::memcpy(stereo, source, (size_t)count * 2 * sizeof(q15));
     else for (uint32_t i = 0; i < count; ++i) stereo[i * 2] = stereo[i * 2 + 1] = source[i];
@@ -219,7 +227,7 @@ bool Engine::read_bounce_frames(const BounceSnapshot& token, uint32_t first,
                                 uint32_t count, q15* interleaved) const {
     const auto* sample = bounce_sample(token);
     if (!sample || !interleaved || first > token.frames || count > token.frames - first) return false;
-    const uint8_t channels = bounce_channels(token.source);
+    const uint8_t channels = bounce_channels(token);
     std::memcpy(interleaved, sample->data.data() + (size_t)first * channels, (size_t)count * channels * sizeof(q15));
     return true;
 }
@@ -315,6 +323,7 @@ BounceResult Engine::commit_bounce_send(BounceSendPlan& plan) {
     if (sequence_audition_chain_ == chain) cancel_sequence_audition();
     release_sequence_locks(chain);
     invalidate_structural_undo();
+    if(relic_gesture_.chain==chain)cancel_relic_gesture();
     for (int slot = 0; slot < UNITS_PER_CHAIN; ++slot) {
         plan.retired[slot] = chains[chain].units[slot];
         chains[chain].units[slot] = slot ? nullptr : plan.prepared;
@@ -370,18 +379,21 @@ void Engine::capture_bounce(const q15* stereo, int frames) {
     const uint64_t end = std::min(block_end, v.end_frame);
     const uint32_t count = (uint32_t)(end - begin);
     auto& sample = trackr::synth::SampleBank::instance().slot(v.slot);
-    const uint8_t channels = bounce_channels(v.source);
+    const uint8_t channels = bounce_channels(v);
     q15* destination = sample.data.data() + (size_t)v.frames * channels;
     const size_t bytes = (size_t)count * channels * sizeof(q15);
     // Each chain's scratch remains post-module until this subblock ends: the
     // mixer only reads it, while PLAY/browser previews and master FX use separate
     // buffers. Reuse that exact pass, never rerun DSP or split control fragments.
     const int chain = (int)v.source - (int)BounceSource::Chain1;
+    if (v.source != BounceSource::Master && (chains[chain].rendered_channels != channels ||
+        chain_audio_channels(chain) != channels)) { stop_bounce(BounceReason::ChannelsChanged); return; }
     if (v.source != BounceSource::Master && chains[chain].mute) {
         // Explicit policy: mute records silence, not the internally running DSP.
         std::memset(destination, 0, bytes);
     } else {
-        const q15* source = v.source == BounceSource::Master ? stereo : chains[chain].scratch;
+        const q15* source = v.source == BounceSource::Master ? stereo :
+            channels == 2 ? chains[chain].stereo : chains[chain].scratch;
         std::memcpy(destination, source + (size_t)(begin - transport_frame) * channels, bytes);
     }
     v.frames += count;

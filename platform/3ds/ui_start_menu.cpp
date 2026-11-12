@@ -15,7 +15,7 @@
 
 namespace seance::platform::ui3ds {
 namespace {
-enum class Page { Home, Browser, Theme };
+enum class Page { Home, Browser, Theme, Recovery };
 enum class Panel { None=-1, Library=0, Settings=1 };
 enum HomeRow { New=0, Library=1, Settings=2, Recent0=3,
                All=Recent0+kStartRecentCount, Sound, Startup, Palette, HomeRows };
@@ -117,6 +117,7 @@ int home_rows(int* out,bool left) {
     return n;
 }
 void normalize_selection() {
+    if(g.page==Page::Recovery) { g.selected=g.selected==0?0:1;return; }
     if(g.page==Page::Home) {
         int list[HomeRows];const int n=home_rows(list,g.selected<3);
         for(int i=0;i<n;++i)if(list[i]==g.selected)return;
@@ -128,6 +129,7 @@ void normalize_selection() {
     }
 }
 void move(int direction) {
+    if(g.page==Page::Recovery) { select(1-g.selected);return; }
     int list[PROJECT_SLOTS+1],n=0;
     if(g.page==Page::Home)n=home_rows(list,g.selected<3);
     else { for(int i=0;i<g.browser_count;++i)list[n++]=g.browser_slots[i];list[n++]=kBrowserBack; }
@@ -166,6 +168,11 @@ void move_theme(u32 down) {
 }
 bool in(int x,int y,Box b) { return x>=b.x&&x<b.x+b.w&&y>=b.y&&y<b.y+b.h; }
 int row_at(int x,int y) {
+    if(g.page==Page::Recovery) {
+        if(in(x,y,{20,134,280,32}))return 0;
+        if(in(x,y,{20,178,280,32}))return 1;
+        return -1;
+    }
     if(g.page==Page::Theme) {
         if(g.modal<255)return -1;
         for(int i=0;i<=kThemeSave;++i)if(in(x,y,theme_box(i)))return i;
@@ -221,6 +228,12 @@ StartMenuResult activate_theme(int row) {
 }
 StartMenuResult activate(int row) {
     meaningful();
+    if(g.page==Page::Recovery) {
+        transition_input();
+        if(row==0)return {StartMenuAction::RecoverProject,-1};
+        g.page=Page::Home;g.data.recovery_offer=false;select(Library);
+        return {StartMenuAction::CancelRecovery,-1};
+    }
     if(g.page==Page::Theme)return activate_theme(row);
     if(g.page==Page::Browser) {
         if(row==kBrowserBack) { home_from_browser();return {}; }
@@ -449,9 +462,22 @@ void draw_home() {
     }
     draw_library();draw_settings();
 }
+void draw_recovery() {
+    title(20,48,"recovery",ink(),-1,280);
+    small(20,68,"previous working snapshot",ghost());
+    small(20,86,"not a saved patch / audio from paths",ghost());
+    small(20,104,"runtime pcm / unsaved rec not covered",ghost());
+    const char* words[]={"recover","cancel"};
+    for(int i=0;i<2;++i) {
+        const bool selected=g.selected==i;
+        diamond(24,149+i*44,selected,selected?spot():ghost());
+        title(38,157+i*44,words[i],selected?spot():ink(),-1,250);
+    }
+    small(20,228,"cancel retains / autosnapshot stays off",ghost());
+}
 void draw_browser() {
     heading(1,20,16,ink());small(20,50,"all patches",ghost());
-    char page[16];std::snprintf(page,sizeof page,"%02d/%02d",g.browser_page+1,browser_pages());
+    char page[24];std::snprintf(page,sizeof page,"%02d/%02d",g.browser_page+1,browser_pages());
     small(218,48,"<",g.browser_page?ink():ghost());small(240,48,page,ghost());
     small(290,48,">",g.browser_page+1<browser_pages()?ink():ghost());
     for(int row=0;row<kBrowserRows;++row) {
@@ -521,6 +547,12 @@ void draw_theme_preview() {
 }
 } // namespace
 
+void start_menu_cancel_lifecycle() {
+    cancel_touch();
+    g.touch_held = g.buttons_held = false;
+    g.quarantine = false;
+    g.input_tail = {};
+}
 void start_menu_set_data(const StartMenuData& data) {
     const StartMenuData copy=data;g.data=copy;
     if(!theme_config::valid(g.data.theme))g.data.theme={};
@@ -543,6 +575,7 @@ void start_menu_set_data(const StartMenuData& data) {
 }
 void start_menu_open(const StartMenuData& data) {
     const StartMenuData copy=data;g=State{};start_menu_set_data(copy);
+    if(copy.recovery_offer) { g.page=Page::Recovery;g.selected=1; }
 }
 void start_menu_error(const char* text) {
     int n=0;if(text)while(n<46&&text[n]){g.error[n]=text[n];++n;}
@@ -586,6 +619,7 @@ StartMenuResult start_menu_input(u32 down,u32 held,int tx,int ty) {
         cancel_touch();
         if(down&KEY_B) {
             meaningful();
+            if(g.page==Page::Recovery)return activate(1);
             if(g.page==Page::Theme)theme_leave();
             else if(g.page==Page::Browser)home_from_browser();
             else if(g.panel!=Panel::None) {
@@ -654,7 +688,8 @@ void start_menu_draw_top() {
 }
 void start_menu_draw_bottom() {
     menu_style::paper(320);
-    if(g.page==Page::Browser)draw_browser();else draw_home();
+    if(g.page==Page::Recovery)draw_recovery();
+    else if(g.page==Page::Browser)draw_browser();else draw_home();
     if(g.modal)draw_theme();
     if(g.error[0]) {
         menu_style::paper_rect(12,0,296,12);

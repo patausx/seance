@@ -36,9 +36,29 @@ the optional [starter pack](sample_library/starter_cc0/README.md) uses the
 **Stargate Sample Pack**, **CC0 1.0 Universal**. its source mapping and license
 text are included with the pack. these terms do not apply to user-imported audio.
 
+## menu audio
+
+`assets/menu_audio/source/1.wav` and `source/2.wav` are the supplied originals;
+`menu_drone.bin` and `menu_entry.bin` are their prepared derivatives embedded in
+the executable. according to the project owner both originals come from a free
+beat pack; the pack's name and its own terms are not recorded in this source.
+hashes and preparation metadata establish identity/reproduction only. no CC0, GPL
+or other asset license is assigned to these sounds by this notice, and the
+application's GPL does not extend to them: check the pack's terms before reusing
+the two sounds outside this application.
+
+## rule / rot random-number arithmetic
+
+`core/engine/rule_dsp.h` adapts the PCG64 scheme and NumPy-compatible
+SeedSequence arithmetic for the online RULE score and ROT's online mask law. it retains per-file MIT
+notices for Melissa E. O'Neill (2014/2015) and the NumPy Developers (2019),
+including the full permission and disclaimer. keep those notices with the
+adaptation in source distribution. NumPy is an offline verification dependency,
+not a library linked into the console application.
+
 ## devkitPro runtime libraries
 
-local package inventory reviewed for release preparation:
+historical package/source inventory reviewed 2026-10-24 (not current build clearance):
 
 | library | package version | upstream source |
 | --- | --- | --- |
@@ -46,8 +66,15 @@ local package inventory reviewed for release preparation:
 | citro2d | 1.7.0-1 | <https://github.com/devkitPro/citro2d/tree/v1.7.0> |
 | citro3d | 1.7.1-2 | <https://github.com/devkitPro/citro3d/tree/v1.7.1> |
 
-these are statically linked dependencies. the following project-level notices
-were checked against the upstream versions above. keep any additional per-file
+these are statically linked dependencies. local package metadata inspected on
+2026-11-06 instead reports **libctru 2.7.1-1** and **devkitarm-gcc 16.1.0-1**;
+installed libctru and selected compiler runtime bytes differ from retained
+libctru 2.7.0/GCC15 records. old archives/hashes remain unchanged and must not be
+relabeled. matching current sources, recipes/patches and actual linked-member
+notices remain pending for the next final build.
+
+the following project-level notices were checked against the historical upstream
+versions above, not reverified as comprehensive notices for the new library. keep any additional per-file
 notices when redistributing their source. this is not an exhaustive audit of
 all code or compiler runtime routines in the final linked executable.
 
@@ -131,7 +158,9 @@ recipe are in `distribution/dependency-sources/`, with the license text in
 
 `licenses/GCC-RUNTIME-EXCEPTION-3.1.txt` and `licenses/GCC-GPL-3.0.txt` contain
 the GCC runtime terms; `licenses/compiler-runtime-evidence.json` records the
-installed header evidence and selected runtime archive hashes. exception
+historical 2026-10-24 GCC15 header evidence and selected runtime archive hashes,
+not current GCC16 build provenance. retain that evidence unchanged; obtain a new
+dated record for current installed bytes and the final linked map. exception
 eligibility and final linked-object coverage still require release review.
 newlib's complete runtime/license audit remains pending. bundling these notices
 is not a claim that every linked runtime component has been cleared.

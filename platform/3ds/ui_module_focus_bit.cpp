@@ -30,7 +30,7 @@ union Visual {
 };
 struct Frame {
     uint16_t mod_links=0;
-    bool valid=false,modern=false,setup=false,bypass=false,mute=false,lock=false,lock_full=false;
+    bool valid=false,modern=false,setup=false,bypass=false,mute=false;
     int8_t chain=0,slot=0,selected=0;
     q15 edit[C::P_COUNT]={},live[C::P_COUNT]={};
     char values[C::P_COUNT][18]={},drop_length[18]={},model_summary[40]={};
@@ -42,8 +42,8 @@ static_assert(sizeof(Frame)<=2048 && std::is_trivially_copyable<Frame>::value,
               "bounded pointer-free Bit frame, no engine reads or model work in draw");
 struct Gesture {
     Engine* engine=nullptr;uintptr_t unit=0;View view=View::Chains;
-    int chain=-1,slot=-1,bank=-1,step=-1,lock_chain=-1,param=-1,start=0;
-    bool locked=false,modern=false,setup=false;q15 value=0;
+    int chain=-1,slot=-1,bank=-1,param=-1,start=0;
+    bool modern=false,setup=false;q15 value=0;
 } gesture;
 struct Key {q15 values[C::P_COUNT]={};bool modern=false,bypass=false;};
 Key cached_key;Visual cached_plot;bool cache_valid=false;
@@ -66,16 +66,10 @@ constexpr const char* setup_help[4]={"0 = neutral / signed sweep direction","sta
     "tpdf / 0 off / 100 one lsb peak","fixed event / 100% drop = wet mute"};
 bool capture_context() {
     return g_eng && g_audio && g_overlay==Overlay::Editor &&
-        (g_view==View::Chains || (g_view==View::Sequencer && g_seq_lock_armed)) &&
+        g_view==View::Chains &&
         g_edit_chain>=0 && g_edit_chain<NUM_CHAINS && g_edit_slot>=0 && g_edit_slot<UNITS_PER_CHAIN;
 }
 bool context() { return !param_lens_is_open() && capture_context(); }
-bool lock_context() {
-    return g_seq_lock_armed && g_seq_lock_chain==g_edit_chain &&
-        g_seq_lock_step>=0 && g_seq_lock_step<SEQ_STEPS;
-}
-int bank(){const int b=sequencer_edit_bank();return b>=0&&b<NUM_PATTERNS?b:g_eng->active_pattern;}
-int gesture_bank(){return g_seq_lock_armed?bank():g_eng->active_pattern;}
 void release(){gesture={};if(g_drag==Drag::BitBits)g_drag=Drag::None;}
 void bind(const C& u){
     if(bound_engine!=g_eng||bound_unit!=uintptr_t(&u)||bound_chain!=g_edit_chain||
@@ -85,23 +79,12 @@ void bind(const C& u){
     }
 }
 q15 edit_value(const C& u,int p) {
-    if(lock_context()){
-        const auto& step=g_eng->sequence_pattern(bank()).steps[g_edit_chain][g_seq_lock_step];
-        for(int i=0;i<std::min(int(step.lock_count),SEQ_LOCKS);++i)
-            if(step.locks[i].slot==g_edit_slot&&step.locks[i].param==p)return step.locks[i].value;
-    }
     return u.params[p].base;
 }
 void set_value(C& u,int p,q15 value){
-    if((g_seq_lock_armed&&!lock_context())||p<0||p>=u.num_params)return;
-    if(g_seq_lock_armed){
-        auto& step=g_eng->sequence_pattern(bank()).steps[g_edit_chain][g_seq_lock_step];
-        const int count=std::min(int(step.lock_count),SEQ_LOCKS);int found=-1;
-        for(int i=0;i<count;++i)if(step.locks[i].slot==g_edit_slot&&step.locks[i].param==p){found=i;break;}
-        if(found>=0){if(step.locks[found].value==value)return;step.locks[found].value=value;}
-        else {if(count>=SEQ_LOCKS){g_seq_lock_flash=90;return;}
-            step.locks[count]={uint8_t(g_edit_slot),uint8_t(p),value};step.lock_count=uint8_t(count+1);}
-    }else {if(u.params[p].base==value)return;u.params[p].base=value;}
+    if(p<0||p>=u.num_params)return;
+    if(u.params[p].base==value)return;
+    u.params[p].base=value;
     mark_project_mutated();cache_valid=false;
 }
 int clamp(int v,int p) { return std::max(p==C::P_DRIFT?-32767:0,std::min(32767,v)); }
@@ -112,28 +95,20 @@ int position(q15 value,int p,int left,int right) {
 }
 void begin(C& u,int p,int x){
     selected=p;gesture={};gesture.engine=g_eng;gesture.unit=uintptr_t(&u);gesture.view=g_view;
-    gesture.chain=g_edit_chain;gesture.slot=g_edit_slot;gesture.bank=gesture_bank();
-    gesture.step=g_seq_lock_step;gesture.lock_chain=g_seq_lock_chain;gesture.locked=g_seq_lock_armed;
+    gesture.chain=g_edit_chain;gesture.slot=g_edit_slot;gesture.bank=g_eng->active_pattern;
     gesture.param=p;gesture.start=x;gesture.value=edit_value(u,p);gesture.setup=setup;
     gesture.modern=u.modern();g_drag=Drag::BitBits;g_drag_param=p;
 }
 bool owns(const C& u){return gesture.engine==g_eng&&gesture.unit==uintptr_t(&u)&&gesture.view==g_view&&
-    gesture.chain==g_edit_chain&&gesture.slot==g_edit_slot&&gesture.bank==gesture_bank()&&
-    gesture.param==selected&&gesture.locked==g_seq_lock_armed&&gesture.setup==setup&&
-    gesture.modern==u.modern()&&g_eng->chains[g_edit_chain].units[g_edit_slot]==&u&&
-    (!gesture.locked||(lock_context()&&gesture.step==g_seq_lock_step&&gesture.lock_chain==g_seq_lock_chain));}
-bool remove_name(int p,int x,int y,const char* name,int tx,int ty){
-    if(!lock_context()||!hit(tx,ty,x-3,y-4,ui::text_w(name)+6,16))return false;
-    selected=p;
-    if(g_eng->remove_step_lock(g_seq_lock_chain,g_seq_lock_step,g_edit_slot,p,bank()))mark_project_mutated();
-    cache_valid=false;return true;
-}
+    gesture.chain==g_edit_chain&&gesture.slot==g_edit_slot&&gesture.bank==g_eng->active_pattern&&
+    gesture.param==selected&&gesture.setup==setup&&
+    gesture.modern==u.modern()&&g_eng->chains[g_edit_chain].units[g_edit_slot]==&u;}
 void value_text(char* out,size_t size,int p,q15 value,bool modern){
     bit_readout::value_text(out,size,p,value,modern);
 }
 void capture_plot(){
     Key key;key.modern=frame.modern;key.bypass=frame.bypass;
-    std::copy(frame.lock?frame.edit:frame.live,(frame.lock?frame.edit:frame.live)+C::P_COUNT,key.values);
+    std::copy(frame.live,frame.live+C::P_COUNT,key.values);
     if(!cache_valid||key.modern!=cached_key.modern||key.bypass!=cached_key.bypass||
        !std::equal(std::begin(key.values),std::end(key.values),std::begin(cached_key.values))){
         // Placement construction only activates the bounded union member; no allocation.
@@ -165,27 +140,26 @@ bool bit_focus_touch_body(C& u,int tx,int ty){
     bind(u);release();
     if(u.modern()&&hit(tx,ty,198,0,48,26)){setup=!setup;return true;}
     if(!u.modern()&&hit(tx,ty,164,0,76,26)){
-        if(!g_seq_lock_armed){C defaults;
+        {C defaults;
             for(int p=C::LEGACY_COUNT;p<C::P_COUNT;++p)u.params[p]=defaults.params[p];
             for(auto& scene:g_eng->scenes[g_edit_chain])if(scene.kind[g_edit_slot]==UnitKind::Bitcrush)
                 for(int p=C::LEGACY_COUNT;p<C::P_COUNT;++p)scene.base[g_edit_slot][p]=defaults.params[p].base;
             u.set_modern(true);mark_project_mutated();bind(u);}
         return true;
     }
-    if(ty<26){if(!g_seq_lock_armed&&hit(tx,ty,246,0,38,25)){u.bypass=!u.bypass;mark_project_mutated();}return true;}
-    if(g_seq_lock_armed&&!lock_context())return true;
+    if(ty<26){if(hit(tx,ty,246,0,38,25)){u.bypass=!u.bypass;mark_project_mutated();}return true;}
     if(u.modern()){
         if(setup){for(int row=0;row<4;++row){const int p=setup_params[row],y=l::kSetupY[row];
             if(!hit(tx,ty,8,y-5,304,35))continue;
-            selected=p;if(remove_name(p,14,y,setup_names[row],tx,ty))return true;begin(u,p,tx);return true;}}
+            selected=p;begin(u,p,tx);return true;}}
         else for(int row=0;row<4;++row)for(int col=0;col<2;++col){
             const int p=main_params[row][col],x=l::kControlLeft[col],end=l::kControlRight[col],y=l::kMainY[row];
             if(!hit(tx,ty,x-6,y-5,end-x+12,35))continue;
-            selected=p;if(remove_name(p,x,y,main_names[row][col],tx,ty))return true;begin(u,p,tx);return true;}
+            selected=p;begin(u,p,tx);return true;}
         return true;
     }
     for(int p=0;p<C::LEGACY_COUNT;++p){const auto& c=CONTROLS[p];if(!hit(tx,ty,c.x,c.y,c.w,c.h))continue;
-        selected=p;if(remove_name(p,c.label_x,c.label_y,NAMES[p],tx,ty))return true;
+        selected=p;
         begin(u,p,tx);return true;}
     return true;
 }
@@ -208,8 +182,6 @@ void bit_focus_capture(){
         if(gesture.param>=0&&!owns(u))release();
         if(selected>=u.num_params){selected=C::P_BITS;release();}
         frame.valid=true;frame.modern=u.modern();frame.setup=setup;frame.bypass=u.bypass;frame.mute=chain.mute;
-        frame.lock=lock_context();frame.lock_full=frame.lock&&
-            g_eng->sequence_pattern(bank()).steps[g_edit_chain][g_seq_lock_step].lock_count>=SEQ_LOCKS;
         frame.chain=g_edit_chain;frame.slot=g_edit_slot;frame.selected=selected;frame.mod_links=focus_mod_links(u);
         for(int i=0;i<UNITS_PER_CHAIN;++i){frame.kinds[i]=chain.units[i]?uint8_t(chain.units[i]->kind):uint8_t(UnitKind::Empty);
             frame.bypassed[i]=chain.units[i]&&chain.units[i]->bypass;}
@@ -220,7 +192,7 @@ void bit_focus_capture(){
             std::snprintf(frame.values[p],sizeof frame.values[p],p==C::P_DRIFT?"%+d%%":"%d%%",int(frame.edit[p])*100/32767);
         else value_text(frame.values[p],sizeof frame.values[p],p,frame.edit[p],frame.modern);
     }
-    if(frame.modern){const q15* s=frame.lock?frame.edit:frame.live;
+    if(frame.modern){const q15* s=frame.live;
         char bits[18],rate[18];value_text(bits,sizeof bits,C::P_BITS,s[C::P_BITS],true);
         value_text(rate,sizeof rate,C::P_RATE,s[C::P_RATE],true);
         std::snprintf(frame.model_summary,sizeof frame.model_summary,"%s / %s",bits,rate);
@@ -234,7 +206,7 @@ void bit_focus_draw(const C&){
     char text[24];std::snprintf(text,sizeof text,"ch%02d / %02d",frame.chain+1,frame.slot+1);
     ui::text(64,m::kHeaderTextY,text,m::ghost());
     if(frame.modern)ui::text(206,m::kHeaderTextY,frame.setup?"main":"setup",m::spot());
-    else ui::text(170,m::kHeaderTextY,"extend",frame.lock?m::ghost():m::spot());
+    else ui::text(170,m::kHeaderTextY,"extend",m::spot());
     ui::text(258,m::kHeaderTextY,"byp",frame.bypass?m::spot():m::ghost());
     ui::text(m::right_edge(320)-ui::text_w("x"),m::kHeaderTextY,"x",m::ghost());
     if(frame.bypass)ui::line(258,m::kHeaderMarkY,275,m::kHeaderMarkY,m::spot());
@@ -244,8 +216,7 @@ void bit_focus_draw(const C&){
             control(setup_params[row],14,306,y,setup_names[row]);ui::text(14,y+30,setup_help[row],m::ghost());}}
         else for(int row=0;row<4;++row)for(int col=0;col<2;++col)
             control(main_params[row][col],l::kControlLeft[col],l::kControlRight[col],l::kMainY[row],main_names[row][col]);
-        if(frame.lock)m::footer(320,frame.lock_full?"lock full":"p-lock / name: remove",frame.setup?"b main":"b back");
-        else m::footer(320,frame.setup?"b main":"b back","l: mod >");
+        m::footer(320,frame.setup?"b main":"b back","l: mod >");
         return;
     }
     for(int p=0;p<C::LEGACY_COUNT;++p){const auto& c=CONTROLS[p];
@@ -257,7 +228,7 @@ void bit_focus_draw(const C&){
     }
     ui::line(14,83,24,83,m::ghost());ui::text(30,79,"test triangle",m::ghost());
     const u32 out=frame.mute?m::ghost():m::spot();ui::line(212,83,222,83,out);
-    ui::text(228,79,frame.bypass?"byp dry":frame.mute?"muted":frame.lock?"lock model":"bit model",out);
+    ui::text(228,79,frame.bypass?"byp dry":frame.mute?"muted":"bit model",out);
     ui::line(model::X0,model::ZERO,303,model::ZERO,m::branch());
     for(int i=1;i<model::COLUMNS;++i){const int x=model::X0+i;
         ui::line(x-1,frame.plot.legacy.source[i-1],x,frame.plot.legacy.source[i],m::ghost());}
@@ -266,8 +237,7 @@ void bit_focus_draw(const C&){
         if(frame.plot.legacy.shaped[i]!=frame.plot.legacy.shaped[i-1])
             ui::line(x,frame.plot.legacy.shaped[i-1],x,frame.plot.legacy.shaped[i],out);}
     ui::text(14,158,"9ms / fixed seed / not audio",m::ghost());ui::line(14,223,306,223,m::branch());
-    if(frame.lock)m::footer(320,frame.lock_full?"lock full":"p-lock / name: remove","b back");
-    else m::footer(320,"b back","l: mod >");
+    m::footer(320,"b back","l: mod >");
 }
 bool bit_focus_draw_top(){
     if(!frame.valid||!frame.modern||param_lens_is_open())return false;
@@ -306,7 +276,7 @@ bool bit_focus_draw_top(){
     for(int i=0;i<l::kColumns;++i){const int x=l::kLeft+i;
         if(l::event(plot.capture,i))ui::line(x,190,x,196,m::ghost());
         if(l::event(plot.drop,i))ui::line(x,207,x,211,out);}
-    m::footer(400,frame.lock?"lock reset ref / not live audio":frame.mute?"muted / reset ref / not audio":
+    m::footer(400,frame.mute?"muted / reset ref / not audio":
         frame.bypass?"bypass / reset ref / not audio":"reset reference / not live audio","out --");
     return true;
 }

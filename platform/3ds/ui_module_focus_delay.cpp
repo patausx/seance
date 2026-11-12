@@ -28,9 +28,9 @@ struct Frame {
     uint8_t source[D::P_COUNT]={}, kinds[UNITS_PER_CHAIN]={};
     bool bypassed[UNITS_PER_CHAIN]={};
     D::VisualState live={};
-    uint32_t interval=32, base_interval=32, edit_interval=32;
-    bool modern=false, valid=false, bypass=false, mute=false, lock=false, full=false, ready=false;
-    bool clear_armed=false, limited=false, edit_limited=false, lens=false;
+    uint32_t interval=32, base_interval=32;
+    bool modern=false, valid=false, bypass=false, mute=false, ready=false;
+    bool clear_armed=false, limited=false, lens=false;
     uint8_t clear_progress=0;
     int8_t chain=0, slot=0, selected=0;
 } frame;
@@ -48,10 +48,10 @@ struct Gesture {
     Engine* engine=nullptr;
     uintptr_t unit=0;
     View view=View::Chains;
-    int chain=-1,slot=-1,bank=-1,step=-1,lock_chain=-1,param=-1,selection=-1;
+    int chain=-1,slot=-1,bank=-1,param=-1,selection=-1;
     int x=0,y=0,last_x=0;
     q15 value=0,next=0;
-    bool locked=false,modern=false;
+    bool modern=false;
     uint32_t started=0;
     Action action=Action::Drag;
     Box box{};
@@ -61,34 +61,28 @@ int count() { return frame.modern?D::P_COUNT:6; }
 int clamp(int v) { return std::max(0,std::min(32767,v)); }
 bool context(bool body=true) {
     return g_eng && g_audio && (!body || !param_lens_is_open()) && g_overlay==Overlay::Editor &&
-        (g_view==View::Chains || (g_view==View::Sequencer && g_seq_lock_armed)) &&
+        g_view==View::Chains &&
         g_edit_chain>=0 && g_edit_chain<NUM_CHAINS && g_edit_slot>=0 && g_edit_slot<UNITS_PER_CHAIN;
 }
-bool lock_context() {
-    return g_seq_lock_armed && g_seq_lock_chain==g_edit_chain &&
-        g_seq_lock_step>=0 && g_seq_lock_step<SEQ_STEPS;
-}
 q15 edit_value(const D& u,int p) {
-    return lock_context()?seq_display_value(g_edit_slot,p,u.params[p].base):u.params[p].base;
+    return u.params[p].base;
 }
 bool sync_control(const D& u) {
-    return u.modern() && (lock_context()?edit_value(u,D::P_SYNC):delay_readout::resolved(u,D::P_SYNC))>16384;
+    return u.modern() && delay_readout::resolved(u,D::P_SYNC)>16384;
 }
 bool owns(const D& u) {
     return context() && gesture.engine==g_eng && gesture.unit==uintptr_t(&u) && gesture.view==g_view &&
         gesture.chain==g_edit_chain && gesture.slot==g_edit_slot && gesture.bank==g_eng->active_pattern &&
-        g_eng->chains[g_edit_chain].units[g_edit_slot]==&u && gesture.locked==g_seq_lock_armed &&
+        g_eng->chains[g_edit_chain].units[g_edit_slot]==&u &&
         gesture.modern==u.modern() && gesture.selection==selected &&
         // A sigil can switch free/sync while a finger is down. Never silently
         // continue editing the other, now invisible, time control.
         (gesture.param!=D::P_TIME || !sync_control(u)) &&
-        ((gesture.param!=D::P_DIV && gesture.param!=D::P_FEEL) || sync_control(u)) &&
-        (!gesture.locked || (lock_context() && gesture.step==g_seq_lock_step && gesture.lock_chain==g_seq_lock_chain));
+        ((gesture.param!=D::P_DIV && gesture.param!=D::P_FEEL) || sync_control(u));
 }
 void start(D& u,int p,int tx,int ty,Action action=Action::Drag,Box box={},q15 next=0) {
     gesture={};gesture.engine=g_eng;gesture.unit=uintptr_t(&u);gesture.view=g_view;
     gesture.chain=g_edit_chain;gesture.slot=g_edit_slot;gesture.bank=g_eng->active_pattern;
-    gesture.step=g_seq_lock_step;gesture.lock_chain=g_seq_lock_chain;gesture.locked=g_seq_lock_armed;
     gesture.modern=u.modern();gesture.param=p;gesture.selection=selected;
     gesture.x=gesture.last_x=tx;gesture.y=ty;gesture.value=p>=0?edit_value(u,p):0;
     gesture.action=action;gesture.box=box;gesture.next=next;gesture.started=g_ui_frame;
@@ -96,15 +90,14 @@ void start(D& u,int p,int tx,int ty,Action action=Action::Drag,Box box={},q15 ne
 }
 void assign(D& u,int p,q15 value) {
     if(value==edit_value(u,p))return;
-    if(g_seq_lock_armed){if(lock_context())seq_record_lock(g_edit_slot,p,value);}
-    else {u.params[p].base=value;mark_project_mutated();}
+    u.params[p].base=value;mark_project_mutated();
 }
 u32 color(int p) {
     return frame.bypass||frame.mute?m::ghost():
-        (frame.selected==p || (!frame.lock && (frame.mod_links&(1u<<p))))?m::spot():m::ink();
+        (frame.selected==p || (frame.mod_links&(1u<<p)))?m::spot():m::ink();
 }
 void right(int x,int y,const char* text,u32 ink) { ui::text(x-ui::text_w(text),y,text,ink); }
-q15 shown(int p) {return frame.lock?frame.edit[p]:frame.value[p];}
+q15 shown(int p) {return frame.value[p];}
 void value_text(int p,q15 value,char* text,size_t size) {
     module_inspector_value_text(text,size,UnitKind::Delay,p,value,true,frame.modern);
 }
@@ -131,8 +124,8 @@ void primary(int p,int x,int end,const char* name) {
         const auto number=inspector_gothic::draw_numeric(x,85,text,color(p),m::spot());
         ui::text(number.end_x+4,79,number.suffix,m::ghost());
     }
-    value_text(p,frame.lock?frame.value[p]:frame.base[p],text,sizeof text);
-    std::snprintf(caption,sizeof caption,"%s %s",frame.lock?"live":"base",text);
+    value_text(p,frame.base[p],text,sizeof text);
+    std::snprintf(caption,sizeof caption,"base %s",text);
     ui::text(x,100,caption,m::ghost());
     rail(p,x,end,118);
 }
@@ -142,8 +135,8 @@ void secondary(int p,int x,const char* name,bool enabled=true) {
     if(enabled) {
         badge(p,x+57,140);value_text(p,shown(p),text,sizeof text);
         ui::text(x,158,text,color(p));
-        value_text(p,frame.lock?frame.value[p]:frame.base[p],text,sizeof text);
-        std::snprintf(caption,sizeof caption,"%s %s",frame.lock?"l":"b",text);
+        value_text(p,frame.base[p],text,sizeof text);
+        std::snprintf(caption,sizeof caption,"b %s",text);
         ui::text(x,173,caption,m::ghost());
         rail(p,x+2,x+56,192);
     } else {
@@ -183,15 +176,10 @@ bool delay_focus_touch_body(D& u,int tx,int ty) {
     platform::AudioOut::Guard guard(*g_audio);
     if(g_eng->chains[g_edit_chain].units[g_edit_slot]!=&u)return false;
     delay_focus_release();g_drag=Drag::None;
-    if(!g_seq_lock_armed && hit(tx,ty,246,0,36,25)) {
+    if(hit(tx,ty,246,0,36,25)) {
         u.bypass=!u.bypass;mark_project_mutated();return true;
     }
-    if(lock_context() && hit(tx,ty,8,u.modern()?204:209,100,u.modern()?24:15)) {
-        if(g_eng->remove_step_lock(g_seq_lock_chain,g_seq_lock_step,g_edit_slot,selected))mark_project_mutated();
-        return true;
-    }
-    if(g_seq_lock_armed && !lock_context())return true;
-    if(u.modern() && !g_seq_lock_armed && CLEAR.contains(tx,ty)) {
+    if(u.modern() && CLEAR.contains(tx,ty)) {
         start(u,-1,tx,ty,Action::Clear,CLEAR);return true;
     }
     const auto tap=[&](int p,Box box,q15 next) {
@@ -200,11 +188,7 @@ bool delay_focus_touch_body(D& u,int tx,int ty) {
     };
     if(tap(D::P_HOLD,{184,0,56,25},edit_value(u,D::P_HOLD)>16384?0:32767))return true;
     if(u.modern()) {
-        if(g_seq_lock_armed) {
-            if(tap(D::P_SYNC,{108,204,40,24},edit_value(u,D::P_SYNC)>16384?0:32767))return true;
-        } else {
-            if(tap(D::P_SYNC,{8,204,46,24},0) || tap(D::P_SYNC,{54,204,54,24},32767))return true;
-        }
+        if(tap(D::P_SYNC,{8,204,46,24},0) || tap(D::P_SYNC,{54,204,54,24},32767))return true;
         if(tap(D::P_MODE,{148,204,52,24},0) || tap(D::P_MODE,{200,204,50,24},32767))return true;
     }
     int p=-1;
@@ -255,9 +239,7 @@ void delay_focus_capture() {
         if(selected>=u.num_params)selected=0;
         frame.chain=g_edit_chain;frame.slot=g_edit_slot;frame.selected=selected;
         frame.bypass=u.bypass;frame.mute=chain.mute;frame.ready=u.ready();
-        frame.lock=lock_context();frame.lens=param_lens_is_open();
-        frame.full=frame.lock &&
-            (g_seq_lock_flash>0 || g_eng->pattern.steps[g_edit_chain][g_seq_lock_step].lock_count>=SEQ_LOCKS);
+        frame.lens=param_lens_is_open();
         frame.clear_armed=gesture.unit && gesture.action==Action::Clear;frame.clear_progress=frame.clear_armed?
             std::min<uint32_t>(100,uint32_t(g_ui_frame-gesture.started)*100/CLEAR_FRAMES):0;
         frame.mod_links=focus_mod_links(u);
@@ -277,7 +259,6 @@ void delay_focus_capture() {
     // audio unlocked. Both LCDs will read this same immutable frame until capture.
     frame.interval=delay_readout::interval(frame.modern,frame.value,frame.live.bpm_q16,&frame.limited);
     frame.base_interval=delay_readout::interval(frame.modern,frame.base,frame.live.bpm_q16);
-    frame.edit_interval=delay_readout::interval(frame.modern,frame.edit,frame.live.bpm_q16,&frame.edit_limited);
     delay_iris::build(iris,delay_time::free_value(frame.interval),delay_time::free_value(frame.base_interval),
                       frame.value[D::P_FEEDBACK],frame.value[D::P_MIX]);
 }
@@ -307,8 +288,8 @@ void delay_focus_draw(const D&) {
         right(192,35,feels[delay_time::feel(shown(D::P_FEEL))],color(D::P_FEEL));
         badge(D::P_FEEL,196,48);
         if(frame.selected==D::P_FEEL)ui::line(166,45,192,45,m::spot());
-        const uint32_t frames=frame.lock?frame.edit_interval:frame.interval;
-        std::snprintf(text,sizeof text,"%ums%s",unsigned((frames+16)/32),(frame.lock?frame.edit_limited:frame.limited)?"!":"");
+        const uint32_t frames=frame.interval;
+        std::snprintf(text,sizeof text,"%ums%s",unsigned((frames+16)/32),frame.limited?"!":"");
         right(190,80,text,m::ghost());
     }
     // The echo picture lives upstairs. Every lower area is now a generous,
@@ -318,10 +299,7 @@ void delay_focus_draw(const D&) {
     secondary(D::P_WOW,166,"wow");
     secondary(D::P_SAT,242,"sat");
     if(frame.modern) {
-        if(frame.lock) {
-            ui::text(14,213,"clear lock",m::ghost());
-            ui::text(114,213,synced?"sync":"free",color(D::P_SYNC));
-        } else {
+        {
             ui::text(14,213,"free",synced?m::ghost():m::spot());
             ui::text(62,213,"sync",synced?m::spot():m::ghost());
             const int x=synced?62:14;ui::line(x,223,x+23,223,m::spot());
@@ -330,19 +308,17 @@ void delay_focus_draw(const D&) {
         ui::text(154,213,"tape",clean?m::ghost():m::spot());
         ui::text(206,213,"clean",clean?m::spot():m::ghost());
         const int x=clean?206:154;ui::line(x,223,x+23,223,m::spot());
-        if(!frame.lock) {
-            ui::text(266,213,frame.live.clearing?"wait":frame.clear_armed?"hold":"clear",frame.clear_armed?m::spot():m::ghost());
-            if(frame.clear_armed)ui::line(260,223,260+frame.clear_progress*48/100,223,m::spot());
-        }
+        ui::text(266,213,frame.live.clearing?"wait":frame.clear_armed?"hold":"clear",frame.clear_armed?m::spot():m::ghost());
+        if(frame.clear_armed)ui::line(260,223,260+frame.clear_progress*48/100,223,m::spot());
     } else {
-        ui::text(14,213,frame.lock?"clear lock":"free / tape",m::ghost());
+        ui::text(14,213,"free / tape",m::ghost());
         right(306,213,"legacy",m::ghost());
     }
     ui::text(m::kLeft,m::kTextY,"b back",m::ghost());
-    ui::text(86,m::kTextY,frame.full?"lock full":frame.lock?"edit lock":!frame.ready?"no buffer":
+    ui::text(86,m::kTextY,!frame.ready?"no buffer":
         frame.bypass?"bypassed":frame.mute?"chain muted":frame.live.clearing?"clearing":
         frame.clear_armed?"hold to clear":"values / live",m::ghost());
-    if(!frame.lock)right(m::right_edge(320),m::kTextY,"l: mod >",m::ghost());
+    right(m::right_edge(320),m::kTextY,"l: mod >",m::ghost());
 }
 bool delay_focus_draw_top() {
     if(!frame.valid)return false;
@@ -408,11 +384,7 @@ bool delay_focus_draw_top() {
     ui::text(200-ui::text_w(text)/2,207,text,m::ghost());
 
     const auto& d=frame.detail;
-    if(frame.lock) {
-        value_text(frame.selected,frame.edit[frame.selected],a,sizeof a);
-        value_text(frame.selected,frame.base[frame.selected],b,sizeof b);
-        std::snprintf(text,sizeof text,"draft %s %s / base %s",NAMES[frame.selected],a,b);
-    } else if(d.source==ModSource::None)std::snprintf(text,sizeof text,"%s / mod off%s",NAMES[frame.selected],d.layer?" / live override":"");
+    if(d.source==ModSource::None)std::snprintf(text,sizeof text,"%s / mod off%s",NAMES[frame.selected],d.layer?" / live override":"");
     else {
         char src[16];
         if(d.source==ModSource::EnvFollow)std::snprintf(src,sizeof src,"env ch%d",d.env_chain+1);
@@ -424,7 +396,6 @@ bool delay_focus_draw_top() {
     ui::text(14,219,text,m::ghost());
     const char* status="parameter model / not audio";
     if(!frame.ready)status="buffer unavailable";
-    else if(frame.full)status="lock bank full";
     else if(frame.live.clearing)status=paused?"clear pending / paused":"clearing history";
     else if(frame.bypass || frame.mute)status=frame.mute?"chain muted / last read":"bypassed / last read";
     else if(!frame.live.ready)status="await processing";
@@ -433,8 +404,7 @@ bool delay_focus_draw_top() {
         std::snprintf(text,sizeof text,"hold %d%% / not freeze",int(frame.live.hold_amount)*100/32767);status=text;
     } else if(frame.live.crossfading)status="20ms clean handoff";
     ui::text(m::kLeft,m::kTextY,status,m::ghost());
-    if(frame.lock)right(m::right_edge(400),m::kTextY,"live / draft below",m::ghost());
-    else if(d.temp)right(m::right_edge(400),m::kTextY,"temp override",m::spot());
+    if(d.temp)right(m::right_edge(400),m::kTextY,"temp override",m::spot());
     else {
         int links=0;for(int p=0;p<count();++p)if(frame.mod_links&(1u<<p))++links;
         if(links){std::snprintf(text,sizeof text,"%d live links",links);right(m::right_edge(400),m::kTextY,text,m::spot());}

@@ -13,7 +13,7 @@ projects are saved explicitly; keep a backup of `sdmc:/3ds/seance/`.
 - [samples](#play-and-samples), [recording](#microphone-and-recording) and [bounce](#bounce)
 - [perform, banks and order](#perform)
 - [projects and backups](#projects-and-data-safety), [troubleshooting](#troubleshooting)
-- [module reference](#module-reference): all 30 modules, controls and patch ideas
+- [module reference](#module-reference): all 33 active modules, controls and patch ideas
 
 ## installation
 
@@ -66,9 +66,9 @@ close it before editing the view underneath.
 | hold `L` in a module | edit modulation for the selected parameter |
 | `R` in Chains | open the selected module's **more** actions |
 | tap `R` in the sequencer | cycle the step-editing mode |
-| hold `R` in the sequencer | open the mode circle; choose with the circle pad or a shortcut, then release `R` to commit |
+| hold `R` in the sequencer | open the mode circle over the score; choose with the circle pad, a touch or a shortcut, then release `R` to commit |
 | `R + B` in the sequencer | cancel mode selection |
-| hold `B` in the sequencer | open bank / length / direction controls |
+| hold `B` in the sequencer | open the bank panel: `L`/`R` bank, up/down track, left/right length, `A` direction, `X` copy, `Y` paste |
 | `L + up/down` in the sequencer | change the current value for the explicit step group |
 | `L + B` in the sequencer | deselect the step group |
 | `ZR` in Chains | undo the latest structural delete/reorder while it is still current |
@@ -174,7 +174,7 @@ selecting an entry and confirming it are separate actions.
 
 | family | modules | use |
 | --- | --- | --- |
-| sources | [osc](#osc), [fm](#fm), [motor](#motor), [noise](#noise), [bird](#bird), [inst](#inst), [play](#play), [scrt](#scrt), [paul](#paul), [gran](#gran), [mic](#mic) | create sound, play a sample or bring in the microphone |
+| sources | [osc](#osc), [fm](#fm), [pent](#pent), [motor](#motor), [noise](#noise), [bird](#bird), [inst](#inst), [play](#play), [scrt](#scrt), [paul](#paul), [rule](#rule), [rot](#rot), [gran](#gran), [mic](#mic) | create sound, play a sample or bring in the microphone |
 | tone | [filt](#filt), [tilt](#tilt), [mouth](#mouth), [fold](#fold), [strain](#strain), [bit](#bit), [ring](#ring), [shift](#shift), [comp](#comp), [vca](#vca) | shape frequencies, dynamics and gain |
 | time | [chor](#chor), [dly](#dly), [rev](#rev), [ghost](#ghost), [swarm](#swarm), [fract](#fract), [glitch](#glitch) | chorus, echoes, space and live-buffer processing |
 | tools | [arp](#arp), [rec](#rec) | clocked note patterns and in-chain recording |
@@ -188,6 +188,20 @@ use each editor's named controls and upper display; parameter order varies.
 the starter VCA uses a triggered envelope: **A** or a sequencer hit opens it.
 the VCA editor also offers an optional trigger-armed cycle. sound can continue
 through delay/reverb tails after a source stops.
+
+### stereo chains
+
+the stereo foundation retains both channels through **filter / vca / rec / arp**
+when a stereo pipe is admitted. unsupported processors refuse the **whole chain's
+audio**, never silently fold left/right or skip an effect. ordinary mono chains
+keep their existing behavior. comp/mouth/glitch retain their own bypass crossfade
+and still require stereo support even when bypassed. [pent](#pent) offers explicit
+stereo; its default remains mono. the relic stereo source itself is [retired](#relic).
+
+REC captures its actual input width; saved WAVs retain it. chain bounce is likewise
+mono or stereo according to the admitted pipe, while master bounce is stereo.
+the existing bounce **use in chain** path uses mono PLAY and loses stereo; it is
+not a stereo replay path.
 
 ### parameter modulation
 
@@ -259,15 +273,59 @@ separate. no separate full-screen focus view is needed.
   release **R** to commit; **R+B** cancels. returning the pad to center keeps
   the last candidate. the [mode shortcuts](#mode-shortcuts) are another way to choose.
 - **A** increases/enables the focused step's current value.
-- **short B**, on release, decreases/disables it. holding B opens the bank /
-  length / direction controls and does not also apply a minus.
+- **short B**, on release, decreases/disables it. holding B opens the
+  [bank panel](#bank-panel) and does not also apply a minus.
 - **Y** listens to that step: one manual chain hit using its note, slice and
   valid locks, without moving transport or requiring its trigger/condition.
 - **X** clears only the focused step and deselects the group.
-- note changes are semitones. timing, conditions and retriggers have their own
-  value vocabularies; use the upper readout for the whole value.
+- note changes use semitones in **chromatic**, or the chosen scale's degrees for
+  absolute-note targets. timing, conditions and retriggers keep their own value
+  vocabularies; use the upper readout for the whole value.
 - **START** plays/stops; **R+START** stops/resets. **Y does not leave the score**;
   use **SELECT / go to** to change views.
+
+### bank panel
+
+hold **B**. the eight bank numbers stand in one row; empty banks are dim and
+**play** marks the sounding one. below them all four tracks show their length
+and direction, and the upper display shows what the chosen bank stores.
+
+- **L / R** choose the bank to edit. this never launches it.
+- **up / down** choose a track, **left / right** change its length, **A** its direction.
+- **X** copies the chosen bank; **Y** pastes the copy into the chosen bank. **clear**
+  is a touch word. a bank that already holds something asks a second time.
+  the sounding bank cannot be replaced or cleared; stop first.
+- the panel also works with the stylus while B is held: tap a number, drag a
+  length rail, tap a direction.
+- releasing **B** keeps the chosen bank and the new lengths/directions.
+  **SELECT** discards them. paste and clear are written at once.
+
+### continuous sources
+
+a track whose source sounds continuously and has no gate after it (for example an
+osc without a vca, pent, rule or rot) shows its level as a curve in **trig** mode.
+
+- tap a step to set or remove its trigger; a small tick under the curve marks it.
+  on these rows the trigger is set by tap only.
+- drag the stylus along the row to draw the curve. one stroke is one undo step.
+- **A / B** raise or lower the selected point; the rail below sets it directly.
+- while the edited bank plays, a small solid diamond on the selected row shows
+  the value that is actually applied, including modulation.
+
+### project scale
+
+In **note**, tap **chrom** (or the current word, such as **c minor**) in the editor
+row. Choose the tonic and scale from its two word branches; lift to commit.
+Dragging out cancels the press; **B** or a tap outside closes. The setting is shared
+by all tracks/banks and saved with the project. **R** keeps its mode-circle gestures.
+
+Touch and A/B/group edits on absolute-note targets follow the selected degrees.
+Changing the scale never rewrites existing notes; Lock, paste and undo stay raw.
+Relative transposition and compatibility speed entry keep their previous mappings.
+**OSC qnt** and **PLAY tape qnt** additionally snap their nominal pitch/modulation
+to the scale. Other continuous modulation, musical PLAY Normal/Stretch and RULE's
+local SCALE are not globally quantized. Samples still use their existing
+user-prepared-c4 assumption, not automatic pitch detection.
 
 ### mode shortcuts
 
@@ -302,9 +360,11 @@ tools footer empties only the clipboard; it does not clear notes or the group.
 
 ### locks and slices
 
-lock mode stores a per-step parameter override, not a new module base. select the
-parameter with the lock inspector; unsupported/structural operations remain
-unavailable. lock editing owns input while it is open.
+lock mode stores a per-step parameter override, not a new module base. choose the
+parameter with the circle pad (left/right module, up/down parameter), or tap the
+address in the editor row (such as **02 filt / cut**) and pick the module and
+parameter from the two lists. picking only selects the target; nothing is written
+until you change a value. unsupported/structural operations remain unavailable.
 
 **primary pitch holds until the next accepted written pitch**, even across empty
 steps or a new trigger with no note. an accepted pitch record does not need its own
@@ -324,7 +384,7 @@ editing the cuts themselves belongs to the PLAY editor, not to the step grid.
 ## play and samples
 
 put your WAV files in `sdmc:/3ds/seance/samples/`. the source name in PLAY, GRAN,
-SCRT or PAUL opens the shared browser. browsing, listening and assigning are
+SCRT, PAUL, RULE or ROT opens the shared browser. browsing, listening and assigning are
 separate actions; browsing a file does not replace a module's sample.
 
 ### sample browser
@@ -447,9 +507,12 @@ confirmation. it replaces that destination's modules **and rhythm**, even if the
 chain was empty. save a project copy first if you want to preserve the old chain.
 partial takes can be saved but are not offered as complete loops for chain use.
 
-master capture is final stereo. single-chain capture is mono, after that chain's
-modules but before chain volume/pan and master processing. muted/empty chains
-record silence; a zero chain fader alone does not silence this pre-fader tap.
+master capture is final stereo. single-chain capture retains the admitted chain's
+actual mono or stereo width, after its modules but before chain volume/pan and
+master processing. muted/empty chains record silence; a zero chain fader alone
+does not silence this pre-fader tap. changing channel width cancels an armed take
+or ends a partial take; the existing **use in chain** path converts to mono PLAY,
+not stereo replay.
 maximum capture is 524288 frames (16.384 s); unavailable bar lengths are dimmed.
 there is no automatic tail extension, normalization or crossfade. **record again**
 releases the held workspace, not previously exported WAVs.
@@ -561,7 +624,7 @@ calling a candidate hardware-tested. see [building](BUILDING.md).
 
 ## module reference
 
-30 modules, grouped by the same roles as the picker:
+33 active modules, grouped by the same roles as the picker:
 [sources](#sources) · [tone](#tone) · [time](#time) · [tools](#tools).
 select a card and use **edit / X** to open its controls.
 
@@ -592,6 +655,34 @@ semitone pitch editing.
 
 **try:** `osc → filt → vca` for a bass or lead; route a slow sigil to width or
 filter cutoff. trigger the VCA to hear its envelope open.
+
+#### pent
+
+**five coupled oscillators.** one root and five independent tuning ratios form a
+continuous source; each oscillator phase-modulates its two pentagram neighbours.
+default tuning is d2 with **1 : 5/4 : 3/2 : 7/4 : 2**. no WAV or sample bank is needed.
+
+- main keeps **spread / bond / drift / drive**. spread detunes the five voices;
+  bond changes their coupling depth, drift its slow pitch movement, drive the
+  oscillator nonlinearity. **motion → depth** sets the drift excursion.
+- tap a–e to select a voice without changing its tuning; tap its ratio for presets
+  or continuous tuning. **voices** also keeps root, level and mono/stereo.
+- **X** opens the selected control disclosure. **A** keeps triggering the chain
+  while the menu is closed; inside a menu it accepts the focused choice. **B**
+  closes; **L / mod** edits the selected parameter's modulation.
+- mono works with the existing mono effects. explicit stereo keeps five pans but
+  requires an admitted stereo chain; unsupported effects refuse instead of folding
+  or being skipped. return to mono when using those effects.
+- the white star and blood motion are an ornament driven by the processed drift
+  phase, not an audio spectrum or a per-voice PM meter. sequencer stop makes that
+  ornament quiet, but does not silence the continuous source.
+
+for rhythmic notes, add a VCA and trigger it; use level/mute to silence a drone.
+pent projects require a build supporting SNCK20; older builds reject them. root
+spans MIDI0–120, with a12khz per-voice ceiling; extreme nonlinear settings may alias.
+
+**try:** `pent → filt → vca → dly` in mono, with a slow sigil on bond. use
+`arp → pent → filt → vca → rec` for an explicit stereo recording.
 
 #### fm
 
@@ -718,6 +809,87 @@ keep backups. sustained console performance and listening still need device chec
 
 **try:** `paul → rev → rec`; load a sustained sound, start with flow and the default
 window, then freeze a region and record the evolving texture.
+
+#### rule
+
+**generative sample score.** load one WAV through the source name, then start
+transport. a fifteen-cell ring automaton creates notes on births, holds accepted
+living cells and releases dead ones; the sample itself is never rewritten.
+
+- **rate / density / root / range / attack / release / mutate / spread / voices /
+  level** are the ten main controls. root transposes the source by -24…+24 st;
+  it is not automatic tuning or the sample's absolute MIDI root.
+- tap a neighbourhood tile to change a rule bit; tap a current-row cell to seed
+  it. edits take effect at the next actual generation, without resetting existing
+  readers. an automatic phrase edit starts from the currently sounding rule.
+- **scale** selects the five-step scale; setup selects the repeating 90/30/110
+  phrase or manual rule and the nominal source-root metadata. **L / mod** and
+  selected-bank parameter locks use the ordinary controls.
+
+RULE is dry mono. add DLY/REV downstream for space; stereo source files are read
+as mono without changing their PCM. the stopped sequencer's one-generation
+preview can be silent when that generation has no accepted birth. use the
+browser to audition the source. RULE projects require SNCL21 support or newer.
+
+**try:** `rule → filt → dly → rev`; load a struck or sustained note, start the
+phrase, then change a table bit to hear another pattern emerge.
+
+#### rot
+
+**decaying sample tape.** choose a WAV through the source name. ROT reads a
+private mono loop and accumulates local smear, holes, bit erosion, crackle and wow
+on it, pass after pass. the bank sample and WAV are never damaged.
+
+- the strip's two grips set **start / length**, up to eight seconds per loop.
+  a changed region is prepared afresh; ghost target grips show a pending window.
+  old-region damage is not a reversible edit, and preparing a region is silent.
+- ten main controls are **pitch / level / rot / spread / smear / holes / crackle /
+  wow / bits / heal**. pitch is -24…+24 st; all twelve parameters, including
+  grips, support the ordinary MOD pane and selected-bank locks.
+- **rot / heal / hold** commit on lift. rot damages the tape, heal pulls it back
+  toward the original, hold freezes damage and pass progression while the tape
+  readers keep sounding; it is saved configuration, not a held stylus command.
+  setup edits the deterministic seed and 4…100 pass count.
+- a ROT card you add from the picker **keeps rotting until you hold or heal it**:
+  it never heals or stops by itself, and the pass count is how many passes the
+  damage takes to reach full speed. its seven damage controls (rot … bits) start
+  at 75%. 50% is the full strength of earlier builds; the upper half goes further,
+  up to twelve times as many rot spots per pass, deeper holes, coarser bits and
+  denser, louder crackle. at 100% a five-second loop is mostly gone in about 20
+  seconds and a one-second loop in a few seconds; a shorter loop always rots
+  faster, because one damage step takes one loop length.
+- a ROT card from a project saved by an earlier build keeps the earlier run: decay
+  over the pass count, automatic healing over the last passes, then a frozen final
+  tape, with 100% on a damage control as its full strength.
+- start transport to let the tape rot. **A** while stopped auditions one bounded
+  loop after preparation. any trigger on the chain starts a fresh tape, so leave
+  the ROT track without triggers while it decays. source preparation can take a
+  noticeable fraction of a second, longer with a long imported file.
+
+The upper film shows the actual pass envelopes and rot masks, previous layers,
+real crossed crackle bins and healed scars. it does not compute the audio.
+ROT is dry mono, not an incoming-audio effect. add REV/DLY as separate modules.
+New ROT projects require SNCM22 support; older builds reject them, and a project
+holding a ROT card added with this build cannot be opened by earlier builds.
+several ROT cards can exhaust the shared private-workspace budget; reduce the
+patch rather than overwrite a source. console CPU/memory headroom and listening
+remain device checks, not guaranteed by the host tests.
+
+**try:** `rot → rev → rec`; load a sustained sound, start transport, hold a stage
+of decay you like, and record it downstream. shorten the loop for faster decay.
+
+#### relic
+
+**temporarily retired.** relic is absent from the picker and current audio/UI
+runtime after reported performance problems; its exact implementation is archived,
+not redesigned or replaced with another module. persisted kind31 remains reserved.
+projects containing relic, even only in an inactive scene, refuse safely before
+changing the live project or sample bank. their files are not edited or deleted;
+open them with the archived pre-retirement implementation instead. ordinary
+projects and all other modules retain their existing behavior.
+
+this removal does not claim a measured console speedup or automatically update an
+installed binary.
 
 #### gran
 
@@ -946,8 +1118,8 @@ history first; keep a pattern you like while the source continues changing.
 
 **clocked note generator.** place it before the source it should play, then start
 transport. it targets the first eligible, non-bypassed source to its right in
-that chain: osc, fm, bird, play, inst, paul, or a current note-mode motor. gran,
-scrt, noise and mic are not targets. incoming audio passes through; arp is not a
+that chain: osc, fm, pent, bird, play, inst, paul, or a current note-mode motor. gran,
+scrt, rule, rot, noise and mic are not targets. incoming audio passes through; arp is not a
 sound source.
 
 rate, gate, order and octaves shape the phrase; **note 1–4** set relative offsets

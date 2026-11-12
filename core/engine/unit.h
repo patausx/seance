@@ -61,30 +61,22 @@ inline const char* mod_source_name(ModSource s) {
 // one exposed parameter of a unit
 struct Param {
     const char* name  = "";
-    q15  base         = 0;            // ui-set value
-    ModSource src     = ModSource::None;
-    q15  mod_depth    = 0;            // signed attenuverter
-    bool mod_enabled = true;         // persistent cable mute; retains source/depth
-    q15  effective    = 0;            // slewed base + mod, refreshed each control tick
-    q15  target       = 0;            // unsmoothed resolved target
-    // p-locks live in a dedicated runtime override. Applying/releasing them no
-    // longer mutates Param::base, so patch persistence and controller UI remain
-    // stable while the audio worker advances steps.
-    q15  step_lock    = 0;
-    bool step_lock_override = false;
-    // Runtime-only Performance override. It never changes the persistent base,
-    // so held/toggled global FX can restore the exact prepared patch value.
-    q15  performance  = 0;
-    bool performance_override = false;
-    // Runtime-only sequence editor audition, independent from playback locks.
-    // Cancelling reveals the current live lock/base, never a saved stale value.
-    q15 audition = 0;
-    bool audition_override = false;
-    // Independent, highest-priority focused-card gesture; never persisted.
-    q15 temp = 0;
-    bool temp_override = false;
-    bool slew_ready   = false;        // first resolve snaps; later resolves use one-pole slew
-    bool bipolar      = false;        // display/clamp hint: [-1..1] vs [0..1]
+    q15 base=0;                         // persistent ui-set value
+    q15 mod_depth=0;                    // persistent signed attenuverter
+    q15 effective=0,target=0;           // control tick output / unsmoothed target
+    q15 step_lock=0,performance=0,audition=0,temp=0;
+    // Exclusive typed source, target-owned; no persisted struct layout. Scalars
+    // are grouped to retain the original host Param/Unit size and voice budgets.
+    uint32_t relic_source=0;
+    ModSource src=ModSource::None;       // ids0..9 unchanged, None for typed cables
+    uint8_t relic_port=0;
+    bool mod_enabled=true;              // off/zero still occupies its one cable
+    bool step_lock_override=false;
+    bool performance_override=false;
+    bool audition_override=false;
+    bool temp_override=false;
+    bool slew_ready=false;
+    bool bipolar=false;
 
     q15 control_source() const {
         return temp_override ? temp : (performance_override ? performance :
@@ -152,8 +144,17 @@ enum class UnitKind : uint8_t {
     Inst,           // built-in multisampled instrument source (append-only: 28)
     Scratch = 29,   // separate scratch/hold sample source; persisted append-only
     Paul = 30,      // independent spectral time stretch, append-only
-    Count
+    Relic = 31,     // retired; persisted SNCJ19 id remains reserved, never reused
+    Pent = 32,      // five-vertex delayed PM source; append-only
+    Rule = 33,      // dry ring-CA sample source; append-only
+    Rot = 34,       // dry private bank-sample tape source; append-only
+    Count = 35
 };
+
+// Persisted catalogue is append-only; availability is a separate runtime contract.
+constexpr bool unit_kind_available(UnitKind kind) {
+    return kind > UnitKind::Empty && kind < UnitKind::Count && kind != UnitKind::Relic;
+}
 
 const char* unit_kind_name(UnitKind k);
 
@@ -190,8 +191,15 @@ public:
     // Read-only, allocation-free module metadata used by the sequencer snapshot.
     virtual SequencerProperties sequencer_properties() const { return {}; }
 
-    // in-place mono processing. sources overwrite, processors transform.
+    // The historical mono entry stays exact. Stereo admission is explicit:
+    // sources declare their overwrite width; processors retain the input width.
+    // A false stereo result never means pass-through or an implicit downmix.
     virtual void process(q15* buf, int frames) = 0;
+    virtual uint8_t output_channels(uint8_t input) const {
+        return sequencer_properties().source ? 1 : input;
+    }
+    virtual bool supports_stereo() const { return false; }
+    virtual bool process_stereo(q15*, int) { return false; }
 
     // control-rate hook (after params resolve): recompute coefficients here
     virtual void control_tick() {}

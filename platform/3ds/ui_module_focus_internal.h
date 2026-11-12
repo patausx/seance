@@ -2,6 +2,10 @@
 #include <3ds.h>
 #include "../../core/engine/units.h"
 #include "module_fader.h"
+#include "ui_module_focus_relic.h"
+#include "../../core/engine/pent_unit.h"
+#include "../../core/engine/rule_unit.h"
+#include "../../core/engine/rot_unit.h"
 
 namespace seance::platform::ui3ds {
 
@@ -10,7 +14,7 @@ namespace seance::platform::ui3ds {
 inline uint16_t focus_mod_links(const Unit& unit) {
     uint16_t links=0;
     for(int p=0;p<unit.num_params && p<16;++p)
-        if(unit.params[p].src!=ModSource::None && unit.params[p].mod_enabled)
+        if((unit.params[p].src!=ModSource::None || unit.params[p].relic_source) && unit.params[p].mod_enabled)
             links|=uint16_t(1u<<p);
     return links;
 }
@@ -51,6 +55,7 @@ void recorder_focus_capture();
 int recorder_focus_selected();
 void recorder_focus_select(int param);
 void recorder_focus_release(); // cancellation only
+void recorder_focus_cancel_lifecycle(); // also revoke modal/destructive choice authority
 void recorder_focus_touch_release(); // owned real lift
 bool recorder_focus_back();
 bool recorder_focus_draw_top();
@@ -78,6 +83,56 @@ void play_focus_drag(PlayUnit& unit, int tx, int ty);
 void play_focus_draw_header(const PlayUnit& unit);
 void play_focus_draw(const PlayUnit& unit);
 
+void rot_focus_capture();
+bool rot_focus_touch_body(RotUnit&,int,int);
+void rot_focus_drag(RotUnit&,int,int);
+void rot_focus_draw(const RotUnit&);
+bool rot_focus_draw_top();
+int rot_focus_selected();
+void rot_focus_select(int);
+void rot_focus_release();
+void rot_focus_touch_release();
+bool rot_focus_back();
+bool rot_focus_menu_modal();
+bool rot_focus_menu_input(u32&,u32,u32,bool);
+void rot_focus_menu_touch(u32,u32,int,int);
+void rot_focus_value_text(char*,size_t,int,q15);
+void rot_focus_gpu_frame(bool synchronized=true);
+void rot_focus_shutdown(bool synchronized=true);
+
+void rule_focus_capture();
+bool rule_focus_touch_body(RuleUnit&,int,int);
+void rule_focus_drag(RuleUnit&,int,int);
+void rule_focus_draw(const RuleUnit&);
+bool rule_focus_draw_top();
+int rule_focus_selected();
+void rule_focus_select(int);
+void rule_focus_release();
+void rule_focus_touch_release();
+bool rule_focus_back();
+bool rule_focus_menu_modal();
+bool rule_focus_menu_input(u32&,u32,u32,bool);
+void rule_focus_menu_touch(u32,u32,int,int);
+void rule_focus_value_text(char*,size_t,int,q15);
+
+void pent_focus_capture();
+bool pent_focus_touch_body(PentUnit& unit,int tx,int ty);
+void pent_focus_drag(PentUnit& unit,int tx,int ty);
+void pent_focus_draw(const PentUnit& unit);
+bool pent_focus_draw_top();
+int pent_focus_selected();
+void pent_focus_select(int param);
+void pent_focus_release();
+void pent_focus_touch_release();
+bool pent_focus_back();
+bool pent_focus_menu_modal();
+bool pent_focus_menu_input(u32& down,u32 held,u32 up,bool blocked);
+void pent_focus_menu_touch(u32 down,u32 held,int tx,int ty);
+void pent_focus_value_text(char* out,size_t size,int param,q15 value);
+void pent_focus_gpu_frame();
+void pent_focus_shutdown();
+void pent_focus_chain_trigger_requested(int chain); // existing main guard; request != audio activity
+
 bool module_focus_open_mod(); // release-owned latched ordinary modulation pane
 void paul_focus_capture();
 bool paul_focus_touch_body(PaulUnit& unit,int tx,int ty);
@@ -91,6 +146,7 @@ void paul_focus_touch_release();
 void paul_focus_input(u32 down,u32 held,bool blocked);
 bool paul_focus_back();
 void paul_focus_value_text(char* out,size_t size,int param,q15 value);
+
 
 void scratch_focus_capture(); // one guarded source binding + actual Visual + paired screen Frame
 bool scratch_focus_touch_body(ScratchUnit& unit, int tx, int ty);

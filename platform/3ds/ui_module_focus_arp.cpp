@@ -20,7 +20,7 @@ constexpr const char* NAMES[A::P_COUNT] = {
     "rate", "gate", "order", "octaves", "reset", "play", "note 1", "note 2", "note 3", "note 4"
 };
 struct Frame {
-    bool valid=false, bypass=false, mute=false, lock=false, full=false;
+    bool valid=false, bypass=false, mute=false;
     int chain=0, slot=0, selected=0;
     UnitKind target=UnitKind::Empty;
     bool note_names=false;
@@ -37,60 +37,36 @@ int selected=0;
 struct Gesture {
     Engine* engine=nullptr;
     uintptr_t unit=0;
-    int chain=-1, slot=-1, step=-1, lock_chain=-1, bank=-1, param=-1, x=0;
+    int chain=-1, slot=-1, bank=-1, param=-1, x=0;
     View view=View::Chains;
     q15 value=0;
-    bool lock=false;
 } gesture;
-// Legacy injected lock editing has separate, transient recall; it must never
-// borrow or overwrite the persistent card's four disabled-note values.
-struct LockRecall {
-    Engine* engine=nullptr; uintptr_t unit=0;
-    int chain=-1,slot=-1,bank=-1,step=-1;
-    A::NoteRecall notes;
-} lock_recall;
 int clamp(int v,int lo,int hi) { return std::max(lo,std::min(hi,v)); }
 bool context() {
     return g_eng && g_audio && g_overlay==Overlay::Editor &&
-        (g_view==View::Chains || (g_view==View::Sequencer && g_seq_lock_armed)) &&
+        g_view==View::Chains &&
         g_edit_chain>=0 && g_edit_chain<NUM_CHAINS && g_edit_slot>=0 && g_edit_slot<UNITS_PER_CHAIN;
 }
-bool lock_context() {
-    return g_seq_lock_armed && g_seq_lock_chain==g_edit_chain && g_seq_lock_step>=0 && g_seq_lock_step<SEQ_STEPS;
-}
 q15 edit_value(const A& unit,int p) {
-    return lock_context()?seq_display_value(g_edit_slot,p,unit.params[p].base):unit.params[p].base;
+    return unit.params[p].base;
 }
 bool owns(const A& unit) {
     return gesture.engine==g_eng && gesture.unit==uintptr_t(&unit) && gesture.view==g_view &&
         gesture.chain==g_edit_chain && gesture.slot==g_edit_slot &&
-        g_eng->chains[g_edit_chain].units[g_edit_slot]==&unit && gesture.lock==g_seq_lock_armed &&
-        gesture.bank==g_eng->active_pattern && (!gesture.lock || (lock_context() &&
-        gesture.step==g_seq_lock_step && gesture.lock_chain==g_seq_lock_chain));
+        g_eng->chains[g_edit_chain].units[g_edit_slot]==&unit &&
+        gesture.bank==g_eng->active_pattern;
 }
 void change(A& unit,int p,q15 value) {
     if(value==edit_value(unit,p))return;
-    if(g_seq_lock_armed) { if(lock_context())seq_record_lock(g_edit_slot,p,value); }
-    else { unit.params[p].base=value; mark_project_mutated(); }
+    unit.params[p].base=value; mark_project_mutated();
 }
 void toggle_note(A& unit,int p) {
     A::NoteRecall* recall=&unit.note_recall;
-    if(lock_context()) {
-        if(lock_recall.engine!=g_eng || lock_recall.unit!=uintptr_t(&unit) ||
-           lock_recall.chain!=g_edit_chain || lock_recall.slot!=g_edit_slot ||
-           lock_recall.bank!=g_eng->active_pattern || lock_recall.step!=g_seq_lock_step) {
-            lock_recall={};lock_recall.engine=g_eng;lock_recall.unit=uintptr_t(&unit);
-            lock_recall.chain=g_edit_chain;lock_recall.slot=g_edit_slot;
-            lock_recall.bank=g_eng->active_pattern;lock_recall.step=g_seq_lock_step;
-        }
-        recall=&lock_recall.notes;
-    }
     const int i=p-A::P_NOTE1;const uint8_t bit=uint8_t(1u<<i);
     const q15 before=edit_value(unit,p);const bool off=A::note_semitones(before)==A::NOTE_OFF;
     const q15 next=off ? ((recall->mask&bit) && A::note_semitones(recall->values[i])!=A::NOTE_OFF ?
         recall->values[i] : A::note_value(0)) : A::note_value(A::NOTE_OFF);
     change(unit,p,next);
-    if(edit_value(unit,p)!=next)return; // full lock bank: no phantom recall update
     if(off) {recall->mask&=uint8_t(~bit);recall->values[i]=0;}
     else {recall->values[i]=before;recall->mask|=bit;}
 }
@@ -188,28 +164,23 @@ bool arp_focus_touch_body(A& unit,int tx,int ty) {
     platform::AudioOut::Guard guard(*g_audio);
     arp_focus_release();
     if(g_eng->chains[g_edit_chain].units[g_edit_slot]!=&unit)return false;
-    if(g_seq_lock_armed && !lock_context())return true;
     if(hit(tx,ty,262,5,50,29)) {
-        if(!g_seq_lock_armed) {unit.bypass=!unit.bypass;mark_project_mutated();}
+        unit.bypass=!unit.bypass;mark_project_mutated();
         return true;
     }
-    if(hit(tx,ty,8,224,100,16)) {g_overlay=Overlay::None;g_seq_lock_armed=false;g_drag=Drag::None;return true;}
-    int p=-1,x=0,y=0;
-    for(int i=0;i<4;++i)if(hit(tx,ty,8+76*i,41,72,82)) {p=A::P_NOTE1+i;x=14+76*i;y=46;break;}
-    for(int i=0;i<6;++i)if(hit(tx,ty,8+104*(i%3),131+43*(i/3),96,43)) {p=i;x=14+104*(i%3);y=135+43*(i/3);break;}
+    if(hit(tx,ty,8,224,100,16)) {g_overlay=Overlay::None;g_drag=Drag::None;return true;}
+    int p=-1,x=0;
+    for(int i=0;i<4;++i)if(hit(tx,ty,8+76*i,41,72,82)) {p=A::P_NOTE1+i;x=14+76*i;break;}
+    for(int i=0;i<6;++i)if(hit(tx,ty,8+104*(i%3),131+43*(i/3),96,43)) {p=i;x=14+104*(i%3);break;}
     if(p<0)return true;
     selected=p;
-    if(lock_context() && hit(tx,ty,x-3,y-3,ui::text_w(NAMES[p])+6,14)) {
-        if(g_eng->remove_step_lock(g_seq_lock_chain,g_seq_lock_step,g_edit_slot,p))mark_project_mutated();
-        return true;
-    }
     if(p>=A::P_NOTE1 && hit(tx,ty,x-3,105,68,18)) {
         toggle_note(unit,p);
         return true;
     }
     gesture.engine=g_eng;gesture.unit=uintptr_t(&unit);gesture.chain=g_edit_chain;gesture.slot=g_edit_slot;
-    gesture.step=g_seq_lock_step;gesture.lock_chain=g_seq_lock_chain;gesture.bank=g_eng->active_pattern;
-    gesture.param=p;gesture.x=tx;gesture.value=edit_value(unit,p);gesture.lock=g_seq_lock_armed;gesture.view=g_view;
+    gesture.bank=g_eng->active_pattern;
+    gesture.param=p;gesture.x=tx;gesture.value=edit_value(unit,p);gesture.view=g_view;
     g_drag=Drag::ArpParam;
     return true;
 }
@@ -221,18 +192,15 @@ void arp_focus_drag(A& unit,int tx,int) {
 }
 void arp_focus_capture() {
     frame={};
-    if(!context()) {arp_focus_release();lock_recall={};return;}
+    if(!context()) {arp_focus_release();return;}
     {
         platform::AudioOut::Guard guard(*g_audio);
         const auto& chain=g_eng->chains[g_edit_chain];const Unit* unit=chain.units[g_edit_slot];
-        if(!unit || unit->kind!=UnitKind::Arp) {arp_focus_release();lock_recall={};return;}
-        if(!lock_context() || lock_recall.engine!=g_eng || lock_recall.unit!=uintptr_t(unit) ||
-           lock_recall.chain!=g_edit_chain || lock_recall.slot!=g_edit_slot ||
-           lock_recall.bank!=g_eng->active_pattern || lock_recall.step!=g_seq_lock_step)lock_recall={};
+        if(!unit || unit->kind!=UnitKind::Arp) {arp_focus_release();return;}
         const auto& arp=*static_cast<const A*>(unit);
         if(gesture.unit && (!owns(arp) || param_lens_is_open() || g_drag!=Drag::ArpParam))arp_focus_release();
-        frame.valid=true;frame.bypass=arp.bypass;frame.mute=chain.mute;frame.lock=lock_context();
-        frame.full=frame.lock && g_seq_lock_flash>0;frame.chain=g_edit_chain;frame.slot=g_edit_slot;frame.selected=selected;
+        frame.valid=true;frame.bypass=arp.bypass;frame.mute=chain.mute;
+        frame.chain=g_edit_chain;frame.slot=g_edit_slot;frame.selected=selected;
         frame.visual=arp.visual();
         // Resolve the destination even while stopped, before the first audio tick.
         for(int i=g_edit_slot+1;i<UNITS_PER_CHAIN;++i)if(chain.units[i] && !chain.units[i]->bypass && A::accepts(chain.units[i])) {
@@ -240,7 +208,7 @@ void arp_focus_capture() {
             const Unit& source=*chain.units[i];const int pitch=source.sequencer_properties().pitch_param;
             frame.note_names=(source.kind==UnitKind::Motor) || sequence_note::absolute(source.kind,pitch);
             if(frame.note_names){
-                const q15 edit=frame.lock?seq_display_value(i,pitch,source.params[pitch].base):source.params[pitch].base;
+                const q15 edit=source.params[pitch].base;
                 frame.root_edit=source.kind==UnitKind::Motor?musical_note::decode(edit):sequence_note::midi(source.kind,edit);
                 frame.root_live=source.kind==UnitKind::Motor?musical_note::decode(source.params[pitch].target):sequence_note::midi(source.kind,source.params[pitch].target);
             }
@@ -283,7 +251,7 @@ void arp_focus_draw(const A&) {
         ui::text(x,y+13,frame.values[p],m::ink());rail(p,x,y+29,82);
     }
     ui::line(14,220,304,220,m::branch());
-    m::footer(320,frame.full?"lock full":frame.lock?"name: remove lock":"b back",frame.lock?"b back":"l: mod >");
+    m::footer(320,"b back","l: mod >");
 }
 bool arp_focus_draw_top() {
     if(!frame.valid)return false;
@@ -291,9 +259,9 @@ bool arp_focus_draw_top() {
     char text[80];std::snprintf(text,sizeof text,"ch%02d / %02d / %s",frame.chain+1,frame.slot+1,frame.destination);
     right(m::right_edge(400),m::kHeaderTextY,text,m::ghost());
     ui::text(16,46,NAMES[frame.selected],m::spot());
-    std::snprintf(text,sizeof text,"%s %s / next %s",frame.lock?"lock":"base",frame.values[frame.selected],frame.live[frame.selected]);
+    std::snprintf(text,sizeof text,"%s %s / next %s","base",frame.values[frame.selected],frame.live[frame.selected]);
     right(384,46,text,m::ink());ui::text(16,62,frame.route,m::ghost());
-    ui::text(16,84,frame.lock?"playing figure / lock edit":frame.note_names?"current cycle / notes from source":"current cycle / semitones from source",m::ghost());
+    ui::text(16,84,frame.note_names?"current cycle / notes from source":"current cycle / semitones from source",m::ghost());
     const int count=std::min(int(frame.visual.count),A::MAX_NOTES);
     if(count) {
         int low=0,high=12;
@@ -316,7 +284,7 @@ bool arp_focus_draw_top() {
         frame.selected==A::P_RESET?"trigger: restart figure / free: keep phase":"root follows source / tune it in source editor",m::ghost());
     ui::line(16,225,384,225,m::branch());
     ui::text(m::kLeft,m::kTextY,"source gate / effects keep tails",m::ghost());
-    right(m::right_edge(400),m::kTextY,frame.full?"lock full":frame.lock?"lock edit":"clock synced",m::spot());
+    right(m::right_edge(400),m::kTextY,"clock synced",m::spot());
     return true;
 }
 } // namespace seance::platform::ui3ds

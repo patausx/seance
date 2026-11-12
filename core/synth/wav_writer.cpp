@@ -23,22 +23,24 @@ static bool put_u32(FILE* f, uint32_t v) {
 WavSaveResult save_wav_stream(const char* path, uint8_t channels, uint32_t frames,
                               int sample_rate, int16_t* scratch,
                               uint32_t scratch_frames, WavReadFrames read,
-                              void* context) {
+                              void* context, seance::fileio::NewFileReservation* reservation) {
+    const auto invalid = [&]() {
+        if (reservation && path && reservation->matches(path)) reservation->discard();
+        return WavSaveResult::InvalidSample;
+    };
     if (!path || !*path || sample_rate <= 0 || (channels != 1 && channels != 2) ||
         !frames || !scratch || !scratch_frames || !read)
-        return WavSaveResult::InvalidSample;
+        return invalid();
     const uint64_t data64 = (uint64_t)frames * channels * sizeof(int16_t);
     if (data64 > std::numeric_limits<uint32_t>::max() - 36u)
-        return WavSaveResult::InvalidSample;
+        return invalid();
     const uint32_t data_bytes = (uint32_t)data64;
 
-    char tmp[256];
-    const std::size_t plen = std::strlen(path);
-    if (plen + 4 >= sizeof tmp) return WavSaveResult::InvalidSample;
-    std::memcpy(tmp, path, plen);
-    std::memcpy(tmp + plen, ".tmp", 5);
-    FILE* f = std::fopen(tmp, "wb");
-    if (!f) return WavSaveResult::OpenFailed;
+    seance::fileio::OwnedFile local;
+    if (reservation ? !reservation->matches(path) : !seance::fileio::create_temporary(local, path))
+        return WavSaveResult::OpenFailed;
+    auto& temporary = reservation ? reservation->temporary() : local;
+    FILE* f = temporary.stream();
 
     bool ok = put_bytes(f, "RIFF", 4) && put_u32(f, 36u + data_bytes) &&
               put_bytes(f, "WAVEfmt ", 8) && put_u32(f, 16) &&
@@ -69,14 +71,13 @@ WavSaveResult save_wav_stream(const char* path, uint8_t channels, uint32_t frame
         }
         first += count;
     }
-    if (ok) ok = std::fflush(f) == 0;
-    if (std::fclose(f) != 0) ok = false;
-    if (!ok) {
-        std::remove(tmp);
+    const bool closed = temporary.close(ok);
+    if (!ok || !closed) {
+        if (reservation) reservation->discard();
         return WavSaveResult::WriteFailed;
     }
-    if (std::rename(tmp, path) != 0) {
-        std::remove(tmp);
+    if (!(reservation ? reservation->publish() : temporary.publish(path))) {
+        if (reservation) reservation->discard();
         return WavSaveResult::RenameFailed;
     }
     return WavSaveResult::Ok;

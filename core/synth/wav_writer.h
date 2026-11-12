@@ -1,5 +1,6 @@
 #pragma once
 #include "sampler.h"
+#include "../io/file_publication.h"
 #include <cstddef>
 #include <cstdint>
 
@@ -13,7 +14,10 @@ enum class WavSaveResult : int8_t {
     RenameFailed = -4,
 };
 
-// Writes PCM16 RIFF/WAVE atomically through path.tmp. If frames is zero,
+// Writes PCM16 RIFF/WAVE through an exclusively-created temporary sibling.
+// Replacement is permitted for offline callers; errors never unlink the target.
+// This is atomic rename publication, NOT an fsync/power-loss guarantee.
+// If frames is zero,
 // a valid loop_end is treated as the logical take length, otherwise all
 // physical frames are written.
 WavSaveResult save_sample_wav(const char* path, const Sample& sample,
@@ -26,6 +30,11 @@ using WavReadFrames = bool (*)(void* context, uint32_t first_frame,
 WavSaveResult save_wav_stream(const char* path, uint8_t channels, uint32_t frames,
                               int sample_rate, int16_t* scratch,
                               uint32_t scratch_frames, WavReadFrames read,
-                              void* context);
+                              void* context,
+                              seance::fileio::NewFileReservation* reservation = nullptr);
+// New-name UI exports must pass their exclusive final+temp reservation. The
+// writer closes/publishes that descriptor, and discards matching token-owned
+// files on error, including invalid samples. A mismatched token is not consumed.
+// Null means an intentional replacement save, never placeholder adoption.
 
 } // namespace trackr::synth
