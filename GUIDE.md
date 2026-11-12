@@ -100,17 +100,20 @@ before its steps can make sound.
 
 ### 3. save it
 
-open **SELECT → patches**, choose a free slot and use **save**. wait for the save
-to finish. exporting a WAV is separate from saving the project.
+open **SELECT → patches** and use **save** (or **X**). a first save asks for a
+name and takes a free place by itself. wait for the save to finish. exporting a
+WAV is separate from saving the project.
 
 continue below when you want to add modules, load a sample or arrange banks.
 
 ## startup and navigation
 
 **new patch / library / settings** is the startup menu. library opens recent
-projects; **all patches** opens the full library of 128 slots. the recent list
+projects; **all patches** lists every saved project, six per page. the recent list
 contains up to five displayed entries, ordered by successful opening rather than
-by every parameter edit. failed loads leave the current project intact.
+by every parameter edit. failed loads leave the current project intact. if the
+previous session left unsaved work behind, startup first asks **recover / cancel**:
+see [recovery snapshot](#recovery-snapshot).
 
 settings contains **menu sound**, **startup** (menu/last project), and the
 **palette editor**. the startup drawing always animates; there is no intro toggle.
@@ -228,7 +231,7 @@ modulation. undo is one step and runtime-only, not saved project history.
 
 an assigned sigil triggers on a low-to-high transition, not every frame it stays
 high. a newly assigned high source waits for a low first. sources are independent
-per unit. recording or lock editing can refuse the action; finish those first.
+per unit. an active or pending recording refuses the action; finish it first.
 GRAN's crowded header has no rand word: use **L → rand** there.
 
 ## sigils
@@ -264,7 +267,8 @@ features can be lost if a project is resaved by an older build: keep backups.
 open **SELECT → sequencer**. four tracks correspond to the four chains. each
 stores up to 64 steps, shown as four pages of sixteen. the upper display shows
 the focused step's full values and context; selection and the playing marker are
-separate. no separate full-screen focus view is needed.
+separate. no separate full-screen focus view is needed. coming back to the
+sequencer in the same project keeps the mode, step, page and lock target.
 
 ### mode and single-step editing
 
@@ -277,7 +281,9 @@ separate. no separate full-screen focus view is needed.
   [bank panel](#bank-panel) and does not also apply a minus.
 - **Y** listens to that step: one manual chain hit using its note, slice and
   valid locks, without moving transport or requiring its trigger/condition.
-- **X** clears only the focused step and deselects the group.
+- **X** clears only the focused step and deselects the group. in **lock** mode it
+  instead removes the selected target's lock from the focused step, or from every
+  step of the group, and keeps the group.
 - note changes use semitones in **chromatic**, or the chosen scale's degrees for
   absolute-note targets. timing, conditions and retriggers keep their own value
   vocabularies; use the upper readout for the whole value.
@@ -364,7 +370,9 @@ lock mode stores a per-step parameter override, not a new module base. choose th
 parameter with the circle pad (left/right module, up/down parameter), or tap the
 address in the editor row (such as **02 filt / cut**) and pick the module and
 parameter from the two lists. picking only selects the target; nothing is written
-until you change a value. unsupported/structural operations remain unavailable.
+until you change a value. **X** removes that target's lock from the step or group;
+**no lock to remove** means there was none. unsupported/structural operations
+remain unavailable.
 
 **primary pitch holds until the next accepted written pitch**, even across empty
 steps or a new trigger with no note. an accepted pitch record does not need its own
@@ -407,8 +415,9 @@ suffixes can be read; list edges fade when more rows lie outside the view.
   saved projects that are not open; keep backups. there is no deletion undo.
 
 supported input: PCM WAV 8/16/24/32-bit and 32-bit float, mono or stereo, up to
-20 seconds per load. the engine runs at 32 kHz. MP3, OGG, ADPCM and other WAV
-encodings are not supported. sample memory is shared and finite.
+20 seconds per load; a longer file is cut to that length. the engine runs at
+32 kHz. MP3, OGG, ADPCM and other WAV encodings are not supported. sample memory
+is shared and finite.
 
 ### play editing
 
@@ -588,20 +597,55 @@ are temporary playback state.
 
 ## projects and data safety
 
-**SELECT → patches** opens 128 slots. use the library's load/save actions and
-pages; an occupied destination needs overwrite confirmation. **new** creates a
-starter, not an automatic slot overwrite. a loaded project is stopped until you
-press play.
+**SELECT → patches** lists the saved projects, seven rows at a time. a project
+that has never been saved appears first as **not saved**. up/down selects a row,
+**L / R** or left/right moves seven rows, and dragging scrolls.
 
-unsaved persistent edits require **save / discard / cancel** before new, load or
-exit. if a value changes during storage and saving asks for a retry, save again;
+- **save** in the header (or **X**) always saves the project you are working on,
+  whichever row is selected. a first save asks for a name and takes a free place
+  by itself; saving over the open project's own file asks **save again / cancel**.
+- **new** in the header creates a starter project and returns to Chains.
+- **A** opens the selected saved project. the three dots on a row (or **Y**) open
+  its actions: **open / rename / copy / delete**, with **save** in place of open
+  for the project that is already open. **copy** duplicates the file as it was
+  last saved, not your unsaved edits. **delete** asks **delete again** and removes
+  only that project file, never its samples or recordings; deleting the open
+  project keeps it in memory as an unsaved one.
+- names use the on-screen keyboard, 1–23 characters: **X** deletes a character,
+  **Y** types a space, **B** cancels.
+- the upper display previews the selected file: name, date and its four chains.
+  a loaded project is stopped until you press play.
+
+unsaved persistent edits ask **save + open / discard + open / cancel** (likewise
+for new and exit) in the same list before anything is replaced; cancel is selected
+first. if a value changes during storage and saving asks for a retry, save again;
 do not assume the older copy contains those edits. stop recording first.
 
-files use `sdmc:/3ds/seance/patch0.snc` through `patch127.snc`. preferences and
-recent history use a separate `start_menu.bin` sidecar. sample/recording WAVs are
+project files are `sdmc:/3ds/seance/patch0.snc` through `patch127.snc`: 128 places,
+of which the list shows only the used ones. their names are in `project_names.bin`;
+preferences and recent history use `start_menu.bin` and `last_patch.bin`. a `.bak`
+beside a file is the previous version kept by a save. sample/recording WAVs are
 referenced from projects; keep their paths and back up the whole folder, not
 just the SNC files. missing samples cannot be repaired by copying an application
 binary. do not power off during storage operations.
+
+### recovery snapshot
+
+while transport is stopped and nothing is being touched, seance may write a
+recovery snapshot of unsaved work to `sdmc:/3ds/seance/recovery/`. it is a
+fallback, not a save: it is attempted at most about every 30 seconds, never while
+playing, recording, bouncing or working in a menu, and writing it can pause the
+display for a moment.
+
+if a snapshot is left when seance starts, startup asks **recover / cancel**, with
+cancel selected. **recover** opens it as an unsaved project that is no longer tied
+to its old file. it stays silent until you press **START** or trigger a chain with
+**A**; save it to keep it. **cancel** keeps the snapshot for a later start and
+switches further snapshots off for this session.
+
+a snapshot holds the project's controls, sequences and sample references, not
+audio: unsaved recordings and sounds without a saved WAV are not restored. a
+successful save, or leaving through **exit**, retires it.
 
 ## troubleshooting
 
@@ -610,9 +654,14 @@ binary. do not power off during storage operations.
   assignment, VCA trigger and source-before-processor order.
 - **glitches:** reduce dense effects/feedback/voices; New 3DS uses startup CPU
   speedup. Old 3DS has not been tested; older-model performance is unknown.
-  sleep/wake and sustained performance need real-device testing.
+  sleep/wake and sustained performance need real-device testing. perform's upper
+  display shows the **dsp** load, the render **peak** and an **xrun** count (the
+  sequencer shows xrun once it is above zero): a rising count means audio blocks
+  arrived late. a source placed before another source in the same chain is not
+  heard but still costs CPU; bypass or remove it.
 - **save refused:** finish recording, leave modal editors, check SD free space
-  and permissions, then retry without discarding the current patch.
+  and permissions, then retry without discarding the current patch. the notice
+  names the step that failed.
 - **report a bug:** include the version/source revision, console model, CIA/3DSX, reproduction
   steps, and a small redistributable project if possible. never attach your
   entire private sample collection or console credentials.
@@ -629,7 +678,8 @@ calling a candidate hardware-tested. see [building](BUILDING.md).
 select a card and use **edit / X** to open its controls.
 
 chains run left to right. a source replaces the incoming audio; a processor
-works on what reaches it. putting two sources in series does not mix them:
+works on what reaches it. putting two sources in series does not mix them: only
+the last one is heard, and an earlier one still uses CPU unless it is bypassed.
 use separate chains for layers. **arp** is a note tool placed *before* its
 source; **rec** captures the signal at its own position in the chain.
 
@@ -911,6 +961,9 @@ this reads a loaded sample; use **swarm** to granulate incoming audio instead.
 - reading/reverse % is saved card configuration, not a parameter lock, sigil or
   scene destination. older cards can retain the legacy engine; their **old >**
   conversion is explicit. newer reading settings require a compatible build.
+- a GRAN card you add from the picker or with REC's **> gran** starts at original
+  pitch with three to four overlapping grains and some timing scatter. cards
+  already in a project keep their saved values.
 
 coherent overlapping grains and release tails can overload the output; lower gain
 and listen at a safe level. these controls do not add automatic headroom or limiting.

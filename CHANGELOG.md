@@ -31,6 +31,14 @@ source changes within the existing alpha version, not a new tagged or binary rel
 - projects, names and preferences are written by renaming only onto a vacant name,
   keeping the previous file until the new one is in place: some SD cards refuse a
   rename onto an existing file, which made saving fail.
+- **patches** lists only saved projects, seven rows at a time, with open / rename /
+  copy / delete per row and inline confirmations. a first save names the project
+  and takes a free place by itself; the 128 file places are unchanged.
+- note mode has a project scale (tonic and scale); OSC qnt and PLAY tape qnt follow
+  it. existing notes are not rewritten.
+- unsaved work is snapshotted while transport is stopped and the console is idle.
+  if a snapshot is left at startup, seance offers to recover it as an unsaved
+  project. it is a fallback, not a save, and holds no unsaved audio.
 - sequencer primary pitch holds until the next accepted written note; ordinary
   parameter locks remain step-scoped. existing sparse-note projects can sound
   different under this rule, without rewriting their stored values.
@@ -62,7 +70,7 @@ source changes within the existing alpha version, not a new tagged or binary rel
 - built-in instruments, WAV sampling, microphone/REC and export;
 - four sequencer tracks, up to 64 steps, eight banks, locks, slices and timing;
 - live mixer, A/B parameter scenes, manual bank transitions and 16-card order;
-- master/single-chain bounce and a 128-slot project library with explicit saving.
+- master/single-chain bounce and a project library (128 places) with explicit saving.
 
 ## known limits
 
