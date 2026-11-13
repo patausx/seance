@@ -1,32 +1,24 @@
 # contributing
 
-see [building](BUILDING.md) and the [source layout](docs/source-layout.md).
-keep a change focused and describe what was actually
-checked; a successful compile is not device or listening approval.
+bug reports, small fixes, documentation improvements and ideas are welcome.
+see the [guide](GUIDE.md), [build instructions](BUILDING.md) and
+[source layout](docs/source-layout.md) if you want to explore the code.
 
-- preserve project-format compatibility, stable module IDs and user data.
-- keep allocation, storage access and blocking work out of real-time audio.
-- draw from published snapshots; do not read or mutate the engine while drawing.
-- cover gesture release, cancellation, navigation and project replacement when
-  changing input. use the shared module frame, headings, palette roles and word
-  menus; distinguish edit/base values from actual live values. parameter sliders
-  use the shared lancet renderer; the performance mixer keeps its separate style.
-- retain editable resource inputs and their original licenses. check generated
-  output without regenerating unrelated assets.
-- keep current resource generators in `tools/` and packaging in `scripts/`.
-  add required helper files to sorted `scripts/source-files.json`, including every
-  production generator named by generated headers. keep independent generator-to-
-  helper closure regression coverage; a local test helper is not automatically public.
-  the public source export
-  excludes local tests and research; do not link public guides to omitted files.
-- development admission requires explicit `make test-module-frame` and
-  `python3 -B tests/test_nav_instant.py`, plus scoped checks for the change. these
-  local-only suites are not automatic normal/public make or release dependencies.
-- do not commit captures, local receipts, binaries, credentials or private audio.
+## reporting a bug
 
-for a bug, include version/source revision, console model, launch format, minimal steps and the
-expected/actual result. attach only a small redistributable reproducer. for code
-changes, report relevant commands, outcomes and known gaps. run the read-only
-public-source audit from [building](BUILDING.md#resources-and-release-packages)
-when changing exported files. publication and hardware deployment are separate
-from code review.
+please describe what happened, what you expected and how to reproduce it.
+your version, console model and launch format (3DSX or CIA) are useful too.
+a screenshot or small example can help; please leave out private recordings
+and credentials.
+
+## proposing a change
+
+- focused changes are easier to review. for a larger idea, an issue is a good
+  place to discuss it first.
+- take care with saved-project compatibility and real-time audio; reuse the
+  existing interface components for UI changes.
+- keep the original licenses and editable sources when adding resources.
+- briefly mention any build or tests you ran. if you cannot test on a console
+  or run the local checks, say so — that is fine, we can work out the next steps.
+
+questions and early ideas are welcome too.

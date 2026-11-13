@@ -26,23 +26,17 @@ the result, then mix, morph and switch patterns while it plays.
 
 ![all 33 seance module editors in black mass](assets/artwork/ui/modules-blackmass.gif)
 
-native-host demo renders, not console captures · [full gallery](assets/artwork/ui/README.md)
+[full gallery](assets/artwork/ui/README.md)
 
 </details>
 
 ## status
 
 `0.1.0-alpha.1` · homebrew · work in progress.
-this source update keeps the alpha version; it is not a new binary release.
 
 **Old 3DS has not been tested. performance on older models is unknown.**
 New 3DS uses its CPU speedup; demanding patches can still exceed the audio budget.
-relic is temporarily removed after reported performance problems; its code is
-archived, not redesigned. projects containing relic refuse safely without changing
-their files.
-a binary release still needs the matching dependency runtime/source review
-described in the [notices](THIRD_PARTY_NOTICES.md); this source update is not
-legal or device clearance.
+relic is currently unavailable; projects containing it cannot be opened.
 
 ## license
 

@@ -1,38 +1,41 @@
 # release scripts
 
-these scripts are not application build or runtime dependencies.
+run from the repository root with Python 3.10+. these helpers are not ordinary
+application build or runtime dependencies.
+
+## export and build
 
 ```sh
-python3 scripts/audit_public_source.py
-python3 scripts/prepare_public_release.py --source-only --output release/new-source
-python3 scripts/prepare_public_release.py --output release/new-candidate
+python3 -B scripts/prepare_public_release.py --source-only --output release/new-source
+python3 -B scripts/prepare_public_release.py --output release/new-candidate --jobs 2 --makerom /path/to/makerom
 ```
 
-choose a new output directory. without `--source-only`, the preparer builds
-3DSX/CIA in an isolated source copy, packages it and writes a local receipt.
-use `--jobs 1` or `--jobs 2` and `--makerom /path/to/makerom` if needed. nothing
-is uploaded or deployed. the receipt binds the exported source inventory to the
-fresh build, selected tool/rule/runtime hashes, complete log, final link map,
-artifacts and download archives. these records remain local; actual linked
-members, corresponding source, grants and hardware acceptance need separate review.
-`publication_ready:false` is deliberate; external release gates remain.
+choose a new output directory outside source-input directories. `--source-only`
+writes an exported tree to `<output>/source/` without needing devkitARM or makerom.
+otherwise, the script builds 3DSX/CIA in that copy and puts binaries and application/source
+ZIPs in `<output>/github-release/`. `--jobs` accepts 1 or 2; `--makerom` selects the tool.
+nothing is downloaded, uploaded, installed or deployed.
 
-`package_release.py` packages existing artifacts without compiling them:
+check exported text, paths and relative documentation links from the exported tree:
 
 ```sh
-python3 scripts/package_release.py --main
-python3 scripts/package_release.py --source
+python3 -B scripts/audit_public_source.py
 ```
 
-`make release` is the application archive; `make release-source` creates source
-separately and does not prove matching existing artifacts. the packager validates
-the package version name against VERSION, **not** a binary's embedded version or
-build origin. use the isolated preparer and retain its matching records for release
-admission; see [the procedure](../BUILDING.md#release-coverage-and-source-to-artifact-procedure).
-`publication_ready:false` is deliberate; external release gates remain.
-a source-only export has no artifact provenance. packaging is not publication.
+## package existing files
 
-`source-files.json` is the explicit admission list for asset tools, release
-scripts. local tests and unlisted files never enter source packages;
-missing listed inputs, unsafe paths and symlinks fail the export. application
-sources, asset originals and license texts have their own directory allowlist.
+```sh
+python3 -B scripts/package_release.py --main
+python3 -B scripts/package_release.py --source
+```
+
+`--main` requires existing `seance.3dsx` and `seance.cia`; `--source` collects source.
+outputs are `release/seance-<VERSION>.zip` and `release/seance-<VERSION>-source.zip`.
+archive names follow `VERSION`; the packager does not check a binary's embedded version.
+`make release` builds/packages the application; `make release-source` packages source only.
+use the [isolated build](../BUILDING.md#release-coverage-and-source-to-artifact-procedure)
+to package application and source from the same copy.
+
+source export selects helpers through `scripts/source-files.json` and application
+sources/resources through directory allowlists in `package_release.py`. local tests
+are omitted; missing required inputs, unsafe paths and symlinks are rejected.

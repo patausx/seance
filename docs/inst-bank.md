@@ -1,67 +1,59 @@
-# inst — compact embedded multisample core
+# inst — sampled-bank developer contract
 
-inst is a new source, not a new play mode and not an oscillator acoustic preset.
-its complete provenance, verbatim cc0 licenses, immutable source urls/hashes,
-preparation and exact zone metadata are in
-[`assets/instruments/`](../assets/instruments/README.md).
+This describes the six sampled families of `InstUnit`. The full unit also has
+modeled `vibes` and additional controls; see [GUIDE](../GUIDE.md#inst) for the full
+interface. Resources, credits and rebuild commands: [instrument bank](../assets/instruments/README.md).
 
-## public contract
+## API and parameters
 
 `InstUnit` is declared in `core/engine/inst_unit.h`, included outside namespace
 `seance` by `units.h`. `inst_impl.inc` is included once, outside namespace, by
-`units.cpp`. `UnitKind::Inst` is append-only persisted id **28**. the embedding
-includes the generated table in that one implementation translation unit only;
-other units and ui code must not include the large data header.
+`units.cpp`. `UnitKind::Inst` is persisted ID **28**. Include the large generated
+bank header only in that implementation translation unit, not in UI or other units.
 
-seven params, all unipolar q15:
+These seven parameter IDs form the sampled-bank subset of the unit's twelve
+parameters. All use unipolar Q15:
 
-| id | enum | meaning/default |
+| id | enum | sampled-bank meaning |
 | --- | --- | --- |
-| 0 | `P_INSTRUMENT` | 0 piano; stable ids 1 violin, 2 brass, 3 flute, 4 bass, 5 drums |
-| 1 | `P_NOTE` | nearest midi note 24..96; default 60 (c4) |
-| 2 | `P_LENGTH` | pitched strike-to-release time, 20..4000 ms; default 480 ms; **ignored on drums** |
-| 3 | `P_ATTACK` | 0..1000 ms; default 8 ms |
-| 4 | `P_RELEASE` | 5..3000 ms; default 640 ms |
-| 5 | `P_TONE` | latched one-pole lowpass brightness; default about 60% |
-| 6 | `P_LEVEL` | live output level; default about 75% |
+| 0 | `P_INSTRUMENT` | 0 piano; 1 violin; 2 brass; 3 flute; 4 bass; 5 drums |
+| 1 | `P_NOTE` | nearest MIDI note 24..96 |
+| 2 | `P_LENGTH` | pitched strike-to-release time, 20..4000 ms; ignored on drums |
+| 3 | `P_ATTACK` | 0..1000 ms, with an internal 1 ms floor |
+| 4 | `P_RELEASE` | 5..3000 ms |
+| 5 | `P_TONE` | latched one-pole lowpass brightness |
+| 6 | `P_LEVEL` | live output level |
 
-`instrument_index/value/name`, `note_midi/value`, `drum_index/note/name`,
-`length_ms/value`, `attack_ms/value`, and `release_ms/value` are the public ui
-mappings. negative q15 values clamp to zero. note and family are nearest-index
-mappings; time is `low + round((high-low) * (q/32767)^2)`, with exact integer
-inverse-ms helpers. all whole millisecond values in those ranges are
-representable; callers should format the helpers, not a second guessed formula.
+`instrument_index/value/name` cover the full seven-family selector (ID 6 is modeled
+vibes); use them rather than a six-bin Q15 conversion. This mapping requires
+SNCG/version 16 or newer; older INST projects are refused rather than remapped.
+`note_midi/value`, `drum_index/note/name`, `length_ms/value`, `attack_ms/value` and
+`release_ms/value` provide the note, sound and time mappings. Negative Q15 values
+clamp to zero. Time is `low + round((high-low) * (q/32767)^2)`; use the inverse-ms
+helpers and format their results. Every whole millisecond in each range is representable.
 
-`sequencer_properties()` reports a strike source, pitch `P_NOTE`, level `P_LEVEL`,
-duration `P_LENGTH`; no flow param or downstream gate-processor claim. the stable
-duration param is meaningful only for pitched families; drums ignore it, including
-step locks, and their ui length control is dim/inert. sequencer force-resolved locks
-arrive in `Param.target`. target values for family, note, attack, release and tone
-(and length for pitched families only) are latched on the **accepted trigger**, not
-the old `effective` slew halfway between two instrument IDs. a later edit or control
-tick cannot retrigger, seek, replace, or retune a sounding recording.
+For sampled families, `sequencer_properties()` reports a strike source with pitch
+`P_NOTE`, level `P_LEVEL`, duration `P_LENGTH` and no flow parameter or gate processor.
+Drums ignore length, including step locks. Resolved `Param.target` values for family,
+note, attack, release, tone and pitched length latch on the accepted trigger, not
+on the preceding `effective` slew. Later edits/ticks never retrigger, seek, replace
+or retune sounding tails.
 
-`P_LEVEL` is the sole live voice control. its resolved target drives one exact
-128-engine-sample linear ramp (4 ms at 32 khz), with integer error carry and an
-exact final value. changing target midway starts from the actual current value;
-repeated unchanged control ticks do not restart the ramp. zero mutes without
-freezing voices. reset clears voices/strike history and snaps level to the current
-resolved target. no params, sample slots, locks or saved data are rewritten by a
-family change, trigger, process or reset.
+`P_LEVEL` is the only live sampled-voice control. Its target drives an exact
+128-engine-sample linear ramp (4 ms at 32 kHz), with integer error carry. A mid-ramp
+edit starts from the current value; unchanged ticks do not restart it. Zero mutes
+without freezing voices. Reset snaps level to the current resolved target.
 
-## mapping and acoustic limits
+## notes and drums
 
-pitched key zones are midpoint partitions of their measured/declared roots,
-with ties going to the lower root; the table covers every note 24..96. explicit
-roots/key intervals are generated into `bank.json`. the edge zones are extended
-beyond the natural acoustic register, **not** newly sampled pitches. fixed
-12-semitone equal-temperament lookup and integer rate conversion run only on a
-trigger; sample interpolation is linear and bounded, with no overshoot.
+Pitched zones partition MIDI 24..96 at root midpoints, with ties going to the lower
+root. `bank.json` stores the numeric roots and key intervals. Edge zones extend
+through transposition, not additional recordings. Equal-temperament rate conversion
+runs at trigger; sample interpolation is linear and bounded.
 
-for drums the note selects a **sound**, not transposition. nearest-key mapping
-is fixed, and all notes in one interval play the same recording at native rate:
+For drums, note selects a sound at native rate, not transposition:
 
-| id | canonical midi | name | accepted interval |
+| id | canonical MIDI | name | accepted interval |
 | --- | --- | --- | --- |
 | 0 | 36 | kick | 24..37 |
 | 1 | 38 | snare | 38..40 |
@@ -70,88 +62,65 @@ is fixed, and all notes in one interval play the same recording at native rate:
 | 4 | 46 | openhat | 46..47 |
 | 5 | 49 | cymbal | 48..96 |
 
-`drum_index(int)` also clamps integers below/above that range safely, including
-`INT_MIN/MAX`; `drum_note(index)` returns a canonical key for the ui rail. these
-are a compact acoustic kit drawn from bass drum/snare/hat/tom/cymbal recordings,
-not a full general midi kit or a promise of a particular drum-kit brand.
+`drum_index(int)` clamps extremes, including `INT_MIN/MAX`; `drum_note(index)`
+returns the canonical key. This is a compact kit, not a full General MIDI kit.
 
-arp semitones are added to the resolved note once at trigger and the resulting
-note clamps to 24..96 before zone selection. there is **no** second arp pitch
-multiplier in process. the engine owns the existing arp gain gate. every accepted
-arp event produces an inst strike; its legato optimization is explicitly only for
-play, not inst. changing only the arp semitone without a trigger does not repitch
-an accepted recording or its old tails. inst is not a continuous legato synthesizer.
+Arp semitones are added once at trigger, then clamped to 24..96 before zone
+selection. Every accepted arp event strikes INST; changing arp pitch without a
+trigger does not retune existing tails. The engine owns the arp gain gate.
 
-## voice and envelope policy
+## voices and envelopes
 
-four fixed overlapping sample voices, one new strike per trigger; this is tail
-polyphony, not an added chord sequencer. use a free slot first, otherwise the
-quietest releasing tail; if none releases, steal the oldest voice. a cursor
-breaks exact ties deterministically. no random round robin or filesystem lookup
-is performed. a steal retains the actual last scalar voice output and applies a
-64-sample (2 ms) convex crossfade into the new strike; it does not keep a fifth
-sample-playing voice or seek an obsolete descriptor.
+Four fixed overlapping sample voices, one strike per trigger. Use a free slot,
+then the releasing tail with the lowest envelope, otherwise the oldest voice;
+a rotating cursor breaks exact ties. A steal uses a 64-sample (2 ms) convex
+crossfade from the actual last scalar output, without a fifth sample-playing voice.
+Changing families retains existing tails.
 
-- attack progresses to unity over the requested time, with an internal minimum
-  of **32 samples / 1 ms** even when the displayed attack is zero.
-- for pitched families, release starts at the requested length edge, even if
-  attack has not completed, from exactly the envelope reached on that edge. it
-  reaches zero after the requested release time; all divisions are calculated
-  once at trigger.
-- drums never read `P_LENGTH`: their hold edge equals the attack duration **after
-  the 32-sample safety floor**, then release closes the tail. there is no sustain
-  plateau. finite pcm can end sooner, including during a long attack. this is an
-  attack/release one-shot contract, not a hidden length-dependent gate.
-- piano, pizzicato bass and percussion are finite recordings. their retained
-  natural decay may end before the requested envelope. the last 64 output
-  samples receive an additional safety fade so a slowed filter cannot leave a
-  discontinuity at the sample end. longer length/release cannot invent sustain.
-- violin, trumpet and flute use the prepared 60 ms baked crossfade loops while
-  sounding, including during envelope release. loop interpolation uses a prepared
-  adjacent-source guard, and bounds need at most one wrap subtraction per frame.
-- source preprocessing removes dc and applies start/finite-tail fades. a maximum
-  source advance below 8 frames and loops longer than 14000 frames are fixed-bank
-  invariants. descriptor/pcm bounds and guard semantics are checked by the suite.
-- fixed **12 db polyphony headroom** allows all four normalized voices to sum
-  without overflow or clipping. this is deliberately not a hidden compressor,
-  limiter or automatic gain normalizer. tone is a latched, stable q15 one-pole
-  coefficient; maximum tone is transparent. no per-sample float, division/modulo,
-  exp, allocation, locks, random source or bank search exists in inst process.
+- Attack reaches unity over the requested time, with a minimum of 32 engine samples
+  (1 ms), even when the displayed attack is zero.
+- Pitched release starts at the length edge from the envelope reached there, even
+  during an incomplete attack, and reaches zero after the requested release time.
+- Drums never read `P_LENGTH`: release starts immediately after the attack and its
+  safety floor, with no sustain plateau. Finite PCM can end during a long attack.
+- Piano, generated bass and drums are finite. Their decay can end before the
+  envelope; the last 64 output samples receive a safety fade. Longer length/release
+  does not add sustain.
+- Violin, trumpet and flute use prepared 60 ms crossfade loops, including during
+  release. A loop's interpolation guard matches its loop-start sample. Source advance
+  stays below eight frames and loops exceed 14,000 frames, so one wrap subtraction suffices.
+- Four sample voices share 12 dB polyphony headroom, followed by the full unit's
+  additional 6 dB reserve for overlapping sample/model tails. Tone is a stable
+  latched Q15 coefficient; maximum tone is transparent. Rates and envelope divisions
+  are computed at trigger; the sample loop uses fixed-point math without heap,
+  file I/O, locks or bank searches.
 
-as for the existing sources, engine bypass skips `process()`: it does not become
-an internal dry/wet effect or silently advance hidden voices. transport/chain
-bypass/mute/arp gate policy stays with the engine. reset retires all runtime
-voices immediately; those voices, their ages/loop positions and strike counts
-are not persisted. parent integration owns insertion, snapshots, save/load,
-sequencer routing and ui lifecycle tests.
+Engine bypass skips `process()` and does not advance hidden voices. Transport,
+mute and arp gating remain engine policy. Reset retires runtime voices and strike
+history without rewriting parameters, sample slots, locks or saved data. Voice ages
+and loop positions are not persisted.
 
-## frozen telemetry and memory
+## visuals and storage
 
-`Stage : uint8_t { Off, Attack, Sustain, Release }` and `Visual` expose only
-accepted voices. each `VoiceVisual` contains completed engine-sample age, own
-0..32767 envelope, latched instrument and actual accepted midi note, and stage.
-`Visual.active` is a **count** (0..4), not a mask; `strikes` counts accepted
-triggers since reset. the scalar steal de-click bridge is not a fictitious fifth
-voice. an off slot is cleared. capture under the existing audio guard, exactly
-like other unit visuals. repeated `visual()` calls do not advance state or read
-pcm, allocate, draw or consult master output.
+`Stage` is `Off / Attack / Sustain / Release`. Each `VoiceVisual` exposes completed
+engine-sample age, its 0..32767 envelope, latched family, accepted MIDI note and stage.
+`Visual.active` counts sampled voices (0..4), not a mask; `strikes` counts all
+accepted INST triggers since reset, including modeled strikes. Capture `visual()`
+under the audio guard; it is read-only. Capture `model_visual()` separately when
+showing simultaneous sample/model tails.
 
-compile-time bounds: `sizeof(Visual) <= 64`, `sizeof(InstUnit) <= 1536`. measured
-host sizes in the focused build: **56 bytes visual / 896 bytes inst unit**, including
-the inherited param bank. shared pcm is **1,221,500 bytes**, plus 440 descriptor
-bytes and small mapping constants;
-there is no constructor buffer or per-unit copy of the bank. immutable data stays
-outside `trackr::synth::SampleBank`, so importing/removing/replacing a play sample
-cannot alter inst. bank preparation's raw sources are not embedded or loaded at
-runtime. 24 khz mono and short looping recordings are intentional quality/size
-limits, and extreme pitch shifts can sound artificial or alias.
+Compile-time bounds are `sizeof(Visual) <= 64` and `sizeof(InstUnit) <= 1600`.
+The bank is shared, with no constructor buffer or per-unit PCM copy, and stays
+outside `trackr::synth::SampleBank`: PLAY sample edits cannot alter INST. The 24 kHz
+mono bank and short decays/loops limit fidelity; extreme pitch shifts can alias.
 
 ## checks
 
+From the repository root:
+
 ```sh
-python3 tests/test_inst_core.py --sanitize
+python3 -B tools/prepare_inst_bank.py --check
 ```
 
-this checks the actual engine implementation, source identities, generated-bank
-reproducibility and voice/envelope invariants. it is not a hardware listening or
-performance test. historical build receipts are kept outside the repository.
+Checks the rebuilt PCM, descriptors and metadata against the checked-in bank.
+Use `--verify` to check original files and existing outputs without resampling.

@@ -2,12 +2,8 @@
 
 [seance](../../../README.md) · [guide](../../../GUIDE.md) · [credits](../../../THIRD_PARTY_NOTICES.md)
 
-native-host demo renders, not console captures.
-
 <details>
 <summary>modules</summary>
-
-33 editor stills · 0.5 s each.
 
 ![all 33 module editors in black mass](modules-blackmass.gif)
 
@@ -80,7 +76,7 @@ old grimoire → black mass → pink → gray
 <details>
 <summary>palettes</summary>
 
-ten swatch combinations, **not new built-in presets**.
+custom palettes from the theme picker's swatches.
 
 ![ten custom palette combinations on the patch table](patch-ten-palettes.png)
 
