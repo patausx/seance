@@ -30,32 +30,6 @@ Audio piano recordings: **CC0 1.0 Universal**. source identities, upstream
 credits and original license texts are retained in
 [assets/instruments/](assets/instruments/README.md).
 
-## optional starter samples
-
-the optional [starter pack](sample_library/starter_cc0/README.md) uses the
-**Stargate Sample Pack**, **CC0 1.0 Universal**. its source mapping and license
-text are included with the pack. these terms do not apply to user-imported audio.
-
-## menu audio
-
-`assets/menu_audio/source/1.wav` and `source/2.wav` are the supplied originals;
-`menu_drone.bin` and `menu_entry.bin` are their prepared derivatives embedded in
-the executable. according to the project owner both originals come from a free
-beat pack; the pack's name and its own terms are not recorded in this source.
-hashes and preparation metadata establish identity/reproduction only. no CC0, GPL
-or other asset license is assigned to these sounds by this notice, and the
-application's GPL does not extend to them: check the pack's terms before reusing
-the two sounds outside this application.
-
-## rule / rot random-number arithmetic
-
-`core/engine/rule_dsp.h` adapts the PCG64 scheme and NumPy-compatible
-SeedSequence arithmetic for the online RULE score and ROT's online mask law. it retains per-file MIT
-notices for Melissa E. O'Neill (2014/2015) and the NumPy Developers (2019),
-including the full permission and disclaimer. keep those notices with the
-adaptation in source distribution. NumPy is an offline verification dependency,
-not a library linked into the console application.
-
 ## devkitPro runtime libraries
 
 historical package/source inventory reviewed 2026-10-24 (not current build clearance):

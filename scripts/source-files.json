@@ -39,7 +39,6 @@
     "tools/module_catalogue.py",
     "tools/pent_flow_generate.py",
     "tools/pixel_wordmark.py",
-    "tools/prepare_inst_bank.py",
-    "tools/prepare_menu_audio.py"
+    "tools/prepare_inst_bank.py"
   ]
 }

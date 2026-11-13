@@ -40,8 +40,9 @@ New 3DS uses its CPU speedup; demanding patches can still exceed the audio budge
 relic is temporarily removed after reported performance problems; its code is
 archived, not redesigned. projects containing relic refuse safely without changing
 their files.
-a binary release still needs the matching runtime/source review described in the
-[notices](THIRD_PARTY_NOTICES.md); this source update is not legal or device clearance.
+a binary release still needs the matching dependency runtime/source review
+described in the [notices](THIRD_PARTY_NOTICES.md); this source update is not
+legal or device clearance.
 
 ## license
 

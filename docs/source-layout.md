@@ -7,7 +7,6 @@
 | `assets/` | current artwork, original resources and prepared build inputs |
 | `tools/` | generators for the resources actually used by the application |
 | `scripts/` | source export, audits and release packaging |
-| `sample_library/starter_cc0/` | optional sample pack; not needed for synthesis |
 | `licenses/` | third-party license texts |
 | `distribution/` | required dependency sources and redistribution notes |
 

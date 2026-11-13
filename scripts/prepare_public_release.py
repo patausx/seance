@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 from package_release import (
-    VERSION_RE, build_main, build_samples, build_source, digest, manifest,
+    VERSION_RE, build_main, build_source, digest, manifest,
     public_source_payload, required,
 )
 
@@ -100,7 +100,6 @@ def main() -> None:
         "publication_ready": False,
         "pending": [
             "matching current libctru/compiler runtime sources, final link-map/newlib notices and corresponding-source audit",
-            "menu WAVs: from a free beat pack per the project owner; the pack's name and terms are not recorded in the notices",
             "final public repository/release URLs and publication authorization",
             "human-authored Universal-DB submission under its current AI policy",
             "real-console install/audio/performance/sleep/storage acceptance",
@@ -164,7 +163,6 @@ def main() -> None:
     receipt["artifacts"] = artifacts
     build_main(source, version)
     build_source(source, version)
-    build_samples(source)
     downloads = output / "github-release"
     downloads.mkdir()
     for name in ("seance.3dsx", "seance.cia"):

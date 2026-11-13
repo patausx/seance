@@ -30,7 +30,6 @@
 #include "../../core/synth/wav_writer.h"
 #include "../../core/ui/draw.h"
 #include "audio_out.h"
-#include "menu_audio.h"
 #include "debug_overlay.h"
 #include "mic_in.h"
 #include "screenshot_io.h"
@@ -102,7 +101,6 @@ namespace seance::platform::ui3ds {
 
 Engine*              g_eng   = nullptr;
 platform::AudioOut*  g_audio = nullptr;
-static platform::MenuAudio* g_menu_audio = nullptr;
 static bool g_session_started = false;
 bool                 g_has_dsp = false;
 bool                 g_mic_ok = false;
@@ -634,7 +632,6 @@ bool execute_destructive(PendingDestructiveAction pending) {
         g_sel_chain = g_edit_chain = 0;
         g_sel_slot = g_edit_slot = 0;
         g_overlay = Overlay::None;
-        if (g_session_started && g_menu_audio) g_menu_audio->enter_patch();
         return true;
     }
     if (pending.action == DestructiveAction::LoadProject) {
@@ -649,7 +646,6 @@ bool execute_destructive(PendingDestructiveAction pending) {
             g_project_session.reset_loaded(slot);
             g_recovered_session = false;
             remember_project(slot);
-            if (g_session_started && g_menu_audio) g_menu_audio->enter_patch();
         }
         patch_browser_result(ok, PatchAction::Load, slot);
         g_overlay = ok ? Overlay::None : Overlay::PatchBrowser;
@@ -1196,7 +1192,6 @@ static bool save_start_preferences(const StartMenuStore& proposed) {
     g_start_store = proposed;
     g_start_store_write_failed = false;
     palette::animate_to(proposed.theme, osGetTime());
-    if (g_menu_audio) g_menu_audio->set_enabled(proposed.menu_sound);
     return true;
 }
 
@@ -1255,10 +1250,10 @@ static bool startup_choose(C3D_RenderTarget* top, C3D_RenderTarget* bottom) {
     if (!aptMainLoop()) return false;
     platform::debug_overlay::reset();
     start_menu_open(startup_data());
-    if (g_menu_audio) g_menu_audio->open_menu();
+    startup_draw(top, bottom); // first frame fully dark; shared 3s image entrance
     if (g_recovery_boot.blocked) start_menu_error("recovery sd error / snapshots disabled");
     else if (g_patch_catalog_failed) start_menu_error("library unavailable / sd error");
-    startup_draw(top, bottom); // first frame fully dark; shared 3s image/sound entrance
+    startup_draw(top, bottom); // first frame fully dark; shared 3s image entrance
     u64 previous_tick = svcGetSystemTick();
     while (aptMainLoop()) {
         poll_lifecycle_input(true);
@@ -1276,7 +1271,6 @@ static bool startup_choose(C3D_RenderTarget* top, C3D_RenderTarget* bottom) {
         if (result.action == StartMenuAction::Exit) return false;
         if (result.action == StartMenuAction::RecoverProject) {
             if (recovery_restore()) {
-                if (g_menu_audio) g_menu_audio->shutdown(); // runtime-only; drop the queued menu tail too
                 return true;
             }
             start_menu_error("recovery failed / retained unchanged");
@@ -1370,10 +1364,7 @@ int main() {
     // explicitly through shutdown(), with no heap allocation or audio change.
     static platform::AudioOut audio;
     g_audio = &audio;
-    platform::MenuAudio menu_audio;
-    g_menu_audio = &menu_audio;
     audio.attach_lifecycle(); // startup and NO DSP mode still receive APT authority edges
-    menu_audio.init(g_start_store.menu_sound); // optional, independent of project audio
 
     hidScanInput();
     const u32 boot_held = boot_keys | hidKeysHeld();
@@ -1408,7 +1399,6 @@ int main() {
         startup_input_tail.capture(0, hidKeysHeld());
     }
     if (!project_ready) {
-        menu_audio.shutdown(); g_menu_audio = nullptr;
         clear_sample_bank();
         audio.shutdown();
         delete g_eng; g_eng = nullptr; g_audio = nullptr;
@@ -1436,7 +1426,6 @@ int main() {
     sigils_visual_init();
     g_has_dsp = audio.init(*g_eng);
     g_session_started = true;
-    menu_audio.enter_patch(); // exactly once after startup success + tail capture
 
     platform::MicIn mic;
     g_mic_ok = mic.init();
@@ -1933,10 +1922,6 @@ int main() {
             g_eng->capture_ui_snapshot(g_ui_snapshot, focus_chain, focus_slot, focus_sigil);
         }
 
-        bool patch_audible = g_ui_snapshot.transport_playing;
-        for (int c = 0; c < NUM_CHAINS; ++c) patch_audible |= g_ui_snapshot.chain_peak[c] > 256;
-        menu_audio.set_patch_audible(patch_audible); // duck the decoration, never the instrument
-
         // === draw ===
         palette::capture(osGetTime()); // same frozen color step for both LCDs/DTOs
         editor_style::capture(); // palette-only LUT update outside controller/audio guards
@@ -2024,7 +2009,6 @@ int main() {
     sample_browser_stop_preview();
     performance_release_all();
     mic.shutdown();
-    menu_audio.shutdown(); g_menu_audio = nullptr;
     g_session_started = false;
     audio.shutdown();
     g_audio = nullptr;

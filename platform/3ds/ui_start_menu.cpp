@@ -18,8 +18,8 @@ namespace {
 enum class Page { Home, Browser, Theme, Recovery };
 enum class Panel { None=-1, Library=0, Settings=1 };
 enum HomeRow { New=0, Library=1, Settings=2, Recent0=3,
-               All=Recent0+kStartRecentCount, Sound, Startup, Palette, HomeRows };
-constexpr int kSettingsCount=3;
+               All=Recent0+kStartRecentCount, Startup, Palette, HomeRows };
+constexpr int kSettingsCount=2;
 constexpr int kThemeRole=theme_config::kCount, kThemeSwatch=kThemeRole+3;
 constexpr int kThemeCancel=kThemeSwatch+theme_config::kSwatchCount, kThemeSave=kThemeCancel+1;
 constexpr int kBrowserRows=6, kBrowserBack=PROJECT_SLOTS, kBrowserPrev=PROJECT_SLOTS+1, kBrowserNext=PROJECT_SLOTS+2;
@@ -112,7 +112,7 @@ int home_rows(int* out,bool left) {
         for(int i=0;i<g.data.recent_count;++i)out[n++]=Recent0+i;
         out[n++]=All;
     } else if(g.panel==Panel::Settings) {
-        out[n++]=Sound;out[n++]=Startup;out[n++]=Palette;
+        out[n++]=Startup;out[n++]=Palette;
     }
     return n;
 }
@@ -183,7 +183,7 @@ int row_at(int x,int y) {
             for(int i=0;i<g.data.recent_count;++i)if(in(x,y,{148,30+i*36,162,36}))return Recent0+i;
             if(in(x,y,{148,214,162,26}))return All;
         } else if(g.panel==Panel::Settings) {
-            for(int i=0;i<kSettingsCount;++i)if(in(x,y,{148,26+i*44,162,44}))return Sound+i;
+            for(int i=0;i<kSettingsCount;++i)if(in(x,y,{148,26+i*44,162,44}))return Startup+i;
         }
     } else {
         if(in(x,y,{208,38,28,26}))return kBrowserPrev;
@@ -265,8 +265,7 @@ StartMenuResult activate(int row) {
             g.modal_from=g.modal;g.modal_age=0;g.modal_open=true;
             g.reveal.settle(1);transition_input();return {};
         }
-        if(row==Sound)g.data.menu_sound=!g.data.menu_sound;
-        else if(row==Startup)g.data.show_menu=!g.data.show_menu;
+        if(row==Startup)g.data.show_menu=!g.data.show_menu;
         else return {};
         return {StartMenuAction::PreferencesChanged,-1};
     }
@@ -443,12 +442,12 @@ void draw_library() {
     small(168,223,"all patches >",g.page==Page::Home&&g.selected==All?spot():ink(),0);
 }
 void draw_settings() {
-    const char* names[]={"menu sound","startup","palette editor"};
-    const char* values[]={g.data.menu_sound?"on":"off",g.data.show_menu?"menu":"last project",
+    const char* names[]={"startup","palette editor"};
+    const char* values[]={g.data.show_menu?"menu":"last project",
                          theme_config::name(g.data.theme.id)};
     for(int i=0;i<kSettingsCount;++i) {
         const int baseline=49+i*44;
-        const bool sel=(g.page==Page::Home&&g.selected==Sound+i)||(g.page==Page::Theme&&i==kSettingsCount-1);
+        const bool sel=(g.page==Page::Home&&g.selected==Startup+i)||(g.page==Page::Theme&&i==kSettingsCount-1);
         title(158,baseline,names[i],sel?spot():ink(),1,146);
         small(158,baseline+9,values[i],ghost(),1);
         if(sel)run_rect(1,158,baseline+5,title_width(names[i]),1,spot());

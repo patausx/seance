@@ -3,7 +3,7 @@
 #---------------------------------------------------------------------------------
 
 TEST_GOALS := $(filter check test% sanitize% check-module-frame /tmp/seance_%,$(MAKECMDGOALS))
-HOST_ONLY_GOALS := clean release-samples release-source release-clean $(TEST_GOALS)
+HOST_ONLY_GOALS := clean release release-source release-clean $(TEST_GOALS)
 NEEDS_DEVKIT := $(if $(MAKECMDGOALS),$(filter-out $(HOST_ONLY_GOALS),$(MAKECMDGOALS)),all)
 
 ifneq ($(strip $(NEEDS_DEVKIT)),)
@@ -52,14 +52,14 @@ ifneq ($(BUILD),$(notdir $(CURDIR)))
 #---------------------------------------------------------------------------------
 export OUTPUT   := $(CURDIR)/$(TARGET)
 export TOPDIR   := $(CURDIR)
-export VPATH    := $(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) $(CURDIR)/assets/menu_audio
+export VPATH    := $(foreach dir,$(SOURCES),$(CURDIR)/$(dir))
 export DEPSDIR  := $(CURDIR)/$(BUILD)
 
 CFILES   := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
-# Retired Relic material renderer stays archived/on disk, never linked into the app.
-CPPFILES := $(filter-out relic_material.cpp,$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp))))
+# Retired Relic material and menu-audio sources are local history, never linked.
+CPPFILES := $(filter-out relic_material.cpp menu_audio.cpp,$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp))))
 SFILES   := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
-BINFILES := menu_drone.bin menu_entry.bin
+BINFILES :=
 
 ifeq ($(strip $(CPPFILES)),)
     export LD := $(CC)
@@ -79,7 +79,7 @@ export LIBPATHS := $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 
 export _3DSXFLAGS += --smdh=$(CURDIR)/$(TARGET).smdh
 
-.PHONY: $(BUILD) clean all run send cia cci test sanitize test-branding release release-app release-samples release-source release-clean
+.PHONY: $(BUILD) clean all run send cia cci test sanitize test-branding release release-app release-source release-clean
 
 all: $(BUILD)
 
@@ -110,12 +110,9 @@ endif
 release-app: $(BUILD) cia
 	python3 scripts/package_release.py --main --version "$(RELEASE_VERSION)"
 
-release-samples:
-	python3 scripts/package_release.py --samples --version "$(RELEASE_VERSION)"
-
-# Binary/application + sample archives only; matching source is a separate duty.
+# Application archive only; matching source is a separate duty.
 # For source-bound candidates use scripts/prepare_public_release.py explicitly.
-release: release-app release-samples
+release: release-app
 
 release-source:
 	python3 scripts/package_release.py --source --version "$(RELEASE_VERSION)"
@@ -163,9 +160,6 @@ endif
 # ffmpeg nor access to the original uploads. bin2o exports aligned const data.
 %.bin.o: %.bin
 	$(bin2o)
-
-# bin2o also creates these headers; order the consumer after both generators.
-menu_audio.o: menu_drone.bin.o menu_entry.bin.o
 
 -include $(DEPENDS)
 

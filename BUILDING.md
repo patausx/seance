@@ -31,9 +31,8 @@ not imply a new release version. keep the existing title identity for updates.
 make does not track arbitrary flag/toolchain/library changes: for release evidence,
 build a new isolated source copy, not a reused development build directory.
 
-normal builds use checked-in font data, artwork, instrument samples and menu
-PCM. they require no Python, Pillow, ffmpeg, test files or downloaded sample
-pack. `make clean` removes local application output. `make run` / `make send`
+normal builds use checked-in font data, artwork and instrument samples. they
+require no Python, Pillow, ffmpeg, test files or downloaded sample pack. `make clean` removes local application output. `make run` / `make send`
 are optional network deployment commands; they are not build steps.
 
 ## resources and release packages
@@ -43,9 +42,8 @@ when changing resources, not after unpacking the source. asset READMEs retain
 original inputs, licenses and commands.
 
 [scripts/](scripts/README.md) contains source export and packaging commands.
-release scripts need Python 3.10+; rebuilding menu audio additionally needs the
-conversion tools named by its generator. source export and packaging never
-publish, upload or install anything.
+they need Python 3.10+; rebuilding the instrument bank uses the standard library.
+source export and packaging never publish, upload or install anything.
 
 check an exported source tree with:
 
@@ -68,15 +66,15 @@ sources/recipes/notices before distribution; do not relabel historical archives.
 
 ## release coverage and source-to-artifact procedure
 
-- `make release` builds/packages the application and starter-sample archives only.
-  it does **not** deliver an application source ZIP or establish matching source.
+- `make release` builds/packages the application only. it does **not** deliver an
+  application source ZIP or establish matching source.
 - `make release-source` packages current allowlisted working-tree bytes separately
   without devkitARM or local tests. like `package_release.py --source`, it cannot
   prove that an existing binary was compiled from those bytes.
 - for a source-bound local candidate, choose a new private directory and use
   `python3 -B scripts/prepare_public_release.py --output release/new-candidate --jobs 2 --makerom /path/to/makerom`.
   it exports exact allowlisted bytes, builds there, checks source/tool/runtime
-  stability, and packages application/source/sample ZIPs from that same copy.
+  stability, and packages application/source ZIPs from that same copy.
   nothing is published. use `--source-only` for a source inventory without artifacts.
 
 retain together the before/after source inventories and their receipt hashes,
@@ -88,10 +86,9 @@ recipes, newlib and exception eligibility against the final map, not merely a
 compiler version string. an inventory is a byte snapshot, not automatically a git
 tag or a byte-reproducible ARM build. never attach stale artifacts to a new export.
 
-`publication_ready` remains **false** in local receipts. verified menu-WAV grants
-for both originals and derivative PCM, matching current dependency/runtime
-source/notices, real-device acceptance and separate publication authorization
-remain external gates. do not publish merely because packaging passed.
+`publication_ready` remains **false** in local receipts. matching current
+dependency/runtime source/notices, real-device acceptance and separate publication
+authorization remain external gates. do not publish merely because packaging passed.
 
 ## explicit development admission
 

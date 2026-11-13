@@ -35,7 +35,7 @@ keep the accompanying license notices when redistributing either format.
 
 - audio requires DSP firmware. if you see **NO DSP**, use a DSP firmware dumper
   such as DSP1 on your own console. firmware is not included.
-- built-in instruments and the starter patch work without an external sample pack.
+- built-in instruments and the starter patch need no external sample pack.
   place your own WAV files in `sdmc:/3ds/seance/samples/`.
 - projects, samples, recordings and settings live in `sdmc:/3ds/seance/`.
   **back up this folder before updating.** replace the application, not your data.
@@ -115,8 +115,9 @@ by every parameter edit. failed loads leave the current project intact. if the
 previous session left unsaved work behind, startup first asks **recover / cancel**:
 see [recovery snapshot](#recovery-snapshot).
 
-settings contains **menu sound**, **startup** (menu/last project), and the
-**palette editor**. the startup drawing always animates; there is no intro toggle.
+settings contains **startup** (menu/last project) and the **palette editor**.
+  menu sound was removed with its unverified source audio; old preference records
+  remain readable. the startup drawing always animates; there is no intro toggle.
 hold **R** at launch to recover the menu; **L** requests a fresh starter.
 menu sound is decorative, can be disabled, and does not play your saved patch.
 

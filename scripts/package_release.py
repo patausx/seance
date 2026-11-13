@@ -7,7 +7,6 @@ import argparse
 import hashlib
 import json
 import re
-import wave
 import zipfile
 from pathlib import Path
 
@@ -81,7 +80,7 @@ PUBLIC_ROOT_FILES = (
 # Asset directories intentionally include originals, licenses and generation metadata.
 PUBLIC_TREES = (
     "core", "platform", "assets/branding", "assets/artwork", "assets/fonts", "assets/instruments",
-    "assets/menu_audio", "sample_library/starter_cc0", "licenses", "distribution/dependency-sources", ".github",
+    "licenses", "distribution/dependency-sources", ".github",
 )
 PUBLIC_HELPERS_MANIFEST = "scripts/source-files.json"
 # Export only reviewed repository metadata, never arbitrary hidden local state.
@@ -133,7 +132,6 @@ def public_source_payload(root: Path) -> dict[str, bytes]:
     # Fail closed if the important editable/embedded inputs are absent.
     for relative in (
         "assets/fonts/Gossip-MedPixel.otf", "assets/fonts/OFL.txt",
-        "assets/menu_audio/menu_drone.bin", "assets/menu_audio/menu_entry.bin",
         "core/engine/module_random_impl.inc", "platform/3ds/sequencer_value_buttons.inc",
     ):
         if relative not in files:
@@ -184,7 +182,6 @@ APPLICATION_DOC_FILES = (
     "assets/instruments/README.md", "assets/instruments/sources.json",
     "assets/instruments/bank.json", "assets/instruments/bank.pcm",
     "docs/inst-bank.md",
-    "sample_library/starter_cc0/README.md", "sample_library/starter_cc0/CC0-1.0.txt",
     "distribution/dependency-sources.md", "distribution/dependency-sources/manifest.json",
 ) + UI_GALLERY_FILES
 
@@ -222,27 +219,6 @@ def build_source(root: Path, version: str) -> None:
     write_archive(root / "release" / f"seance-{version}-source.zip", source_payload(root))
 
 
-def build_samples(root: Path) -> None:
-    root = root.resolve()
-    directory = "sample_library/starter_cc0"
-    wav_directory = input_path(root, f"{directory}/wav")
-    wavs = [input_path(root, path.relative_to(root).as_posix())
-            for path in sorted(wav_directory.glob("*.wav"))]
-    if len(wavs) != 16:
-        raise RuntimeError(f"expected 16 starter WAV files, found {len(wavs)}")
-    files: dict[str, bytes] = {
-        "README.md": required(root, f"{directory}/README.md"),
-        "CC0-1.0.txt": required(root, f"{directory}/CC0-1.0.txt"),
-    }
-    for path in wavs:
-        with wave.open(str(path), "rb") as wav:
-            actual = (wav.getnchannels(), wav.getsampwidth(), wav.getframerate())
-            if actual != (1, 2, 32000):
-                raise RuntimeError(f"unexpected WAV format for {path.name}: {actual}")
-        files[f"3ds/seance/samples/{path.name}"] = required(root, path.relative_to(root).as_posix())
-    write_archive(root / "release" / "seance-cc0-starter-samples.zip", files)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--version")
@@ -250,6 +226,8 @@ def main() -> None:
     parser.add_argument("--samples", action="store_true", help="build only the sample archive")
     parser.add_argument("--source", action="store_true", help="build only the complete source archive")
     args = parser.parse_args()
+    if args.samples:
+        parser.error("starter samples are removed; the application has no external sample-pack dependency")
     root = Path(__file__).resolve().parent.parent
     canonical_version = required(root, "VERSION").decode("ascii").strip()
     version = args.version or canonical_version
@@ -257,13 +235,11 @@ def main() -> None:
         raise SystemExit("unsafe release version")
     if version != canonical_version:
         raise SystemExit("release version must equal VERSION; change VERSION and rebuild first")
-    all_archives = not (args.main or args.samples or args.source)
+    all_archives = not (args.main or args.source)
     if args.main or all_archives:
         build_main(root, version)
     if args.source or all_archives:
         build_source(root, version)
-    if args.samples or all_archives:
-        build_samples(root)
 
 
 if __name__ == "__main__":

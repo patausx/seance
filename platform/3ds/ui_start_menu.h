@@ -16,7 +16,7 @@ struct StartMenuData {
     int active_slot = -1; // marker/initial browser page only; selection never changes it
     int recent_slots[kStartRecentCount] = {-1, -1, -1, -1, -1};
     int recent_count = 0;
-    bool show_menu = true, menu_sound = true; // wordmark motion is always enabled
+    bool show_menu = true, menu_sound = true; // legacy menu_sound stays storage-only; animation remains
     bool recovery_offer = false; // explicit pre-home choice; cancel retains records
     theme_config::Settings theme;
 };
