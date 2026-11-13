@@ -19,6 +19,21 @@ from a single loop to a shifting live set. build the patch, then play it.
 
 [user guide & installation](GUIDE.md) · [module reference](GUIDE.md#module-reference) · [build from source](BUILDING.md) · [changelog](CHANGELOG.md)
 
+## interface
+
+| patch table | sequencer |
+| :---: | :---: |
+| ![seance patch table in black mass](assets/artwork/ui/patch-table.png) | ![seance sequencer in black mass](assets/artwork/ui/sequencer.png) |
+
+**33 modules in black mass** · half a second per module.
+
+![all 33 seance module editors in black mass](assets/artwork/ui/modules-blackmass.gif)
+
+[full gallery: module stills, main screens and palettes](assets/artwork/ui/README.md)
+
+*native-host renders of the current interface, using demo scenes; not console
+photographs or a recording of live interaction.*
+
 ## status
 
 `0.1.0-alpha.1` · homebrew · work in progress.

@@ -148,6 +148,35 @@ def source_payload(root: Path) -> dict[str, bytes]:
 # Keep application documentation at its existing relative paths. These are only
 # the guide/notices and their linked documents/resources, not a source export.
 # Matching application/dependency source remains a separate distribution duty.
+# Exact approved presentation files, not a recursive copy of local render output.
+UI_GALLERY_FILES = (
+    "assets/artwork/ui/README.md",
+    "assets/artwork/ui/modules-blackmass.gif",
+    "assets/artwork/ui/modules-grimoire.gif",
+    "assets/artwork/ui/modules-colours.gif",
+    "assets/artwork/ui/themes-patch-table.gif",
+    "assets/artwork/ui/themes-sequencer.gif",
+    "assets/artwork/ui/patch-table.png",
+    "assets/artwork/ui/sequencer.png",
+    "assets/artwork/ui/patch-ten-palettes.png",
+    "assets/artwork/ui/sequencer-ten-palettes.png",
+    *(f"assets/artwork/ui/modules/{name}.png" for name in (
+        "01_osc", "02_noise", "03_fm", "04_motor", "05_play", "06_gran",
+        "07_mic", "08_rec", "09_filter", "10_vca", "11_delay", "12_fold",
+        "13_bit", "14_chorus", "15_strn", "16_rev", "17_ghost", "18_ring",
+        "19_tilt", "20_strain", "21_shift", "22_bird", "23_fract", "24_comp",
+        "25_mouth", "26_arp", "27_glitch", "28_inst", "29_scrt", "30_paul",
+        "31_pent", "32_rule", "33_rot",
+    )),
+    *(f"assets/artwork/ui/screens/{name}.png" for name in (
+        "01-sequencer-notes", "02-sequencer-trig", "03-sequencer-r-circle",
+        "04-sequencer-held-b-bank", "05-sequencer-lock-target",
+        "06-performance-mixer", "07-startup-menu", "08-chains-desk",
+        "09-go-to", "10-module-picker", "11-sigils", "12-patchbay",
+        "13-order", "14-bank-transition",
+    )),
+)
+
 APPLICATION_DOC_FILES = (
     "README.md", "GUIDE.md", "BUILDING.md", "CHANGELOG.md",
     "assets/branding/readme-wordmark.gif",
@@ -157,7 +186,7 @@ APPLICATION_DOC_FILES = (
     "docs/inst-bank.md",
     "sample_library/starter_cc0/README.md", "sample_library/starter_cc0/CC0-1.0.txt",
     "distribution/dependency-sources.md", "distribution/dependency-sources/manifest.json",
-)
+) + UI_GALLERY_FILES
 
 
 def license_payload(root: Path) -> dict[str, bytes]:

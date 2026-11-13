@@ -167,8 +167,14 @@ is not a claim that every linked runtime component has been cleared.
 
 ## explicitly excluded material
 
-private imported sample collections, user recordings/projects, device captures,
-promotional media, and historical build/output directories are not licensed for
-redistribution by this notice. in particular the private mixed-license sample
-library includes MusicRadar material whose local provenance prohibits sample
-redistribution. do not include it in the public repository or release pack.
+the published [interface gallery](assets/artwork/ui/README.md) contains approved
+native-host renders of demo scenes, using the bundled typefaces and interface
+artwork. their existing terms and credits above still apply; these are not private
+device captures or user recordings.
+
+private imported sample collections, user recordings/projects, private device
+captures, unapproved promotional media, and historical build/output directories
+are not licensed for redistribution by this notice. in particular the private
+mixed-license sample library includes MusicRadar material whose local provenance
+prohibits sample redistribution. do not include it in the public repository or
+release pack.
