@@ -15,24 +15,20 @@ the result, then mix, morph and switch patterns while it plays.
 - **live recording and resampling**: record the microphone or processed chains, bounce the mix and export WAVs.
 - **performance controls**: a four-channel mixer, A/B sound morphing, live FX and a 16-card bank order.
 
-from a single loop to a shifting live set. build the patch, then play it.
-
 [user guide & installation](GUIDE.md) · [module reference](GUIDE.md#module-reference) · [build from source](BUILDING.md) · [changelog](CHANGELOG.md)
 
-## interface
+<details>
+<summary>gallery</summary>
 
 | patch table | sequencer |
 | :---: | :---: |
 | ![seance patch table in black mass](assets/artwork/ui/patch-table.png) | ![seance sequencer in black mass](assets/artwork/ui/sequencer.png) |
 
-**33 modules in black mass** · half a second per module.
-
 ![all 33 seance module editors in black mass](assets/artwork/ui/modules-blackmass.gif)
 
-[full gallery: module stills, main screens and palettes](assets/artwork/ui/README.md)
+native-host demo renders, not console captures · [full gallery](assets/artwork/ui/README.md)
 
-*native-host renders of the current interface, using demo scenes; not console
-photographs or a recording of live interaction.*
+</details>
 
 ## status
 

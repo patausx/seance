@@ -1,44 +1,31 @@
-# interface gallery
+# gallery
 
-[back to seance](../../../README.md#interface) · [user guide](../../../GUIDE.md)
+[seance](../../../README.md) · [guide](../../../GUIDE.md) · [credits](../../../THIRD_PARTY_NOTICES.md)
 
-these are native-host renders of the current C++ interface, using demo scenes,
-synthetic audio and the bundled fonts and artwork. they are not console
-photographs, recordings of live interaction, or evidence of hardware speed or
-sound. no private projects or recordings are included.
+native-host demo renders, not console captures.
 
-each paired view is 400×496 pixels: a 400×240 upper screen and a centered 320×240
-lower screen, separated by 16 pixels. PNGs keep the native-host colours; GIFs use
-a compressed palette. click an image to inspect it at its original size.
+<details>
+<summary>modules</summary>
 
-## modules
-
-all 33 available module editors, half a second per module; 16.5 seconds per loop.
-these are slideshows of still views, not animations of an individual module.
-relic is reserved and unavailable, so it is not included.
-
-### black mass
+33 editor stills · 0.5 s each.
 
 ![all 33 module editors in black mass](modules-blackmass.gif)
 
 <details>
-<summary>old grimoire and alternating shipped themes</summary>
+<summary>other palettes</summary>
 
-### old grimoire
+old grimoire
 
 ![all 33 module editors in old grimoire](modules-grimoire.gif)
 
-### alternating themes
-
-old grimoire → black mass → pink → gray, changing between modules.
+old grimoire → black mass → pink → gray
 
 ![all 33 module editors with alternating shipped themes](modules-colours.gif)
 
 </details>
 
-### individual stills
-
-these PNGs all use black mass. open any module without waiting for the slideshow.
+<details>
+<summary>module stills</summary>
 
 | sources and sampling | processors | more processors and instruments |
 | --- | --- | --- |
@@ -54,10 +41,11 @@ these PNGs all use black mass. open any module without waiting for the slideshow
 | [vca](modules/10_vca.png) | [shift](modules/21_shift.png) | [rule](modules/32_rule.png) |
 | [delay](modules/11_delay.png) | [bird](modules/22_bird.png) | [rot](modules/33_rot.png) |
 
-## main screens
+</details>
+</details>
 
-fourteen views in old grimoire. the patch-table and sequencer previews on the
-[main README](../../../README.md#interface) use black mass.
+<details>
+<summary>screens</summary>
 
 | sequencer notes | triggers and flow |
 | :---: | :---: |
@@ -87,35 +75,25 @@ fourteen views in old grimoire. the patch-table and sequencer previews on the
 | :---: | :---: |
 | ![bank order](screens/13-order.png) | ![bank transition](screens/14-bank-transition.png) |
 
-## palette study
+</details>
 
-four shipped themes plus ten custom combinations drawn only from the existing
-theme picker's swatches. violet, moss, bone-blue, wine, ice, amber, blue-night,
-linen, rose and sage are study labels, **not ten new built-in presets**. the
-interface and demo scene stay the same between colour changes.
+<details>
+<summary>palettes</summary>
 
-### still overviews
+ten swatch combinations, **not new built-in presets**.
 
 ![ten custom palette combinations on the patch table](patch-ten-palettes.png)
 
 ![ten custom palette combinations on the sequencer](sequencer-ten-palettes.png)
 
-**rapid colour changes:** the two GIFs below switch light and dark backgrounds
-every 100 milliseconds. use the still overviews if you are sensitive to flashing.
+**flashing:** fast loops switch backgrounds every 100 ms. use the stills if sensitive.
 
 <details>
-<summary>show fast palette GIFs — 100 ms per palette</summary>
-
-each GIF has 14 frames, a 1.4-second loop and infinite repeat.
+<summary>fast loops</summary>
 
 ![four shipped themes and ten custom combinations on the patch table](themes-patch-table.gif)
 
 ![four shipped themes and ten custom combinations on the sequencer](themes-sequencer.gif)
 
 </details>
-
-## terms and scope
-
-the images retain the bundled typefaces and interface artwork's existing
-[terms and credits](../../../THIRD_PARTY_NOTICES.md). this gallery does not
-change the application, saved theme, audio, version or binary release.
+</details>
