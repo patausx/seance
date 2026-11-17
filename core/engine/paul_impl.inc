@@ -181,73 +181,126 @@ void PaulUnit::start_job(){
     }
     job_rng_=rng_;index_=0;length_=2;stage_=reuse?4:1;
 }
-void PaulUnit::job_step(){
-    using namespace paul_dsp;auto& w=*work_;const uint32_t h=job_n_/2;
-    const uint32_t* win=window(job_n_);
-    switch(stage_){
-    case 1: // bit-reversed window input, Q8 fractional q15
-        w.fft[reverse(index_,job_n_)]={int32_t(int64_t(read(job_analysis_start_+int64_t(index_)*65536))*win[index_]/256),0};
-        if(++index_==job_n_){index_=0;stage_=2;}break;
-    case 2:case 7:
-        butterfly(w.fft,job_n_,length_,index_,stage_==7);
-        if(++index_==h){index_=0;length_*=2;if(length_>job_n_){stage_=stage_==2?3:8;length_=2;}}break;
-    case 3:{
-        const uint32_t m=w.magnitude[index_]=magnitude(w.fft[index_]);
+// The same work items in the same order as one item per call; only the dispatch
+// is batched, so a stage runs as one tight loop with its constants in registers.
+// A stage's last item still enters the next stage inside the same budget. The
+// partial FFT state is never observed and butterflies of one pass touch disjoint
+// pairs, so splitting a pass at any item count gives equal bits.
+void PaulUnit::job_run(uint32_t budget){
+    using namespace paul_dsp;auto& w=*work_;
+    const uint32_t n=job_n_,h=n/2;
+    const uint32_t* const win=window(n);
+    while(budget && stage_>0 && stage_<9){
+        uint32_t i=index_;
+        switch(stage_){
+        case 1:{ // bit-reversed window input, Q8 fractional q15
+            const uint32_t end=i+std::min(budget,n-i);budget-=end-i;
+            // read() per item with its constants hoisted: every item advances by
+            // whole frames, so the frame is base+i and the fraction never changes.
+            const int64_t base=job_analysis_start_>>16,first=job_start_,last=job_end_;
+            const uint32_t fraction=uint32_t(job_analysis_start_)&65535,limit=job_end_;
+            const q15* const data=source_.data;const bool stereo=source_.channels==2;
+            auto value=[&](uint32_t frame){if(frame>=limit)return int32_t(0);return stereo?
+                (int32_t(data[size_t(frame)*2])+data[size_t(frame)*2+1])/2:int32_t(data[frame]);};
+            for(;i<end;++i){
+                const int64_t frame=base+i;int32_t sample=0;
+                if(frame>=first && frame<last){
+                    const int32_t va=value(uint32_t(frame)),vb=value(uint32_t(frame)+1);
+                    sample=va+int32_t(int64_t(vb-va)*fraction/65536);
+                }
+                w.fft[reverse(i,n)]={int32_t(int64_t(sample)*win[i]/256),0};
+            }
+            if(i==n){i=0;stage_=2;}
+            break;}
+        case 2:case 7:{
+            const bool inverse=stage_==7;const uint32_t count=std::min(budget,h-i);budget-=count;
+            butterflies(w.fft,length_,i,count,inverse);i+=count;
+            if(i==h){i=0;length_*=2;if(length_>n){stage_=inverse?8:3;length_=2;}}
+            break;}
+        case 3:{
+            const uint32_t end=i+std::min(budget,h+1-i);budget-=end-i;
+            for(;i<end;++i){
+                const uint32_t m=w.magnitude[i]=magnitude(w.fft[i]);
 #ifdef SEANCE_PAUL_TEST
-        w.test_magnitudes[pending_][index_]=m;
+                w.test_magnitudes[pending_][i]=m;
 #endif
-        static_assert(Visual::spectrum_count==96,"exact spectrum group divisors");
-        const uint32_t amp=coherent(m,job_n_,index_!=0 && index_!=h);
-        const uint32_t bin=spectrum_group(index_,job_n_);
-        w.job.magnitudes[bin]=std::max(w.job.magnitudes[bin],amp);
-        if(++index_==h+1){
-            w.analysis=w.job;analysis_start_=job_start_;analysis_end_=job_end_;analysis_valid_=true;
-            index_=0;stage_=4;
-        }break;}
-    case 4:
+                static_assert(Visual::spectrum_count==96,"exact spectrum group divisors");
+                const uint32_t amp=coherent(m,n,i!=0 && i!=h);
+                const uint32_t bin=spectrum_group(i,n);
+                w.job.magnitudes[bin]=std::max(w.job.magnitudes[bin],amp);
+            }
+            if(i==h+1){
+                w.analysis=w.job;analysis_start_=job_start_;analysis_end_=job_end_;analysis_valid_=true;
+                i=0;stage_=4;
+            }
+            break;}
+        case 4:{
+            const uint32_t end=i+std::min(budget,h+1-i);budget-=end-i;
+            for(;i<end;++i){
 #ifdef SEANCE_PAUL_TEST
-        // Bounded per-bin oracle copy also on cache hits; never expose pending bins.
-        w.test_magnitudes[pending_][index_]=w.magnitude[index_];
+                // Bounded per-bin oracle copy also on cache hits; never expose pending bins.
+                w.test_magnitudes[pending_][i]=w.magnitude[i];
 #endif
-        w.pitched[index_]=0;if(++index_==h+1){index_=0;stage_=5;}break;
-    case 5:{
-        // Energy-carrying positive bins are splatted to two destination bins.
-        // Unlike inverse lookup this cannot multiply the L1 spectral magnitude
-        // bound by a large pitch ratio. Above-Nyquist magnitudes are discarded.
-        const uint64_t dest=uint64_t(index_)*job_ratio_;const uint32_t a=uint32_t(dest>>16),f=uint32_t(dest)&65535;
-        uint32_t m=w.magnitude[index_];
-        // Endpoint bins have one conjugate member, interiors two. Convert that
-        // amplitude multiplicity when a bin crosses DC/Nyquist under pitch.
-        if(index_==h && a<h)m/=2;
-        if(a<=h){
-            uint32_t left=uint32_t(uint64_t(m)*(65536-f)/65536),right=m-left;
-            if(a==0 && index_!=0)left*=2;
-            if(a==h && index_!=h)left*=2;
-            w.pitched[a]+=left;
-            if(a<h){if(a+1==h && index_!=h)right*=2;w.pitched[a+1]+=right;}
+                w.pitched[i]=0;
+            }
+            if(i==h+1){i=0;stage_=5;}
+            break;}
+        case 5:{
+            // Energy-carrying positive bins are splatted to two destination bins.
+            // Unlike inverse lookup this cannot multiply the L1 spectral magnitude
+            // bound by a large pitch ratio. Above-Nyquist magnitudes are discarded.
+            const uint32_t end=i+std::min(budget,h+1-i);budget-=end-i;
+            const uint32_t ratio=job_ratio_;
+            for(;i<end;++i){
+                const uint64_t dest=uint64_t(i)*ratio;const uint32_t a=uint32_t(dest>>16),f=uint32_t(dest)&65535;
+                uint32_t m=w.magnitude[i];
+                // Endpoint bins have one conjugate member, interiors two. Convert that
+                // amplitude multiplicity when a bin crosses DC/Nyquist under pitch.
+                if(i==h && a<h)m/=2;
+                if(a<=h){
+                    uint32_t left=uint32_t(uint64_t(m)*(65536-f)/65536),right=m-left;
+                    if(a==0 && i!=0)left*=2;
+                    if(a==h && i!=h)left*=2;
+                    w.pitched[a]+=left;
+                    if(a<h){if(a+1==h && i!=h)right*=2;w.pitched[a+1]+=right;}
+                }
+            }
+            if(i==h+1){i=0;stage_=6;}
+            break;}
+        case 6:{
+            const uint32_t end=i+std::min(budget,h+1-i);budget-=end-i;
+            uint32_t rng=rng_;
+            for(;i<end;++i){
+                rng^=rng<<13;rng^=rng>>17;rng^=rng<<5;
+                const uint32_t phase=rng&8191,m=w.pitched[i];
+                Complex c;
+                if(i==0 || i==h)c={int32_t(m)*(rng&8192?1:-1),0};
+                else c={mul(int64_t(m)*paul_tables::cosine[phase]),mul(int64_t(m)*paul_tables::cosine[(phase+6144)&8191])};
+                w.fft[reverse(i,n)]=c;
+                if(i!=0 && i!=h)w.fft[reverse(n-i,n)]={c.re,-c.im};
+            }
+            rng_=rng;
+            if(i==h+1){i=0;stage_=7;length_=2;}
+            break;}
+        default:{ // 8: overlap-add, old tail entries replaced in place
+            const uint32_t end=i+std::min(budget,h-i);budget-=end-i;
+            const uint32_t* const norm=normalization(n);
+            const bool old_tail=tail_valid_;int32_t* const hop=w.hop[pending_];
+            for(;i<end;++i){
+                const int32_t first=int32_t(int64_t(w.fft[i].re)*win[i]/65536);
+                const int32_t old=old_tail?w.tail[i]:0;
+                hop[i]=int32_t((int64_t(first)+old)*norm[i]/(int64_t(1)<<30));
+                w.tail[i]=int32_t(int64_t(w.fft[i+h].re)*win[i+h]/65536);
+            }
+            if(i==h){
+                w.metadata[pending_]=w.job;
+                if(tail_valid_){auto& v=w.metadata[pending_];v.window_start_q16=std::min(v.window_start_q16,w.tail_metadata.window_start_q16);
+                    v.window_end_q16=std::max(v.window_end_q16,w.tail_metadata.window_end_q16);}
+                w.tail_metadata=w.job;tail_valid_=true;stage_=9;i=0;
+            }
+            break;}
         }
-        if(++index_==h+1){index_=0;stage_=6;}break;}
-    case 6:{
-        rng_^=rng_<<13;rng_^=rng_>>17;rng_^=rng_<<5;
-        const uint32_t phase=rng_&8191,m=w.pitched[index_];
-        Complex c;
-        if(index_==0 || index_==h)c={int32_t(m)*(rng_&8192?1:-1),0};
-        else c={mul(int64_t(m)*paul_tables::cosine[phase]),mul(int64_t(m)*paul_tables::cosine[(phase+6144)&8191])};
-        w.fft[reverse(index_,job_n_)]=c;
-        if(index_!=0 && index_!=h)w.fft[reverse(job_n_-index_,job_n_)]={c.re,-c.im};
-        if(++index_==h+1){index_=0;stage_=7;length_=2;}break;}
-    case 8:{
-        const int32_t first=int32_t(int64_t(w.fft[index_].re)*win[index_]/65536);
-        const int32_t old=tail_valid_?w.tail[index_]:0;
-        w.hop[pending_][index_]=int32_t((int64_t(first)+old)*normalization(job_n_)[index_]/(int64_t(1)<<30));
-        w.tail[index_]=int32_t(int64_t(w.fft[index_+h].re)*win[index_+h]/65536);
-        if(++index_==h){
-            w.metadata[pending_]=w.job;
-            if(tail_valid_){auto& v=w.metadata[pending_];v.window_start_q16=std::min(v.window_start_q16,w.tail_metadata.window_start_q16);
-                v.window_end_q16=std::max(v.window_end_q16,w.tail_metadata.window_end_q16);}
-            w.tail_metadata=w.job;tail_valid_=true;stage_=9;index_=0;
-        }break;}
-    default:break;
+        index_=i;
     }
 }
 void PaulUnit::consume_hop(){
@@ -331,7 +384,7 @@ void PaulUnit::process(q15* out,int frames){
         // Fixed scalar job budget PER AUDIO SAMPLE (not per process call/UI tick).
         // N8192: <36 work items/sample averaged per4096-frame hop; budget40.
         // Each work item is one prep/bin/butterfly/OLA entry, stack O(1).
-        for(uint32_t j=0;j<WORK_PER_SAMPLE && stage_>0 && stage_<9;++j)job_step();
+        if(stage_>0 && stage_<9)job_run(WORK_PER_SAMPLE);
         if(output_index_>=output_count_ && stage_==9)consume_hop();
         int32_t raw=0;
         if(output_index_<output_count_){raw=work_->hop[current_][output_index_++]/256;envelope_=gate?std::min<int32_t>(32768,envelope_+256):std::max<int32_t>(0,envelope_-256);}

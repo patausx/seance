@@ -199,7 +199,7 @@ inline bool save(const char* sidecar, const State& state) {
         // C11 exclusive mode, supported by newlib and host libc; no POSIX API.
         file = std::fopen(temporary, "wbx");
         if (file) break;
-        if (errno != EEXIST) return false;
+        if (!fileio::name_occupied(errno)) return false; // EEXIST or the SD card's own code
     }
     if (!file) return false;
     bool ok = detail::transfer(file, state, false);

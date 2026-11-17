@@ -634,7 +634,7 @@ StartMenuResult start_menu_input(u32 down,u32 held,int tx,int ty) {
         if(down&KEY_UP){move(-1);return {};}
         if(down&KEY_DOWN){move(1);return {};}
         if(g.page==Page::Home&&(down&(KEY_LEFT|KEY_RIGHT))) {
-            if(g.selected>=Sound&&g.selected<=Startup) {
+            if(g.selected==Startup) {
                 if(down&KEY_RIGHT)return activate(g.selected);
                 select(Settings);return {};
             }

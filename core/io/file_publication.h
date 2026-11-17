@@ -3,6 +3,7 @@
 // O_EXCL is the ownership boundary, not a stat/read preflight. No fsync/power-cut
 // promise, and no unlink-then-rename fallback on filesystems refusing replacement.
 #include <cerrno>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
@@ -70,6 +71,20 @@ inline bool replace_via_previous(const char* from, const char* destination, cons
     return false;
 }
 
+// [STORAGE] SD card answer for an existing name under O_EXCL
+// libctru's archive error table translates only 0x082044BE to EEXIST. The SD
+// archive reports an existing name as FS (module 17) description 190 at another
+// level, 0xC82044BE - libctru special-cases that value itself for mkdir and
+// rename - and for open(O_CREAT|O_EXCL) the raw result is what reaches errno.
+// Read as an error it stopped every "take the next free name" search at the
+// first existing file. Same meaning as EEXIST and no new authority; small
+// errno values can never carry module 17, so this is inert on the host.
+inline bool name_occupied(int error) {
+    if (error == EEXIST) return true;
+    const uint32_t raw = uint32_t(error);
+    return ((raw >> 10) & 0xFFu) == 17u && (raw & 0x3FFu) == 190u;
+}
+
 // Owns only a newly-created name. A failed open gives NO cleanup authority.
 // Callers serialize access to the app-owned directory: this does not defend
 // against a hostile process unlinking/replacing names during publication.
@@ -82,7 +97,7 @@ public:
     ReserveResult create(const char* path) {
         if (owned_ || !path || !*path || std::strlen(path) >= sizeof path_) return ReserveResult::Error;
         const int fd = ::open(path, O_WRONLY | O_CREAT | O_EXCL, 0666);
-        if (fd < 0) return errno == EEXIST ? ReserveResult::Occupied : ReserveResult::Error;
+        if (fd < 0) return name_occupied(errno) ? ReserveResult::Occupied : ReserveResult::Error;
         std::strcpy(path_, path); owned_ = true;
         stream_ = ::fdopen(fd, "wb"); // retain the exclusive descriptor; NEVER reopen with wb
         if (!stream_) { ::close(fd); discard(); return ReserveResult::Error; }

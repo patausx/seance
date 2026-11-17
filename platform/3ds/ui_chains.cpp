@@ -352,12 +352,17 @@ template<class P> void param_rail(const P& p,const ParamInspector& v,int left,in
     module_fader::horizontal(p,left,right,y,base,effective,
         {live&&v.mod_enabled&&(v.source!=ModSource::None||v.relic_source),false,false},v.bipolar?(left+right)/2:-1);
 }
-// New card titles reuse the registered private masks at the existing card
-// anchor. Older menu masks stay byte-identical; the painter keeps native/cache
-// clipping and disclosure opacity, so no shared atlas/layout change is needed.
+// Card titles whose name has no older menu mask (bird, shift, fract, pent,
+// scrt, paul, rule, rot) reuse the registered editor masks at the existing card
+// anchor, never the native fallback font. Older menu masks stay byte-identical;
+// the painter keeps native/cache clipping and disclosure opacity.
+bool menu_mask(const char* name){
+    for(const auto& l:menu_labels::labels)if(!std::strcmp(l.text,name))return true;
+    return false;
+}
 template<class P> void card_heading(const P& p,int x,int y,UnitKind kind,uint32_t color){
-    if(kind!=UnitKind::Pent&&kind!=UnitKind::Scratch&&kind!=UnitKind::Paul&&kind!=UnitKind::Rule&&kind!=UnitKind::Rot){
-        p.heading(x,y,m::module_name(kind),color);return;}
+    const char* name=m::module_name(kind);
+    if(menu_mask(name)||!module_heading::label(kind)){p.heading(x,y,name,color);return;}
     const auto* at=module_heading::label(kind);
     if(!at)return;
     const int stride=(at->width+7)/8;

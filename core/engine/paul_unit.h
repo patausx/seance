@@ -78,7 +78,7 @@ private:
     bool begin_voice();
     void release_sequence_gate();
     void start_job();
-    void job_step();
+    void job_run(uint32_t budget); // up to `budget` work items of the pending job, stage loops batched
     void consume_hop();
     int32_t read(int64_t) const;
     const Engine* engine_=nullptr;

@@ -68,6 +68,7 @@
 #include "start_menu_store.h"
 #include "project_names.h"
 #include "project_file_ops.h"
+#include "demo_projects.h"
 #include "word_menu.h"
 #include "sigil_surface.h"
 #include "../../core/engine/patch_preview.h"
@@ -529,6 +530,18 @@ void scan_patch_slots() {
     }
     g_patch_catalog_failed = !ok;
     g_patch_catalog_ready = true;
+}
+
+// Writes only vacant patchN.snc names; the marker makes this a one-time action.
+static void seed_demo_projects() {
+    if (!g_patch_catalog_ready || g_patch_catalog_failed) return;
+    ProjectNames proposed = g_project_names;
+    const DemoSeedResult seeded = seed_builtin_demo_projects("sdmc:/3ds/seance", g_patch_exists, proposed);
+    for (int i = 0; i < seeded.count; ++i) {
+        g_patch_exists[seeded.slots[i]] = true;
+        g_patch_checked[seeded.slots[i]] = false; // validated lazily like any found file
+    }
+    if (seeded.count) (void)save_project_names(proposed);
 }
 
 static void patch_library_invalidate(int slot);
@@ -1375,6 +1388,7 @@ int main() {
     g_recovery_boot = g_recovery_store.inspect(); // once, BEFORE last/demo bypass
     g_recovery.boot(g_recovery_boot, svcGetSystemTick() / (SYSCLOCK_ARM11 / 1000));
     scan_patch_slots(); // one directory enumeration at boot, zero patch file reads
+    seed_demo_projects(); // first boot only: built-in demos into free slots
     if (force_demo && !g_recovery.unresolved()) {
         project_ready = execute_destructive({DestructiveAction::NewProject, -1});
         if (project_ready) g_overlay = Overlay::Editor;
@@ -1399,6 +1413,9 @@ int main() {
         startup_input_tail.capture(0, hidKeysHeld());
     }
     if (!project_ready) {
+        // Same rule as the runtime teardown below: no aptMainLoop() from here on.
+        aptSetSleepAllowed(false);
+        aptHandleSleep();
         clear_sample_bank();
         audio.shutdown();
         delete g_eng; g_eng = nullptr; g_audio = nullptr;
@@ -2004,6 +2021,13 @@ int main() {
         }
     }
 
+    // After the last aptMainLoop() nothing acknowledges a lid close any more: an
+    // accepted sleep would wait for APT_ReplySleepNotificationComplete forever
+    // and would put the DSP to sleep underneath ndspExit. Refuse new sleep
+    // requests for the rest of the teardown and service one already entered.
+    aptSetSleepAllowed(false);
+    aptHandleSleep();
+
     relic_focus_release();
     sample_browser_touch_release(false);
     sample_browser_stop_preview();
@@ -2017,7 +2041,14 @@ int main() {
     persist_last_project();
     delete g_eng;
 
-    if (C3D_FrameBegin(C3D_FRAME_SYNCDRAW)) {
+    // HOME > close arrives as a cancelled wakeup: libctru calls no
+    // APTHOOK_ONRESTORE, the GPU right stays released, and citro3d's
+    // suspend hook has already drained its queue and removed the VBlank counters
+    // that C3D_FRAME_SYNCDRAW waits on. A synchronized fence there never returned:
+    // the app could not close and the console had to be powered off. The drained
+    // queue is the last-reader fence; this frame submits nothing to the GPU.
+    const u8 final_fence = gspHasGpuRight() ? C3D_FRAME_SYNCDRAW : 0;
+    if (C3D_FrameBegin(final_fence)) {
         rot_focus_shutdown(true); // final last-reader fence; never in a destructor
         C2D_Prepare();
         C3D_TexBind(0, nullptr);

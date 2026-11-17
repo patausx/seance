@@ -20,7 +20,7 @@ endif
 #---------------------------------------------------------------------------------
 TARGET      := seance
 BUILD       := build
-SOURCES     := platform/3ds \
+SOURCES     := platform/3ds platform/3ds/demo_projects \
                core/audio core/dsp core/engine core/synth core/ui
 INCLUDES    := core platform/3ds
 APP_TITLE   := seance
@@ -59,7 +59,7 @@ CFILES   := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
 # Retired Relic material and menu-audio sources are local history, never linked.
 CPPFILES := $(filter-out relic_material.cpp menu_audio.cpp,$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp))))
 SFILES   := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
-BINFILES :=
+BINFILES := demo_icytype.bin demo_noise.bin demo_some_chiiiiptune.bin demo_smth.bin demo_dambient.bin
 
 ifeq ($(strip $(CPPFILES)),)
     export LD := $(CC)
@@ -160,6 +160,9 @@ endif
 # ffmpeg nor access to the original uploads. bin2o exports aligned const data.
 %.bin.o: %.bin
 	$(bin2o)
+
+# bin2o also creates the headers; order the consumer after both generators.
+demo_projects.o: $(filter %.bin.o,$(OFILES))
 
 -include $(DEPENDS)
 

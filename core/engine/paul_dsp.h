@@ -40,11 +40,56 @@ inline void butterfly(Complex* x,uint32_t n,uint32_t length,uint32_t index,bool 
     }
     (void)n;
 }
+// `count` butterflies of one pass starting at `first` (pass index 0..n/2-1): the
+// arithmetic of butterfly() item by item with the pass constants hoisted. The
+// butterflies of a pass touch disjoint pairs, so any split of a pass into calls
+// yields the same bits. In the first two passes the twiddle is exactly 1 or
+// -/+i (cosine[0]==2^30, cosine[2048]==cosine[6144]==0): mul(v*2^30)==v, so the
+// rotation is a copy/swap with the same int32 narrowing and no multiply.
+inline void butterflies(Complex* x,uint32_t length,uint32_t first,uint32_t count,bool inverse) {
+    const uint32_t half=length/2, mask=half-1, end=first+count;
+    const unsigned shift=unsigned(__builtin_clz(length))-18;
+    const int32_t sign=inverse?1:-1;
+    for(uint32_t i=first;i<end;++i){
+        const uint32_t j=i&mask, a=((i&~mask)<<1)+j, b=a+half;
+        int32_t re,im;
+        if(half<=2){
+            re=x[b].re;im=x[b].im;
+            if(j){
+                const int32_t t=re;
+                if(inverse){re=int32_t(-int64_t(im));im=t;}else{re=im;im=int32_t(-int64_t(t));}
+            }
+        }else{
+            const uint32_t phase=j<<shift;
+            const int32_t c=paul_tables::cosine[phase];
+            const int32_t s=paul_tables::cosine[(phase+6144)&8191]*sign;
+            re=mul(int64_t(x[b].re)*c-int64_t(x[b].im)*s);
+            im=mul(int64_t(x[b].re)*s+int64_t(x[b].im)*c);
+        }
+        const int64_t ar=x[a].re, ai=x[a].im;
+        if(inverse){
+            x[a]={int32_t(ar+re),int32_t(ai+im)};
+            x[b]={int32_t(ar-re),int32_t(ai-im)};
+        }else{
+            x[a]={int32_t((ar+re)/2),int32_t((ai+im)/2)};
+            x[b]={int32_t((ar-re)/2),int32_t((ai-im)/2)};
+        }
+    }
+}
 // Exact restoring root, at most 32 iterations. Leading zero pairs would only
 // shift a zero answer: skip them with two bounded 32-bit CLZs (never CLZ(0)).
 inline uint32_t root(uint64_t x) {
     if(!x)return 0;
     const uint32_t high=uint32_t(x>>32);
+    if(!high){
+        // The same recurrence on the same numbers in 32 bits: answer stays below
+        // 2^31 and answer+bit below 2^32, so every comparison and result is equal.
+        uint32_t v=uint32_t(x), answer=0, bit=uint32_t(1)<<((31u-unsigned(__builtin_clz(v)))&~1u);
+        for(;bit;bit>>=2){
+            if(v>=answer+bit){v-=answer+bit;answer=(answer>>1)+bit;}else answer>>=1;
+        }
+        return answer;
+    }
     const unsigned top=high?63u-unsigned(__builtin_clz(high)):31u-unsigned(__builtin_clz(uint32_t(x)));
     uint64_t answer=0, bit=uint64_t(1)<<(top&~1u);
     for(;bit;bit>>=2){
