@@ -116,10 +116,9 @@ previous session left unsaved work behind, startup first asks **recover / cancel
 see [recovery snapshot](#recovery-snapshot).
 
 settings contains **startup** (menu/last project) and the **palette editor**.
-  menu sound was removed with its unverified source audio; old preference records
-  remain readable. the startup drawing always animates; there is no intro toggle.
+menu sound was removed with its unverified source audio; old preference records
+remain readable. the startup drawing always animates; there is no intro toggle.
 hold **R** at launch to recover the menu; **L** requests a fresh starter.
-menu sound is decorative, can be disabled, and does not play your saved patch.
 
 in the instrument, **SELECT** opens **go to**:
 

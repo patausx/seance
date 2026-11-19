@@ -53,6 +53,8 @@ source changes within the existing alpha version, not a new tagged or binary rel
 - FRACT's waveform grab squeezes/re-expands a temporary reading window, separately
   from saved damage and hold. sigils' upper view separates actual output, saved
   routes and base/live destination values.
+- CIA and CCI packages embed the 3D eclipse HOME Menu banner with stereo whisper
+  audio (`assets/banner.bnr`, editable inputs in `assets/banner/`).
 - public source keeps application code, editable resources, required generators
   and packaging helpers, including the three relic generators; local studies,
   tests, captures and receipts stay out. VERSION edits invalidate C++ and ELF.
@@ -77,10 +79,8 @@ source changes within the existing alpha version, not a new tagged or binary rel
 Old 3DS is untested. dense patches can exceed the audio budget, and PAUL editor
 responsiveness still needs sustained console checks. no new hardware/listening
 acceptance is claimed by this source update. back up projects and their referenced
-WAVs before updating; DSP firmware is not distributed. current toolchain/runtime
-corresponding-source review remains pending; old dependency hashes are historical
-evidence, not current release clearance. the menu sounds come from a free beat
-pack whose own terms are not reproduced in this source.
+WAVs before updating; DSP firmware is not distributed. current toolchain/runtime corresponding-source review remains pending; old
+dependency hashes are historical evidence, not current release clearance.
 
 see the [guide](GUIDE.md) for controls, [building](BUILDING.md) for build requirements
 and [third-party notices](THIRD_PARTY_NOTICES.md) for dependency/resource terms.

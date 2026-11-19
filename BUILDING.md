@@ -23,7 +23,8 @@ make -j2 cia MAKEROM=/path/to/makerom
 ```
 
 `MAKEROM` defaults to `$HOME/tools/3ds/makerom`. CIA packaging uses devkitPro's
-`smdhtool`, not bannertool.
+`smdhtool` and the checked-in `assets/banner.bnr` HOME Menu banner; `bannertool`
+is not required for normal builds.
 
 `VERSION` supplies the application version; changing it rebuilds C++ objects
 and relinks the ELF. keep the title identity in `seance.rsf` for updates.

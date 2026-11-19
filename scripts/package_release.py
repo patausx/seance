@@ -73,13 +73,13 @@ def required(root: Path, relative: str) -> bytes:
 PUBLIC_ROOT_FILES = (
     "Makefile", "seance.rsf", "VERSION", "README.md", "GUIDE.md", "LICENSE",
     "BUILDING.md", "CHANGELOG.md", "CONTRIBUTING.md", "THIRD_PARTY_NOTICES.md",
-    ".gitignore", "assets/icon.png", "assets/icon_small.png",
+    ".gitignore", "assets/icon.png", "assets/icon_small.png", "assets/banner.bnr",
     "docs/source-layout.md", "docs/inst-bank.md",
     "distribution/README.md", "distribution/dependency-sources.md",
 )
 # Asset directories intentionally include originals, licenses and generation metadata.
 PUBLIC_TREES = (
-    "core", "platform", "assets/branding", "assets/artwork", "assets/fonts", "assets/instruments",
+    "core", "platform", "assets/banner", "assets/branding", "assets/artwork", "assets/fonts", "assets/instruments",
     "licenses", "distribution/dependency-sources", ".github",
 )
 PUBLIC_HELPERS_MANIFEST = "scripts/source-files.json"

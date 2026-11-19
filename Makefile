@@ -129,15 +129,15 @@ $(BUILD)/$(TARGET)_cia.smdh: assets/icon.png assets/icon_small.png Makefile
 	smdhtool --create "$(APP_TITLE)" "$(APP_DESCRIPTION)" "$(APP_AUTHOR)" \
 	  assets/icon.png $@ assets/icon_small.png
 
-# Legacy-mode CIA/CCI: retain the existing no-banner/no-audio packaging, but
-# show the same gathering icon as the homebrew launcher (Old and New 3DS).
-cia: $(BUILD) $(BUILD)/$(TARGET)_cia.smdh
+# CIA/CCI packaging embeds the checked-in 3D HOME Menu banner (assets/banner.bnr)
+# and the same icon as the homebrew launcher.
+cia: $(BUILD) $(BUILD)/$(TARGET)_cia.smdh assets/banner.bnr
 	$(MAKEROM) -f cia -o $(TARGET).cia -elf $(TARGET).elf -rsf $(TARGET).rsf \
-	  -icon $(BUILD)/$(TARGET)_cia.smdh -target t
+	  -icon $(BUILD)/$(TARGET)_cia.smdh -banner assets/banner.bnr -target t
 
-cci: $(BUILD) $(BUILD)/$(TARGET)_cia.smdh
+cci: $(BUILD) $(BUILD)/$(TARGET)_cia.smdh assets/banner.bnr
 	$(MAKEROM) -f cci -o $(TARGET).3ds -elf $(TARGET).elf -rsf $(TARGET).rsf \
-	  -icon $(BUILD)/$(TARGET)_cia.smdh -target t
+	  -icon $(BUILD)/$(TARGET)_cia.smdh -banner assets/banner.bnr -target t
 
 #---------------------------------------------------------------------------------
 else
