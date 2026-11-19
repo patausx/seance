@@ -36,7 +36,6 @@ the result, then mix, morph and switch patterns while it plays.
 
 **Old 3DS has not been tested. performance on older models is unknown.**
 New 3DS uses its CPU speedup; demanding patches can still exceed the audio budget.
-relic is currently unavailable; projects containing it cannot be opened.
 
 ## license
 
