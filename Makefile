@@ -24,7 +24,7 @@ SOURCES     := platform/3ds platform/3ds/demo_projects \
                core/audio core/dsp core/engine core/synth core/ui
 INCLUDES    := core platform/3ds
 APP_TITLE   := seance
-APP_DESCRIPTION := drawable-cv sound computer for 3ds
+APP_DESCRIPTION := modular sequencer & live instrument
 APP_AUTHOR  := patausx
 RELEASE_VERSION := $(strip $(shell cat $(TOPDIR)/VERSION))
 # NB: 3ds_rules' smdh recipe reads APP_ICON (not ICON!) - without the export
